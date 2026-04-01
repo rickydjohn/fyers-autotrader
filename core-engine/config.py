@@ -1,0 +1,45 @@
+from pydantic_settings import BaseSettings
+from pydantic import Field
+from typing import List
+
+
+class Settings(BaseSettings):
+    # Fyers
+    fyers_client_id: str = Field(..., env="FYERS_CLIENT_ID")
+    fyers_secret_key: str = Field(..., env="FYERS_SECRET_KEY")
+    fyers_redirect_uri: str = Field("http://localhost:8001/fyers/callback", env="FYERS_REDIRECT_URI")
+    token_path: str = "/app/tokens/access_token.json"
+
+    # Ollama
+    ollama_base_url: str = Field("http://localhost:11434", env="OLLAMA_BASE_URL")
+    ollama_model: str = Field("llama3.2:3b", env="OLLAMA_MODEL")
+    ollama_timeout: int = 30
+
+    # Redis
+    redis_url: str = Field("redis://localhost:6379", env="REDIS_URL")
+
+    # Market
+    market_open: str = "09:15"
+    market_close: str = "15:30"
+    timezone: str = "Asia/Kolkata"
+    scan_interval_seconds: int = Field(300, env="SCAN_INTERVAL_SECONDS")
+
+    # Watchlist
+    symbols: List[str] = [
+        "NSE:NIFTY50-INDEX",
+        "NSE:NIFTYBANK-INDEX",
+    ]
+
+    # Data Service
+    data_service_url: str = Field("http://data-service:8003", env="DATA_SERVICE_URL")
+
+    # App
+    log_level: str = Field("INFO", env="LOG_LEVEL")
+    environment: str = Field("simulation", env="ENVIRONMENT")
+
+    class Config:
+        env_file = ".env"
+        case_sensitive = False
+
+
+settings = Settings()
