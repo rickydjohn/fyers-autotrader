@@ -74,12 +74,10 @@ CREATE TABLE IF NOT EXISTS ai_decisions (
     historical_context  JSONB
 );
 
-SELECT create_hypertable(
-    'ai_decisions', 'time',
-    chunk_time_interval => INTERVAL '7 days',
-    migrate_data        => TRUE,
-    if_not_exists       => TRUE
-);
+-- NOTE:
+-- Keep ai_decisions as a regular table (not hypertable) because decision_id
+-- is the primary key used by upserts; Timescale hypertables require unique
+-- constraints/indexes to include the partitioning column (time).
 
 CREATE INDEX IF NOT EXISTS ai_decisions_symbol_time_idx
     ON ai_decisions (symbol, time DESC);
@@ -102,14 +100,23 @@ CREATE TABLE IF NOT EXISTS trades (
     slippage    NUMERIC(10, 2)  NOT NULL DEFAULT 0,
     status      TEXT            NOT NULL DEFAULT 'OPEN',
     decision_id TEXT,
-    reasoning   TEXT
+    reasoning   TEXT,
+    trading_mode TEXT           NOT NULL DEFAULT 'simulation' CHECK (trading_mode IN ('simulation', 'live'))
 );
 
-CREATE INDEX IF NOT EXISTS trades_symbol_entry_time_idx
-    ON trades (symbol, entry_time DESC);
+DO $$
+BEGIN
+    IF to_regclass('public.trades') IS NOT NULL THEN
+        CREATE INDEX IF NOT EXISTS trades_symbol_entry_time_idx
+            ON trades (symbol, entry_time DESC);
 
-CREATE INDEX IF NOT EXISTS trades_entry_time_idx
-    ON trades (entry_time DESC);
+        CREATE INDEX IF NOT EXISTS trades_entry_time_idx
+            ON trades (entry_time DESC);
+
+        CREATE INDEX IF NOT EXISTS trades_mode_entry_time_idx
+            ON trades (trading_mode, entry_time DESC);
+    END IF;
+END $$;
 
 -- ============================================================
 -- 5. News Items
@@ -244,16 +251,7 @@ SELECT add_compression_policy(
     if_not_exists => TRUE
 );
 
-ALTER TABLE ai_decisions SET (
-    timescaledb.compress,
-    timescaledb.compress_segmentby = 'symbol'
-);
-
-SELECT add_compression_policy(
-    'ai_decisions',
-    INTERVAL '30 days',
-    if_not_exists => TRUE
-);
+-- ai_decisions compression policy intentionally omitted because it is not a hypertable.
 
 -- ============================================================
 -- 8. Retention (optional — keep 90 days of 1-min candles)

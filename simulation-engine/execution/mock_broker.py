@@ -50,16 +50,35 @@ async def open_position(
     target: float,
     decision_id: str,
     reasoning: str,
+    option_symbol: Optional[str] = None,
+    option_strike: Optional[int] = None,
+    option_type: Optional[str] = None,
+    option_expiry: Optional[str] = None,
+    option_price: Optional[float] = None,
+    option_lot_size: Optional[int] = None,
 ) -> Optional[Trade]:
-    """Open a new simulated position."""
+    """Open a new simulated position. Trades the option if one is provided."""
     existing = await redis_client.hget("positions:open", symbol)
     if existing:
         logger.info(f"Position already open for {symbol}, skipping")
         return None
 
     max_value = await get_max_position_value(redis_client)
-    entry_price = _apply_slippage(price, side)
-    quantity = _calculate_quantity(entry_price, max_value)
+
+    if option_symbol and option_price:
+        # Trade the option: entry_price = option premium; quantity = 1 lot (from Fyers depth)
+        lot_size = option_lot_size or 1
+        entry_price = _apply_slippage(option_price, side)
+        quantity = lot_size
+        trade_symbol = option_symbol
+        raw_price = option_price
+    else:
+        # Fallback: trade the underlying directly
+        entry_price = _apply_slippage(price, side)
+        quantity = _calculate_quantity(entry_price, max_value)
+        trade_symbol = symbol
+        raw_price = price
+
     trade_value = entry_price * quantity
     commission = _calculate_commission(trade_value)
     total_cost = trade_value + commission
@@ -79,20 +98,28 @@ async def open_position(
         stop_loss=stop_loss,
         target=target,
         decision_id=decision_id,
+        option_symbol=option_symbol,
+        option_strike=option_strike,
+        option_type=option_type,
+        option_expiry=option_expiry,
     )
 
     trade = Trade(
         trade_id=trade_id,
-        symbol=symbol,
+        symbol=trade_symbol,
         side=side,
         quantity=quantity,
         entry_price=entry_price,
         entry_time=now,
         commission=commission,
-        slippage=abs(entry_price - price) * quantity,
+        slippage=abs(entry_price - raw_price) * quantity,
         status="OPEN",
         decision_id=decision_id,
         reasoning=reasoning,
+        option_symbol=option_symbol,
+        option_strike=option_strike,
+        option_type=option_type,
+        option_expiry=option_expiry,
     )
 
     # Persist to Redis (operational cache)
@@ -105,21 +132,27 @@ async def open_position(
 
     # Persist to TimescaleDB via data-service (durable storage)
     await data_client.persist_trade({
-        "trade_id":    trade.trade_id,
-        "symbol":      trade.symbol,
-        "side":        trade.side,
-        "quantity":    trade.quantity,
-        "entry_price": trade.entry_price,
-        "entry_time":  trade.entry_time.isoformat(),
-        "commission":  trade.commission,
-        "slippage":    trade.slippage,
-        "status":      trade.status,
-        "decision_id": trade.decision_id,
-        "reasoning":   trade.reasoning,
+        "trade_id":      trade.trade_id,
+        "symbol":        trade.symbol,
+        "side":          trade.side,
+        "quantity":      trade.quantity,
+        "entry_price":   trade.entry_price,
+        "entry_time":    trade.entry_time.isoformat(),
+        "commission":    trade.commission,
+        "slippage":      trade.slippage,
+        "status":        trade.status,
+        "decision_id":   trade.decision_id,
+        "reasoning":     trade.reasoning,
+        "trading_mode":  "simulation",
+        "option_symbol": trade.option_symbol,
+        "option_strike": trade.option_strike,
+        "option_type":   trade.option_type,
+        "option_expiry": trade.option_expiry,
     })
 
+    label = f"{option_symbol} (strike ₹{option_strike})" if option_symbol else trade_symbol
     logger.info(
-        f"OPENED {side} {quantity}x{symbol} @ ₹{entry_price:.2f} "
+        f"OPENED {side} {quantity}x{label} @ ₹{entry_price:.2f} "
         f"(commission=₹{commission:.0f})"
     )
     return trade
@@ -180,21 +213,26 @@ async def close_position(
 
         # Persist closed trade to TimescaleDB (upsert updates the existing record)
         await data_client.persist_trade({
-            "trade_id":    trade.trade_id,
-            "symbol":      trade.symbol,
-            "side":        trade.side,
-            "quantity":    trade.quantity,
-            "entry_price": trade.entry_price,
-            "entry_time":  trade.entry_time.isoformat(),
-            "exit_price":  trade.exit_price,
-            "exit_time":   trade.exit_time.isoformat(),
-            "pnl":         trade.pnl,
-            "pnl_pct":     trade.pnl_pct,
-            "commission":  trade.commission,
-            "slippage":    trade.slippage,
-            "status":      trade.status,
-            "decision_id": trade.decision_id,
-            "reasoning":   trade.reasoning,
+            "trade_id":      trade.trade_id,
+            "symbol":        trade.symbol,
+            "side":          trade.side,
+            "quantity":      trade.quantity,
+            "entry_price":   trade.entry_price,
+            "entry_time":    trade.entry_time.isoformat(),
+            "exit_price":    trade.exit_price,
+            "exit_time":     trade.exit_time.isoformat(),
+            "pnl":           trade.pnl,
+            "pnl_pct":       trade.pnl_pct,
+            "commission":    trade.commission,
+            "slippage":      trade.slippage,
+            "status":        trade.status,
+            "decision_id":   trade.decision_id,
+            "reasoning":     trade.reasoning,
+            "trading_mode":  "simulation",
+            "option_symbol": trade.option_symbol,
+            "option_strike": trade.option_strike,
+            "option_type":   trade.option_type,
+            "option_expiry": trade.option_expiry,
         })
 
     await release(redis_client, invested_amount, net_pnl)

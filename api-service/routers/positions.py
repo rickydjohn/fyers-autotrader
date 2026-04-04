@@ -16,8 +16,10 @@ async def get_positions(redis_client: aioredis.Redis = Depends(get_redis)):
     for symbol, data in raw.items():
         try:
             pos = json.loads(data)
-            # Enrich with current price
-            market_raw = await redis_client.get(f"market:{symbol}")
+            # Enrich with current price — use option LTP if an option is held
+            option_sym = pos.get("option_symbol")
+            price_key = f"market:{option_sym}" if option_sym else f"market:{symbol}"
+            market_raw = await redis_client.get(price_key)
             if market_raw:
                 market = json.loads(market_raw)
                 ltp = market.get("ltp", pos["avg_price"])

@@ -84,38 +84,43 @@ export default function App() {
 
   // Load historical candles when symbol or timeframe changes
   useEffect(() => {
+    let cancelled = false
     const load = async () => {
       try {
+        let data
         if (timeframe === '1m') {
-          const data = await fetchHistoricalData(selectedSymbol, '1m', 200)
-          setHistoricalCandles(data)
+          data = await fetchHistoricalData(selectedSymbol, '1m', 200)
         } else {
-          const data = await fetchAggregatedView(selectedSymbol, timeframe, 200)
-          setHistoricalCandles(data)
+          data = await fetchAggregatedView(selectedSymbol, timeframe, 200)
         }
+        if (!cancelled) setHistoricalCandles(data)
       } catch {
-        setHistoricalCandles([])
+        // keep previous candles rather than blanking the chart
       }
     }
     load()
+    return () => { cancelled = true }
   }, [selectedSymbol, timeframe])
 
   // Load context snapshot when symbol changes
   useEffect(() => {
+    let cancelled = false
     setContextLoading(true)
     fetchContextSnapshot(selectedSymbol)
-      .then(setContext)
-      .catch(() => setContext(null))
-      .finally(() => setContextLoading(false))
+      .then((data) => { if (!cancelled) setContext(data) })
+      .catch(() => { /* keep previous context rather than clearing */ })
+      .finally(() => { if (!cancelled) setContextLoading(false) })
+    return () => { cancelled = true }
   }, [selectedSymbol])
 
   // Load decision history from DB when panel is opened
   useEffect(() => {
-    if (showHistory) {
-      fetchDecisionHistory(selectedSymbol, 50)
-        .then((r) => setDecisionHistory(r.decisions ?? []))
-        .catch(() => setDecisionHistory([]))
-    }
+    if (!showHistory) return
+    let cancelled = false
+    fetchDecisionHistory(selectedSymbol, 50)
+      .then((r) => { if (!cancelled) setDecisionHistory(r.decisions ?? []) })
+      .catch(() => { /* keep previous history rather than clearing */ })
+    return () => { cancelled = true }
   }, [showHistory, selectedSymbol])
 
   useEffect(() => {
@@ -124,21 +129,29 @@ export default function App() {
   }, [])
 
   const currentData = marketData[selectedSymbol]
-  const symbolTrades = trades.filter((t) => t.symbol === selectedSymbol)
   const marketOpen = useMemo(() => isWithinMarketWindow(now), [now])
   const isLive = sseConnected && marketOpen
 
-  // Use historical candles when a non-live timeframe is selected, else live candles
-  const displayCandles = timeframe === '5m' && currentData?.candles?.length
-    ? currentData.candles
-    : historicalCandles.map((c) => ({
-        timestamp: c.time,
-        open: c.open,
-        high: c.high,
-        low: c.low,
-        close: c.close,
-        volume: c.volume,
-      }))
+  const symbolTrades = useMemo(
+    () => trades.filter((t) => t.symbol === selectedSymbol),
+    [trades, selectedSymbol],
+  )
+
+  // Use live 5m candles when available, otherwise fall back to historical
+  const liveCandles = currentData?.candles
+  const displayCandles = useMemo(() => {
+    if (timeframe === '5m' && liveCandles?.length) {
+      return liveCandles
+    }
+    return historicalCandles.map((c) => ({
+      timestamp: c.time,
+      open: c.open,
+      high: c.high,
+      low: c.low,
+      close: c.close,
+      volume: c.volume,
+    }))
+  }, [timeframe, liveCandles, historicalCandles])
 
   return (
     <div className="min-h-screen bg-gray-950 text-gray-100 p-4">

@@ -59,6 +59,36 @@ function DecisionCard({ decision: d }: { decision: Decision }) {
         </div>
       </div>
 
+      {d.option_symbol && (
+        <div className="flex items-center gap-2 mb-2 px-2 py-1 bg-gray-700/40 rounded text-xs font-mono">
+          <span className="text-gray-500">Option:</span>
+          <span className="text-amber-400">{d.option_symbol.replace('NSE:', '')}</span>
+          {d.option_strike && (
+            <>
+              <span className="text-gray-600">·</span>
+              <span className="text-gray-300">Strike ₹{d.option_strike.toLocaleString('en-IN')}</span>
+              {d.option_type && (
+                <span className={`font-semibold ${d.option_type === 'CE' ? 'text-emerald-400' : 'text-red-400'}`}>
+                  {d.option_type}
+                </span>
+              )}
+            </>
+          )}
+          {d.option_price && (
+            <>
+              <span className="text-gray-600">·</span>
+              <span className="text-gray-300">@ ₹{d.option_price.toFixed(2)}</span>
+            </>
+          )}
+          {d.option_expiry && (
+            <>
+              <span className="text-gray-600">·</span>
+              <span className="text-gray-500">exp {d.option_expiry}</span>
+            </>
+          )}
+        </div>
+      )}
+
       <p className="text-sm text-gray-300 leading-relaxed mb-2">{d.reasoning}</p>
 
       <div className="grid grid-cols-3 gap-2 text-xs text-gray-500">

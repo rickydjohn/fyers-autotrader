@@ -87,6 +87,11 @@ class TradeIn(BaseModel):
     status: str = "OPEN"
     decision_id: Optional[str] = None
     reasoning: Optional[str] = None
+    trading_mode: str = "simulation"
+    option_symbol: Optional[str] = None
+    option_strike: Optional[int] = None
+    option_type: Optional[str] = None
+    option_expiry: Optional[str] = None
 
 
 class NewsItemIn(BaseModel):

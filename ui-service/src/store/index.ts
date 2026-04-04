@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { Decision, FundsData, MarketData, PnLData, Position, Trade, TradingMode } from '../types'
+import type { Decision, FundsData, MarketData, PnLData, Position, SimulationBudgetData, Trade, TradingMode } from '../types'
 
 interface TradingStore {
   selectedSymbol: string
@@ -29,6 +29,9 @@ interface TradingStore {
 
   fundsData: FundsData | null
   setFundsData: (f: FundsData | null) => void
+
+  simulationBudget: SimulationBudgetData | null
+  setSimulationBudget: (b: SimulationBudgetData | null) => void
 }
 
 export const useTradingStore = create<TradingStore>((set) => ({
@@ -63,4 +66,7 @@ export const useTradingStore = create<TradingStore>((set) => ({
 
   fundsData: null,
   setFundsData: (f) => set({ fundsData: f }),
+
+  simulationBudget: null,
+  setSimulationBudget: (b) => set({ simulationBudget: b }),
 }))

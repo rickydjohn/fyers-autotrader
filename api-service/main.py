@@ -38,10 +38,15 @@ async def lifespan(app: FastAPI):
         base_url=settings.core_engine_url,
         timeout=10.0,
     )
+    app.state.http_sim_client = httpx.AsyncClient(
+        base_url=settings.sim_engine_url,
+        timeout=10.0,
+    )
     logger.info("API service started")
     yield
     await app.state.http_client.aclose()
     await app.state.http_core_client.aclose()
+    await app.state.http_sim_client.aclose()
     await app.state.redis.aclose()
     logger.info("API service shutdown")
 

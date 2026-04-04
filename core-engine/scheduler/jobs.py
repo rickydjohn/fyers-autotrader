@@ -10,7 +10,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime, date, timedelta
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 import pytz
 import redis.asyncio as aioredis
@@ -18,6 +18,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from config import settings
 from fyers.market_data import get_historical_candles, get_historical_candles_daterange, get_previous_day_ohlc, get_quote
+from models.schemas import OHLCBar
 from indicators.cpr import calculate_cpr, get_cpr_signal
 from indicators.pivots import calculate_pivots, get_nearest_levels
 from indicators.technicals import (
@@ -194,6 +195,26 @@ async def _process_symbol(symbol: str, redis_client: aioredis.Redis) -> None:
     await make_decision(snapshot, redis_client, historical_context=historical_context)
 
 
+async def _refresh_open_option_prices(redis_client: aioredis.Redis) -> None:
+    """Fetch fresh option LTP for any open option positions and update Redis cache."""
+    positions_raw = await redis_client.hgetall("positions:open")
+    for _, pos_data in positions_raw.items():
+        try:
+            pos = json.loads(pos_data)
+            option_sym = pos.get("option_symbol")
+            if not option_sym:
+                continue
+            q = get_quote(option_sym)
+            if q and q.get("ltp"):
+                await redis_client.setex(
+                    f"market:{option_sym}",
+                    600,
+                    json.dumps({"ltp": q["ltp"], "symbol": option_sym}),
+                )
+        except Exception as e:
+            logger.debug(f"Option price refresh failed for position: {e}")
+
+
 async def run_market_scan(redis_client: aioredis.Redis) -> None:
     """Main job: scan all symbols if market is open."""
     if not _is_market_open():
@@ -204,31 +225,65 @@ async def run_market_scan(redis_client: aioredis.Redis) -> None:
             await _process_symbol(symbol, redis_client)
         except Exception as e:
             logger.exception(f"Error processing {symbol}: {e}")
+    await _refresh_open_option_prices(redis_client)
 
 
-async def bootstrap_historical_data(symbol: str, redis_client: aioredis.Redis) -> None:
+def _chunked_historical_bars(
+    symbol: str,
+    interval: str,
+    lookback_days: int,
+    max_chunk_days: int,
+) -> List[OHLCBar]:
     """
-    Fetch 30 days of multi-timeframe OHLCV from Fyers and persist to data-service.
-    Called once at startup so the context builder has enough data for meaningful predictions.
-    Intervals: 5m (30d), 15m (30d), 1h (30d), daily (1yr).
+    Fetch OHLCV across a long lookback using multiple Fyers requests.
+    Fyers caps per-request range by resolution (e.g. ~30d for 1m, ~90d for 5m).
     """
-    now_ist = datetime.now(IST)
-    date_to = now_ist.strftime("%Y-%m-%d")
+    end = datetime.now(IST).date()
+    start = end - timedelta(days=lookback_days)
+    all_bars: List[OHLCBar] = []
+    cur = start
+    while cur <= end:
+        chunk_end = min(cur + timedelta(days=max_chunk_days - 1), end)
+        batch = get_historical_candles_daterange(
+            symbol,
+            interval,
+            cur.strftime("%Y-%m-%d"),
+            chunk_end.strftime("%Y-%m-%d"),
+        )
+        all_bars.extend(batch)
+        cur = chunk_end + timedelta(days=1)
 
-    # (interval, lookback_days) — buffer for weekends/holidays
+    by_ts: Dict[datetime, OHLCBar] = {}
+    for b in all_bars:
+        by_ts[b.timestamp] = b
+    return sorted(by_ts.values(), key=lambda x: x.timestamp)
+
+
+async def bootstrap_historical_data(
+    symbol: str,
+    redis_client: aioredis.Redis,
+) -> Dict[str, Any]:
+    """
+    Fetch multi-timeframe OHLCV from Fyers and persist to data-service (market_candles).
+    Includes 1m (chunked) so the UI timeframe selector has data.
+    Intervals / lookbacks follow Fyers per-request limits via max_chunk_days.
+    """
+    # (interval, lookback_days, max_chunk_days per Fyers request)
     configs = [
-        ("5m",  40),
-        ("15m", 40),
-        ("1h",  40),
-        ("1d",  365),
+        ("1m",  60, 28),   # ~60d of 1m; chunk < 30d limit
+        ("5m",  90, 90),
+        ("15m", 90, 90),
+        ("1h",  180, 180),
+        ("1d",  365, 365),
     ]
 
+    per_interval: Dict[str, int] = {}
     total = 0
-    for interval, lookback_days in configs:
-        date_from = (now_ist - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
-        candles = get_historical_candles_daterange(symbol, interval, date_from, date_to)
+    for interval, lookback_days, max_chunk in configs:
+        candles = _chunked_historical_bars(symbol, interval, lookback_days, max_chunk)
         if not candles:
             logger.warning(f"No {interval} candles returned for {symbol} from Fyers")
+            per_interval[interval] = 0
             continue
 
         batch = [
@@ -244,10 +299,13 @@ async def bootstrap_historical_data(symbol: str, redis_client: aioredis.Redis) -
             for c in candles
         ]
         await data_client.persist_candles_batch(batch)
-        total += len(candles)
-        logger.info(f"Bootstrapped {len(candles)} {interval} candles for {symbol}")
+        n = len(candles)
+        per_interval[interval] = n
+        total += n
+        logger.info(f"Bootstrapped {n} {interval} candles for {symbol}")
 
     logger.info(f"Historical bootstrap complete for {symbol}: {total} total candles")
+    return {"symbol": symbol, "intervals": per_interval, "total_candles": total}
 
 
 async def _refresh_context_all(redis_client: aioredis.Redis) -> None:

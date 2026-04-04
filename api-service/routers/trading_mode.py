@@ -12,6 +12,10 @@ def _core(request: Request) -> httpx.AsyncClient:
     return request.app.state.http_core_client
 
 
+def _sim(request: Request) -> httpx.AsyncClient:
+    return request.app.state.http_sim_client
+
+
 @router.get("/trading-mode")
 async def get_trading_mode(request: Request):
     try:
@@ -37,3 +41,12 @@ async def get_funds(request: Request):
         return JSONResponse(content=r.json(), status_code=r.status_code)
     except httpx.RequestError as e:
         raise HTTPException(status_code=503, detail=f"core-engine unavailable: {e}")
+
+
+@router.get("/simulation-budget")
+async def get_simulation_budget(request: Request):
+    try:
+        r = await _sim(request).get("/budget")
+        return JSONResponse(content=r.json(), status_code=r.status_code)
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=503, detail=f"simulation-engine unavailable: {e}")

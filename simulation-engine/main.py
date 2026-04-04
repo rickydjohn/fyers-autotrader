@@ -75,6 +75,16 @@ async def _handle_decision(data: dict) -> None:
     except (ValueError, TypeError):
         stop_loss = target = 0.0
 
+    option_symbol = data.get("option_symbol") or None
+    option_type = data.get("option_type") or None
+    option_expiry = data.get("option_expiry") or None
+    try:
+        option_strike = int(float(data.get("option_strike", 0) or 0)) or None
+        option_price = float(data.get("option_price", 0) or 0) or None
+        option_lot_size = int(float(data.get("option_lot_size", 0) or 0)) or None
+    except (ValueError, TypeError):
+        option_strike = option_price = option_lot_size = None
+
     # Get current price from market snapshot
     market_raw = await redis_client.get(f"market:{symbol}")
     if not market_raw:
@@ -101,6 +111,9 @@ async def _handle_decision(data: dict) -> None:
         await broker.open_position(
             redis_client, symbol, "BUY", current_price,
             stop_loss, target, decision_id, reasoning,
+            option_symbol=option_symbol, option_strike=option_strike,
+            option_type=option_type, option_expiry=option_expiry,
+            option_price=option_price, option_lot_size=option_lot_size,
         )
 
     elif decision == "SELL":
@@ -113,6 +126,9 @@ async def _handle_decision(data: dict) -> None:
         await broker.open_position(
             redis_client, symbol, "SELL", current_price,
             stop_loss, target, decision_id, reasoning,
+            option_symbol=option_symbol, option_strike=option_strike,
+            option_type=option_type, option_expiry=option_expiry,
+            option_price=option_price, option_lot_size=option_lot_size,
         )
 
     elif decision == "HOLD":
@@ -128,31 +144,43 @@ async def _check_stop_targets() -> None:
     for symbol, pos_data in positions_raw.items():
         try:
             pos = Position(**json.loads(pos_data))
+
+            # Use underlying LTP to trigger stop/target (levels are index prices)
             market_raw = await redis_client.get(f"market:{symbol}")
             if not market_raw:
                 continue
             market = json.loads(market_raw)
-            ltp = market.get("ltp", 0)
-            if not ltp:
+            underlying_ltp = market.get("ltp", 0)
+            if not underlying_ltp:
                 continue
+
+            # Determine exit price: option LTP if we hold an option, else underlying LTP
+            exit_price = underlying_ltp
+            if pos.option_symbol:
+                opt_raw = await redis_client.get(f"market:{pos.option_symbol}")
+                if opt_raw:
+                    opt_data = json.loads(opt_raw)
+                    exit_price = opt_data.get("ltp", pos.avg_price)
+                else:
+                    exit_price = pos.avg_price  # fallback: breakeven if no cached price
 
             mode = await redis_client.get("trading:mode") or "simulation"
             broker = live_broker if mode == "live" else mock_broker
 
             if pos.side == "BUY":
-                if ltp <= pos.stop_loss:
-                    logger.info(f"STOP LOSS triggered for {symbol} @ ₹{ltp:.2f}")
-                    await broker.close_position(redis_client, symbol, ltp, status="STOPPED")
-                elif ltp >= pos.target:
-                    logger.info(f"TARGET hit for {symbol} @ ₹{ltp:.2f}")
-                    await broker.close_position(redis_client, symbol, ltp, status="CLOSED")
+                if underlying_ltp <= pos.stop_loss:
+                    logger.info(f"STOP LOSS triggered for {symbol} @ ₹{underlying_ltp:.2f} (option exit ₹{exit_price:.2f})")
+                    await broker.close_position(redis_client, symbol, exit_price, status="STOPPED")
+                elif underlying_ltp >= pos.target:
+                    logger.info(f"TARGET hit for {symbol} @ ₹{underlying_ltp:.2f} (option exit ₹{exit_price:.2f})")
+                    await broker.close_position(redis_client, symbol, exit_price, status="CLOSED")
             else:  # SELL
-                if ltp >= pos.stop_loss:
-                    logger.info(f"STOP LOSS triggered for {symbol} @ ₹{ltp:.2f}")
-                    await broker.close_position(redis_client, symbol, ltp, status="STOPPED")
-                elif ltp <= pos.target:
-                    logger.info(f"TARGET hit for {symbol} @ ₹{ltp:.2f}")
-                    await broker.close_position(redis_client, symbol, ltp, status="CLOSED")
+                if underlying_ltp >= pos.stop_loss:
+                    logger.info(f"STOP LOSS triggered for {symbol} @ ₹{underlying_ltp:.2f} (option exit ₹{exit_price:.2f})")
+                    await broker.close_position(redis_client, symbol, exit_price, status="STOPPED")
+                elif underlying_ltp <= pos.target:
+                    logger.info(f"TARGET hit for {symbol} @ ₹{underlying_ltp:.2f} (option exit ₹{exit_price:.2f})")
+                    await broker.close_position(redis_client, symbol, exit_price, status="CLOSED")
         except Exception as e:
             logger.exception(f"Error checking stop/target for {symbol}: {e}")
 

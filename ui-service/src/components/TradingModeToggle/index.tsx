@@ -1,10 +1,14 @@
 import { useEffect, useState } from 'react'
 import { useTradingStore } from '../../store'
-import { fetchFunds, fetchTradingMode, updateTradingMode } from '../../api/tradingMode'
+import { fetchFunds, fetchSimulationBudget, fetchTradingMode, updateTradingMode } from '../../api/tradingMode'
 import type { TradingMode } from '../../types'
 
 export function TradingModeToggle() {
-  const { tradingMode, setTradingMode, fundsData, setFundsData } = useTradingStore()
+  const {
+    tradingMode, setTradingMode,
+    fundsData, setFundsData,
+    simulationBudget, setSimulationBudget,
+  } = useTradingStore()
   const [loading, setLoading] = useState(false)
   const [showConfirm, setShowConfirm] = useState(false)
   const [pendingMode, setPendingMode] = useState<TradingMode | null>(null)
@@ -16,14 +20,18 @@ export function TradingModeToggle() {
       .catch(() => {})
   }, [])
 
-  // Fetch funds whenever live mode is active
+  // Fetch mode-specific balances whenever trading mode changes
   useEffect(() => {
     if (tradingMode === 'live') {
       fetchFunds()
         .then(setFundsData)
         .catch(() => setFundsData(null))
+      setSimulationBudget(null)
     } else {
       setFundsData(null)
+      fetchSimulationBudget()
+        .then(setSimulationBudget)
+        .catch(() => setSimulationBudget(null))
     }
   }, [tradingMode])
 
@@ -56,36 +64,37 @@ export function TradingModeToggle() {
 
   return (
     <div className="flex items-center gap-3">
-      {/* Mode toggle */}
-      <div className="flex rounded-md overflow-hidden border border-gray-700 text-xs font-mono">
+      <div className="flex items-center gap-2 text-xs font-mono">
+        <span className={`${tradingMode === 'simulation' ? 'text-blue-300' : 'text-gray-500'}`}>SIM</span>
         <button
-          onClick={() => requestSwitch('simulation')}
+          onClick={() => requestSwitch(tradingMode === 'simulation' ? 'live' : 'simulation')}
           disabled={loading}
-          className={`px-3 py-1.5 transition-colors ${
-            tradingMode === 'simulation'
-              ? 'bg-blue-600 text-white'
-              : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
-          }`}
-        >
-          SIMULATION
-        </button>
-        <button
-          onClick={() => requestSwitch('live')}
-          disabled={loading}
-          className={`px-3 py-1.5 transition-colors ${
+          className={`relative h-6 w-12 rounded-full border transition-colors ${
             tradingMode === 'live'
-              ? 'bg-red-600 text-white'
-              : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
-          }`}
+              ? 'bg-red-600/80 border-red-500'
+              : 'bg-blue-600/80 border-blue-500'
+          } ${loading ? 'opacity-70 cursor-not-allowed' : ''}`}
+          aria-label="Toggle trading mode"
+          aria-pressed={tradingMode === 'live'}
         >
-          LIVE
+          <span
+            className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
+              tradingMode === 'live' ? 'translate-x-6' : 'translate-x-0.5'
+            }`}
+          />
         </button>
+        <span className={`${tradingMode === 'live' ? 'text-red-300' : 'text-gray-500'}`}>LIVE</span>
       </div>
 
-      {/* Funds display when in live mode */}
+      {/* Mode-specific balance display */}
       {tradingMode === 'live' && availableBalance !== null && (
         <span className="text-xs font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 px-2 py-1 rounded">
-          Avail: ₹{availableBalance.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+          Funds: ₹{availableBalance.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+        </span>
+      )}
+      {tradingMode === 'simulation' && simulationBudget && (
+        <span className="text-xs font-mono text-blue-300 bg-blue-500/10 border border-blue-500/30 px-2 py-1 rounded">
+          Sim Budget: ₹{simulationBudget.current.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
         </span>
       )}
 

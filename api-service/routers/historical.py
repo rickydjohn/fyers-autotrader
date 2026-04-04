@@ -8,6 +8,7 @@ Endpoints:
   GET /api/v1/trade-history
   GET /api/v1/pnl-summary
   GET /api/v1/daily-indicators
+  POST /api/v1/historical-backfill  (proxies to core-engine — Fyers → data-service)
 """
 
 from typing import Optional
@@ -15,8 +16,6 @@ from typing import Optional
 import httpx
 from fastapi import APIRouter, Depends, Query, HTTPException, Request
 from fastapi.responses import JSONResponse
-
-from config import settings
 
 router = APIRouter(tags=["Historical & Context"])
 
@@ -142,3 +141,18 @@ async def daily_indicators(
         return JSONResponse(content=r.json(), status_code=r.status_code)
     except httpx.RequestError as e:
         raise HTTPException(status_code=503, detail=f"data-service unavailable: {e}")
+
+
+@router.post("/historical-backfill")
+async def historical_backfill(
+    request: Request,
+    symbols: Optional[str] = Query(None),
+):
+    """Trigger Fyers → data-service candle backfill (core-engine). Defaults to watchlist symbols."""
+    try:
+        core = request.app.state.http_core_client
+        params = {"symbols": symbols} if symbols else {}
+        r = await core.post("/historical/backfill", params=params)
+        return JSONResponse(content=r.json(), status_code=r.status_code)
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=503, detail=f"core-engine unavailable: {e}")

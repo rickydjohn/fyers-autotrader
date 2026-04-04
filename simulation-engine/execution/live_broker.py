@@ -64,6 +64,12 @@ async def open_position(
     target: float,
     decision_id: str,
     reasoning: str,
+    option_symbol: Optional[str] = None,
+    option_strike: Optional[int] = None,
+    option_type: Optional[str] = None,
+    option_expiry: Optional[str] = None,
+    option_price: Optional[float] = None,
+    option_lot_size: Optional[int] = None,
 ) -> Optional[Trade]:
     """Place a live Fyers order and record the position in Redis + data-service."""
     existing = await redis_client.hget("positions:open", symbol)
@@ -77,8 +83,17 @@ async def open_position(
         logger.warning(f"Insufficient funds (₹{available:.0f}) or invalid price for {symbol}")
         return None
 
-    quantity = max(1, int(max_value / price))
-    order_result = await _place_fyers_order(symbol, side, quantity)
+    if option_symbol and option_price:
+        lot_size = option_lot_size or 1
+        trade_price = option_price
+        trade_symbol = option_symbol
+        quantity = lot_size
+    else:
+        trade_price = price
+        trade_symbol = symbol
+        quantity = max(1, int(max_value / price))
+
+    order_result = await _place_fyers_order(trade_symbol, side, quantity)
     if order_result is None:
         return None
 
@@ -89,24 +104,32 @@ async def open_position(
         symbol=symbol,
         side=side,
         quantity=quantity,
-        avg_price=price,
+        avg_price=trade_price,
         entry_time=now,
         stop_loss=stop_loss,
         target=target,
         decision_id=decision_id,
+        option_symbol=option_symbol,
+        option_strike=option_strike,
+        option_type=option_type,
+        option_expiry=option_expiry,
     )
     trade = Trade(
         trade_id=trade_id,
-        symbol=symbol,
+        symbol=trade_symbol,
         side=side,
         quantity=quantity,
-        entry_price=price,
+        entry_price=trade_price,
         entry_time=now,
-        commission=20.0,   # STT + brokerage approximation
+        commission=20.0,
         slippage=0.0,
         status="OPEN",
         decision_id=decision_id,
         reasoning=reasoning,
+        option_symbol=option_symbol,
+        option_strike=option_strike,
+        option_type=option_type,
+        option_expiry=option_expiry,
     )
 
     await redis_client.hset("positions:open", symbol, position.model_dump_json())
@@ -114,20 +137,26 @@ async def open_position(
     await redis_client.zadd("trades:history", {trade.model_dump_json(): now.timestamp()})
 
     await data_client.persist_trade({
-        "trade_id":    trade.trade_id,
-        "symbol":      trade.symbol,
-        "side":        trade.side,
-        "quantity":    trade.quantity,
-        "entry_price": trade.entry_price,
-        "entry_time":  trade.entry_time.isoformat(),
-        "commission":  trade.commission,
-        "slippage":    trade.slippage,
-        "status":      trade.status,
-        "decision_id": trade.decision_id,
-        "reasoning":   trade.reasoning,
+        "trade_id":      trade.trade_id,
+        "symbol":        trade.symbol,
+        "side":          trade.side,
+        "quantity":      trade.quantity,
+        "entry_price":   trade.entry_price,
+        "entry_time":    trade.entry_time.isoformat(),
+        "commission":    trade.commission,
+        "slippage":      trade.slippage,
+        "status":        trade.status,
+        "decision_id":   trade.decision_id,
+        "reasoning":     trade.reasoning,
+        "trading_mode":  "live",
+        "option_symbol": trade.option_symbol,
+        "option_strike": trade.option_strike,
+        "option_type":   trade.option_type,
+        "option_expiry": trade.option_expiry,
     })
 
-    logger.info(f"LIVE OPENED {side} {quantity}x{symbol} @ ₹{price:.2f} (order_id={order_result.get('order_id')})")
+    label = f"{option_symbol} (strike ₹{option_strike})" if option_symbol else trade_symbol
+    logger.info(f"LIVE OPENED {side} {quantity}x{label} @ ₹{trade_price:.2f} (order_id={order_result.get('order_id')})")
     return trade
 
 
@@ -175,21 +204,26 @@ async def close_position(
         await redis_client.zadd("trades:history", {trade.model_dump_json(): now.timestamp()})
 
         await data_client.persist_trade({
-            "trade_id":    trade.trade_id,
-            "symbol":      trade.symbol,
-            "side":        trade.side,
-            "quantity":    trade.quantity,
-            "entry_price": trade.entry_price,
-            "entry_time":  trade.entry_time.isoformat(),
-            "exit_price":  trade.exit_price,
-            "exit_time":   trade.exit_time.isoformat(),
-            "pnl":         trade.pnl,
-            "pnl_pct":     trade.pnl_pct,
-            "commission":  trade.commission,
-            "slippage":    trade.slippage,
-            "status":      trade.status,
-            "decision_id": trade.decision_id,
-            "reasoning":   trade.reasoning,
+            "trade_id":      trade.trade_id,
+            "symbol":        trade.symbol,
+            "side":          trade.side,
+            "quantity":      trade.quantity,
+            "entry_price":   trade.entry_price,
+            "entry_time":    trade.entry_time.isoformat(),
+            "exit_price":    trade.exit_price,
+            "exit_time":     trade.exit_time.isoformat(),
+            "pnl":           trade.pnl,
+            "pnl_pct":       trade.pnl_pct,
+            "commission":    trade.commission,
+            "slippage":      trade.slippage,
+            "status":        trade.status,
+            "decision_id":   trade.decision_id,
+            "reasoning":     trade.reasoning,
+            "trading_mode":  "live",
+            "option_symbol": trade.option_symbol,
+            "option_strike": trade.option_strike,
+            "option_type":   trade.option_type,
+            "option_expiry": trade.option_expiry,
         })
 
     await redis_client.hdel("positions:open", symbol)

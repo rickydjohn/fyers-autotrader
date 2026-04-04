@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 import redis.asyncio as aioredis
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 
 from config import settings
 from db.connection import engine
@@ -29,6 +30,22 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Lightweight schema guard for existing DB volumes.
+    async with engine.begin() as conn:
+        await conn.execute(text(
+            "ALTER TABLE IF EXISTS trades "
+            "ADD COLUMN IF NOT EXISTS trading_mode TEXT NOT NULL DEFAULT 'simulation'"
+        ))
+        await conn.execute(text(
+            "DO $$ "
+            "BEGIN "
+            "  IF to_regclass('public.trades') IS NOT NULL THEN "
+            "    CREATE INDEX IF NOT EXISTS trades_mode_entry_time_idx "
+            "    ON trades (trading_mode, entry_time DESC); "
+            "  END IF; "
+            "END $$;"
+        ))
+
     # Connect Redis
     redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
     set_redis_client(redis_client)

@@ -8,6 +8,7 @@ v2: Bootstraps historical context from data-service at startup.
 import logging
 import sys
 from contextlib import asynccontextmanager
+from typing import Optional
 
 import redis.asyncio as aioredis
 from fastapi import FastAPI, HTTPException, Query
@@ -185,6 +186,36 @@ async def fyers_place_order(
 async def trigger_scan():
     await run_market_scan(redis_client)
     return {"status": "ok", "message": "Scan triggered"}
+
+
+@app.post("/historical/backfill")
+async def historical_backfill(symbols: Optional[str] = Query(None)):
+    """
+    Pull multi-timeframe OHLC from Fyers into Timescale (via data-service).
+    Defaults to NIFTY50 and BANK NIFTY index symbols from config.
+    Pass `symbols` as comma-separated Fyers symbols, e.g. `NSE:NIFTY50-INDEX,NSE:NIFTYBANK-INDEX`.
+    """
+    if symbols:
+        syms = [s.strip() for s in symbols.split(",") if s.strip()]
+    else:
+        syms = list(settings.symbols)
+    if not syms:
+        raise HTTPException(status_code=400, detail="No symbols to backfill")
+
+    results = []
+    for sym in syms:
+        try:
+            summary = await bootstrap_historical_data(sym, redis_client)
+            results.append(summary)
+        except Exception as e:
+            logger.exception(f"Backfill failed for {sym}: {e}")
+            results.append({"symbol": sym, "error": str(e)})
+    for sym in syms:
+        try:
+            await refresh_context_cache(sym)
+        except Exception as e:
+            logger.warning(f"Context refresh after backfill failed for {sym}: {e}")
+    return {"status": "ok", "results": results}
 
 
 @app.get("/market/{symbol:path}")

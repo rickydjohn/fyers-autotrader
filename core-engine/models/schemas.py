@@ -86,3 +86,10 @@ class LLMDecision(BaseModel):
     indicators_snapshot: dict
     acted_upon: bool = False
     trade_id: Optional[str] = None
+    # Options fields (populated for BUY/SELL decisions)
+    option_symbol: Optional[str] = None     # e.g. NSE:NIFTY2640322200CE
+    option_strike: Optional[int] = None     # e.g. 22200
+    option_type: Optional[str] = None       # CE or PE
+    option_expiry: Optional[str] = None     # ISO date e.g. 2026-04-03
+    option_price: Optional[float] = None    # option LTP at decision time
+    option_lot_size: Optional[int] = None   # derived from Fyers market depth
