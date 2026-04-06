@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 from typing import Optional, Literal
 from datetime import datetime
 
@@ -45,10 +45,13 @@ class BudgetState(BaseModel):
     cash: float
     invested: float
 
+    @computed_field
     @property
-    def total(self) -> float:
-        return self.cash + self.invested
+    def current(self) -> float:
+        """Total current portfolio value (cash + invested). Used by the UI."""
+        return round(self.cash + self.invested, 2)
 
+    @computed_field
     @property
     def utilization_pct(self) -> float:
         return round(self.invested / self.initial * 100, 2) if self.initial > 0 else 0.0

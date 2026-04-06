@@ -54,7 +54,7 @@ export default function App() {
     tradingMode,
   } = useTradingStore()
 
-  useMarketData(selectedSymbol)
+  useMarketData(SYMBOLS)
   useDecisionFeed()
   usePnL()
 
@@ -85,6 +85,8 @@ export default function App() {
   // Load historical candles when symbol or timeframe changes
   useEffect(() => {
     let cancelled = false
+    // Clear immediately so the chart doesn't show the previous symbol's data
+    setHistoricalCandles([])
     const load = async () => {
       try {
         let data
@@ -95,7 +97,7 @@ export default function App() {
         }
         if (!cancelled) setHistoricalCandles(data)
       } catch {
-        // keep previous candles rather than blanking the chart
+        // leave chart blank rather than showing wrong symbol's candles
       }
     }
     load()
@@ -234,6 +236,7 @@ export default function App() {
             </div>
 
             <CandlestickChart
+              key={selectedSymbol}
               candles={displayCandles}
               trades={symbolTrades}
               height={380}

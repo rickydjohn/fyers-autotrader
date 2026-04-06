@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { persist, createJSONStorage } from 'zustand/middleware'
 import type { Decision, FundsData, MarketData, PnLData, Position, SimulationBudgetData, Trade, TradingMode } from '../types'
 
 interface TradingStore {
@@ -34,39 +35,52 @@ interface TradingStore {
   setSimulationBudget: (b: SimulationBudgetData | null) => void
 }
 
-export const useTradingStore = create<TradingStore>((set) => ({
-  selectedSymbol: 'NSE:NIFTY50-INDEX',
-  setSelectedSymbol: (s) => set({ selectedSymbol: s }),
+export const useTradingStore = create<TradingStore>()(
+  persist(
+    (set) => ({
+      selectedSymbol: 'NSE:NIFTY50-INDEX',
+      setSelectedSymbol: (s) => set({ selectedSymbol: s }),
 
-  marketData: {},
-  setMarketData: (symbol, data) =>
-    set((state) => ({ marketData: { ...state.marketData, [symbol]: data } })),
+      marketData: {},
+      setMarketData: (symbol, data) =>
+        set((state) => ({ marketData: { ...state.marketData, [symbol]: data } })),
 
-  decisions: [],
-  addDecision: (d) =>
-    set((state) => ({
-      decisions: [d, ...state.decisions].slice(0, 100),
-    })),
-  setDecisions: (ds) => set({ decisions: ds }),
+      decisions: [],
+      addDecision: (d) =>
+        set((state) => ({
+          decisions: [d, ...state.decisions].slice(0, 100),
+        })),
+      setDecisions: (ds) => set({ decisions: ds }),
 
-  trades: [],
-  setTrades: (ts) => set({ trades: ts }),
+      trades: [],
+      setTrades: (ts) => set({ trades: ts }),
 
-  positions: [],
-  setPositions: (ps) => set({ positions: ps }),
+      positions: [],
+      setPositions: (ps) => set({ positions: ps }),
 
-  pnl: null,
-  setPnL: (p) => set({ pnl: p }),
+      pnl: null,
+      setPnL: (p) => set({ pnl: p }),
 
-  sseConnected: false,
-  setSseConnected: (v) => set({ sseConnected: v }),
+      sseConnected: false,
+      setSseConnected: (v) => set({ sseConnected: v }),
 
-  tradingMode: 'simulation',
-  setTradingMode: (m) => set({ tradingMode: m }),
+      tradingMode: 'simulation',
+      setTradingMode: (m) => set({ tradingMode: m }),
 
-  fundsData: null,
-  setFundsData: (f) => set({ fundsData: f }),
+      fundsData: null,
+      setFundsData: (f) => set({ fundsData: f }),
 
-  simulationBudget: null,
-  setSimulationBudget: (b) => set({ simulationBudget: b }),
-}))
+      simulationBudget: null,
+      setSimulationBudget: (b) => set({ simulationBudget: b }),
+    }),
+    {
+      name: 'fyers-autotrader-mode',
+      storage: createJSONStorage(() => localStorage),
+      // Persist UI selection state — all market/fund data must be fetched fresh
+      partialize: (state) => ({
+        tradingMode: state.tradingMode,
+        selectedSymbol: state.selectedSymbol,
+      }),
+    }
+  )
+)

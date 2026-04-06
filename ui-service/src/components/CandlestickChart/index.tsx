@@ -40,6 +40,14 @@ export function CandlestickChart({ candles, trades = [], height = 400, cprLevels
       },
       crosshair: { mode: 1 },
       rightPriceScale: { borderColor: '#30363d' },
+      localization: {
+        timeFormatter: (timestamp: number) =>
+          new Date(timestamp * 1000).toLocaleTimeString('en-IN', {
+            timeZone: 'Asia/Kolkata',
+            hour: '2-digit',
+            minute: '2-digit',
+          }),
+      },
       timeScale: { borderColor: '#30363d', timeVisible: true },
       width: containerRef.current.clientWidth,
       height,

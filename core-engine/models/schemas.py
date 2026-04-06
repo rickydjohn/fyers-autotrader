@@ -45,6 +45,8 @@ class TechnicalIndicators(BaseModel):
     nearest_resistance_label: str
     nearest_support: float
     nearest_support_label: str
+    prev_day_high: float = 0.0
+    prev_day_low: float = 0.0
 
 
 class NewsItem(BaseModel):

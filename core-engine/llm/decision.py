@@ -113,6 +113,8 @@ async def make_decision(
         pivot=ind.cpr.pivot,
         cpr_width_pct=ind.cpr.width_pct,
         cpr_signal=ind.cpr_signal,
+        prev_day_high=ind.prev_day_high,
+        prev_day_low=ind.prev_day_low,
         nearest_resistance=ind.nearest_resistance,
         resistance_label=ind.nearest_resistance_label,
         nearest_support=ind.nearest_support,

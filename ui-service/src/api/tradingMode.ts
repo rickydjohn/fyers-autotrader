@@ -18,11 +18,12 @@ export async function fetchFunds(): Promise<FundsData> {
 
 export async function fetchSimulationBudget(): Promise<SimulationBudgetData> {
   const r = await apiClient.get('/simulation-budget')
-  return {
-    initial: r.data.initial ?? 0,
-    current: r.data.current ?? 0,
-    cash: r.data.cash ?? 0,
-    invested: r.data.invested ?? 0,
-    utilization_pct: r.data.utilization_pct ?? 0,
-  }
+  const initial: number = r.data.initial ?? 0
+  const cash: number = r.data.cash ?? 0
+  const invested: number = r.data.invested ?? 0
+  // Backend computes current via @computed_field; fall back to cash+invested if absent
+  const current: number = r.data.current ?? (cash + invested)
+  const utilization_pct: number =
+    r.data.utilization_pct ?? (initial > 0 ? Math.round((invested / initial) * 10000) / 100 : 0)
+  return { initial, current, cash, invested, utilization_pct }
 }

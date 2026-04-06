@@ -1,7 +1,7 @@
 import json
 from datetime import datetime
 from typing import Optional
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 import pytz
 import redis.asyncio as aioredis
 
@@ -12,13 +12,39 @@ router = APIRouter(prefix="/pnl", tags=["P&L"])
 IST = pytz.timezone("Asia/Kolkata")
 
 
+async def _live_budget(request: Request) -> Optional[dict]:
+    """Fetch real account funds from core-engine (Fyers). Returns None on failure."""
+    try:
+        r = await request.app.state.http_core_client.get("/fyers/funds")
+        if r.status_code != 200:
+            return None
+        funds = r.json().get("funds", {})
+        available = funds.get("available_balance") or funds.get("net_available") or 0.0
+        utilized = funds.get("utilized_amount") or funds.get("used_amount") or 0.0
+        total = funds.get("total_balance") or (available + utilized) or 0.0
+        return {
+            "initial": round(total, 2),
+            "current": round(available + utilized, 2),
+            "cash": round(available, 2),
+            "invested": round(utilized, 2),
+            "utilization_pct": round(utilized / total * 100, 2) if total else 0.0,
+        }
+    except Exception:
+        return None
+
+
 @router.get("")
 async def get_pnl(
+    request: Request,
     period: str = Query("today", pattern="^(today|week|month)$"),
     redis_client: aioredis.Redis = Depends(get_redis),
 ):
     now = datetime.now(IST)
     date_str = now.strftime("%Y-%m-%d")
+
+    # Trading mode
+    mode_raw = await redis_client.get("trading:mode")
+    trading_mode = mode_raw if isinstance(mode_raw, str) else (mode_raw.decode() if mode_raw else "simulation")
 
     # Realized P&L
     realized_raw = await redis_client.get("pnl:realized:total")
@@ -43,14 +69,28 @@ async def get_pnl(
         except Exception:
             pass
 
-    # Budget state
-    budget_raw = await redis_client.get("budget:state")
-    budget = json.loads(budget_raw) if budget_raw else {
-        "initial": 100000, "cash": 100000, "invested": 0
-    }
-
-    initial = budget.get("initial", 100000)
     total_pnl = realized_pnl + unrealized_pnl
+
+    # Budget — mode-aware
+    if trading_mode == "live":
+        budget_info = await _live_budget(request)
+        if budget_info is None:
+            # Fyers unavailable: fall back gracefully with zeros
+            budget_info = {"initial": 0, "current": 0, "cash": 0, "invested": 0, "utilization_pct": 0}
+        initial = budget_info["initial"]
+    else:
+        budget_raw = await redis_client.get("budget:state")
+        budget = json.loads(budget_raw) if budget_raw else {
+            "initial": 100000, "cash": 100000, "invested": 0
+        }
+        initial = budget.get("initial", 100000)
+        budget_info = {
+            "initial": initial,
+            "current": round(initial + total_pnl, 2),
+            "cash": round(budget.get("cash", 0), 2),
+            "invested": round(budget.get("invested", 0), 2),
+            "utilization_pct": round(budget.get("invested", 0) / initial * 100, 2) if initial else 0,
+        }
 
     # Trade stats
     trades_raw = await redis_client.zrevrange("trades:history", 0, -1)
@@ -81,13 +121,7 @@ async def get_pnl(
         "unrealized_pnl": round(unrealized_pnl, 2),
         "total_pnl": round(total_pnl, 2),
         "total_pnl_pct": round(total_pnl / initial * 100, 3) if initial else 0,
-        "budget": {
-            "initial": initial,
-            "current": round(initial + total_pnl, 2),
-            "cash": round(budget.get("cash", 0), 2),
-            "invested": round(budget.get("invested", 0), 2),
-            "utilization_pct": round(budget.get("invested", 0) / initial * 100, 2) if initial else 0,
-        },
+        "budget": budget_info,
         "win_rate": round(len(wins) / len(closed_trades), 3) if closed_trades else 0,
         "avg_win": round(sum(t.get("pnl", 0) for t in wins) / len(wins), 2) if wins else 0,
         "avg_loss": round(sum(t.get("pnl", 0) for t in losses) / len(losses), 2) if losses else 0,

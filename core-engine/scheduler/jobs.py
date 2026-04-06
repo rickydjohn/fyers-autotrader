@@ -96,23 +96,23 @@ async def _process_symbol(symbol: str, redis_client: aioredis.Redis) -> None:
 
     quote = get_quote(symbol)
     if not quote:
-        logger.warning(f"No quote for {symbol}, skipping")
+        logger.error(f"[SCAN SKIP] {symbol}: get_quote returned None — Fyers auth issue or symbol unsupported")
         return
 
     candles = get_historical_candles(symbol, interval="5m", limit=100)
     if len(candles) < 30:
-        logger.warning(f"Insufficient candles for {symbol}")
+        logger.error(f"[SCAN SKIP] {symbol}: only {len(candles)} candles returned (need 30) — insufficient Fyers history")
         return
 
     prev_ohlc = get_previous_day_ohlc(symbol)
     if not prev_ohlc:
-        logger.warning(f"No prev OHLC for {symbol}")
+        logger.error(f"[SCAN SKIP] {symbol}: get_previous_day_ohlc returned None — cannot compute CPR/pivots")
         return
 
     # Compute indicators
     cpr = calculate_cpr(prev_ohlc["high"], prev_ohlc["low"], prev_ohlc["close"])
     pivots = calculate_pivots(prev_ohlc["high"], prev_ohlc["low"], prev_ohlc["close"])
-    nearest = get_nearest_levels(quote["ltp"], pivots)
+    nearest = get_nearest_levels(quote["ltp"], pivots, prev_ohlc["high"], prev_ohlc["low"])
     rsi = calculate_rsi(candles)
     macd, macd_sig, macd_hist = calculate_macd(candles)
     ema_9 = calculate_ema(candles, 9)
@@ -131,6 +131,8 @@ async def _process_symbol(symbol: str, redis_client: aioredis.Redis) -> None:
         ema_9=ema_9,
         ema_21=ema_21,
         cpr_signal=cpr_signal,
+        prev_day_high=prev_ohlc["high"],
+        prev_day_low=prev_ohlc["low"],
         **nearest,
     )
 
@@ -189,6 +191,8 @@ async def _process_symbol(symbol: str, redis_client: aioredis.Redis) -> None:
         600,
         snapshot.model_dump_json(),
     )
+
+    logger.info(f"[SCAN OK] {symbol}: snapshot written to Redis (ltp={quote['ltp']})")
 
     # ── Fetch historical context and make LLM decision ────────────────────────
     historical_context = _context_cache.get(symbol)

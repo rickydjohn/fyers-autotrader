@@ -16,6 +16,7 @@ Time: {timestamp} IST
 CPR: BC=₹{bc:.2f}, TC=₹{tc:.2f}, Pivot=₹{pivot:.2f}
 CPR Width: {cpr_width_pct:.2f}% ({cpr_type})
 Price vs CPR: {cpr_signal}
+Previous Day: High=₹{prev_day_high:.2f} Low=₹{prev_day_low:.2f}
 Nearest Resistance: ₹{nearest_resistance:.2f} ({resistance_label})
 Nearest Support: ₹{nearest_support:.2f} ({support_label})
 RSI(14): {rsi:.1f}
@@ -33,6 +34,8 @@ Use ALL timeframe context above before deciding.
 - BUY if: price above CPR + RSI 45-65 + bullish/neutral sentiment + price above VWAP + 1h/daily trend not BEARISH
 - SELL if: price below CPR + RSI 35-55 + bearish/neutral sentiment + price below VWAP + 1h/daily trend not BULLISH
 - HOLD if: price inside CPR OR RSI extreme (>70 or <30) OR conflicting multi-timeframe signals
+- PDH breakout (price crossing above PDH) is a strong BUY signal; rejection at PDH is HOLD/SELL
+- PDL breakdown (price crossing below PDL) is a strong SELL signal; bounce at PDL is HOLD/BUY
 - Set stop_loss 0.3-0.5% below entry for BUY (above for SELL)
 - Set target for minimum 1.5:1 risk/reward ratio
 
@@ -56,6 +59,8 @@ def build_decision_prompt(
     pivot: float,
     cpr_width_pct: float,
     cpr_signal: str,
+    prev_day_high: float,
+    prev_day_low: float,
     nearest_resistance: float,
     resistance_label: str,
     nearest_support: float,
@@ -88,6 +93,8 @@ def build_decision_prompt(
         cpr_width_pct=cpr_width_pct,
         cpr_type=cpr_type,
         cpr_signal=cpr_signal,
+        prev_day_high=prev_day_high,
+        prev_day_low=prev_day_low,
         nearest_resistance=nearest_resistance,
         resistance_label=resistance_label,
         nearest_support=nearest_support,
