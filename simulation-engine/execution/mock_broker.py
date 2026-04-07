@@ -101,9 +101,8 @@ async def open_position(
 
     trade_value = entry_price * quantity
     commission = _calculate_commission(trade_value)
-    total_cost = trade_value + commission
 
-    if not await allocate(redis_client, total_cost):
+    if not await allocate(redis_client, trade_value, fee=commission):
         return None
 
     trade_id = str(uuid.uuid4())
@@ -221,7 +220,8 @@ async def close_position(
     else:
         gross_pnl = (pos.avg_price - exit_price_with_slip) * pos.quantity
 
-    net_pnl = gross_pnl - commission
+    # net_pnl for budget: entry commission already deducted from cash via allocate()
+    budget_pnl = gross_pnl - commission
     invested_amount = pos.avg_price * pos.quantity
 
     # Look up the open trade ID directly by underlying symbol (O(1), no mismatch)
@@ -236,11 +236,14 @@ async def close_position(
     await redis_client.hdel("trades:open_id", symbol)
 
     if trade:
+        entry_commission = trade.commission  # already stored at open time
+        # true net pnl = gross minus both entry and exit commissions
+        true_net_pnl = gross_pnl - commission - entry_commission
         trade.exit_price = exit_price_with_slip
         trade.exit_time = now
-        trade.pnl = round(net_pnl, 2)
-        trade.pnl_pct = round(net_pnl / invested_amount * 100, 3)
-        trade.commission += commission
+        trade.pnl = round(true_net_pnl, 2)
+        trade.pnl_pct = round(true_net_pnl / invested_amount * 100, 3)
+        trade.commission += commission  # total = entry + exit
         trade.slippage += abs(exit_price_with_slip - exit_price) * pos.quantity
         trade.status = status
         trade.exit_reason = exit_reason
@@ -277,13 +280,13 @@ async def close_position(
             "exit_reason":   trade.exit_reason,
         })
 
-    await release(redis_client, invested_amount, net_pnl)
+    await release(redis_client, invested_amount, budget_pnl)
     await redis_client.hdel("positions:open", symbol)
-    await _record_pnl_snapshot(redis_client, net_pnl)
+    await _record_pnl_snapshot(redis_client, budget_pnl)
 
     logger.info(
         f"CLOSED {pos.side} {pos.quantity}x{symbol} @ ₹{exit_price_with_slip:.2f} "
-        f"P&L=₹{net_pnl:+.2f} ({status})"
+        f"P&L=₹{budget_pnl:+.2f} ({status})"
     )
     return trade
 

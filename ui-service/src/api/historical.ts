@@ -1,5 +1,5 @@
 import { apiClient } from './client'
-import type { HistoricalCandle, ContextSnapshot, Timeframe } from '../types'
+import type { HistoricalCandle, ContextSnapshot, Timeframe, Decision } from '../types'
 
 export async function fetchHistoricalData(
   symbol: string,
@@ -37,5 +37,10 @@ export async function fetchDecisionHistory(
   if (symbol) params.symbol = symbol
   if (decisionType) params.decision_type = decisionType
   const res = await apiClient.get('/decision-history', { params })
-  return res.data
+  // Normalize: decision-history endpoint returns `time`, but Decision type uses `timestamp`
+  const decisions: Decision[] = (res.data.decisions ?? []).map((d: any) => ({
+    ...d,
+    timestamp: d.timestamp ?? d.time,
+  }))
+  return { ...res.data, decisions }
 }

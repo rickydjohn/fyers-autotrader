@@ -18,6 +18,7 @@ import { fetchPositions } from './api/positions'
 import { fetchSymbols } from './api/marketData'
 import { fetchHistoricalData, fetchAggregatedView, fetchContextSnapshot, fetchDecisionHistory } from './api/historical'
 import type { Timeframe, HistoricalCandle, ContextSnapshot, Decision } from './types'
+import { parseDate } from './utils/date'
 
 const SYMBOLS = ['NSE:NIFTY50-INDEX', 'NSE:NIFTYBANK-INDEX']
 const MARKET_OPEN_MINUTES = 9 * 60 + 15
@@ -145,8 +146,8 @@ export default function App() {
   const todayTrades = useMemo(() => {
     const today = new Date().toDateString()
     return trades
-      .filter((t) => new Date(t.entry_time).toDateString() === today)
-      .sort((a, b) => new Date(a.entry_time).getTime() - new Date(b.entry_time).getTime())
+      .filter((t) => parseDate(t.entry_time).toDateString() === today)
+      .sort((a, b) => parseDate(a.entry_time).getTime() - parseDate(b.entry_time).getTime())
   }, [trades])
 
   // Use live 5m candles when available, otherwise fall back to historical

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Badge } from '../shared/Badge'
 import type { Position, Trade } from '../../types'
+import { parseDate } from '../../utils/date'
 
 interface Props {
   positions: Position[]
@@ -191,7 +192,7 @@ function TradesView({ trades }: { trades: Trade[] }) {
                   ? 'text-emerald-400'
                   : 'text-red-400'
               const symbol = (trade.option_symbol ?? trade.symbol).replace('NSE:', '')
-              const entryTime = new Date(trade.entry_time).toLocaleTimeString('en-IN', {
+              const entryTime = parseDate(trade.entry_time).toLocaleTimeString('en-IN', {
                 hour: '2-digit', minute: '2-digit', hour12: false,
               })
 

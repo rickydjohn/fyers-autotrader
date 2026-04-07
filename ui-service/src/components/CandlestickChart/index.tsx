@@ -7,6 +7,7 @@ import {
   type CandlestickSeriesOptions,
 } from 'lightweight-charts'
 import type { OHLCBar, Trade } from '../../types'
+import { parseDate } from '../../utils/date'
 
 interface Props {
   candles: OHLCBar[]
@@ -134,7 +135,7 @@ export function CandlestickChart({ candles, trades = [], height = 400, cprLevels
       const markers = trades
         .filter((t) => t.entry_time)
         .map((t) => ({
-          time: Math.floor(new Date(t.entry_time).getTime() / 1000) as any,
+          time: Math.floor(parseDate(t.entry_time).getTime() / 1000) as any,
           position: t.side === 'BUY' ? 'belowBar' as const : 'aboveBar' as const,
           color: t.side === 'BUY' ? '#3fb950' : '#f85149',
           shape: t.side === 'BUY' ? 'arrowUp' as const : 'arrowDown' as const,

@@ -1,4 +1,5 @@
 import type { Decision } from '../../types'
+import { parseDate } from '../../utils/date'
 
 interface Props {
   decisions: Decision[]
@@ -37,7 +38,7 @@ export function DecisionTimeline({ decisions }: Props) {
   return (
     <div className="space-y-1 max-h-80 overflow-y-auto">
       {decisions.map((d) => {
-        const ts = new Date(d.timestamp)
+        const ts = parseDate(d.timestamp)
         const timeStr = ts.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false })
         const dateStr = ts.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })
         return (

@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import { format } from 'date-fns'
 import { Badge } from '../shared/Badge'
 import type { Decision } from '../../types'
+import { parseDate } from '../../utils/date'
 
 interface Props {
   decisions: Decision[]
@@ -51,7 +52,7 @@ function DecisionCard({ decision: d }: { decision: Decision }) {
         </div>
         <div className="text-right shrink-0">
           <div className="text-xs text-gray-500">
-            {format(new Date(d.timestamp), 'HH:mm:ss')}
+            {format(parseDate(d.timestamp), 'HH:mm:ss')}
           </div>
           <div className="text-xs font-mono text-gray-400">
             {(d.confidence * 100).toFixed(0)}% conf

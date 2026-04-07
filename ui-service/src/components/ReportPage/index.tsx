@@ -5,6 +5,7 @@ import {
 import { fetchMonthReport, type MonthReport } from '../../api/report'
 import type { Trade } from '../../types'
 import { Badge } from '../shared/Badge'
+import { parseDate } from '../../utils/date'
 
 const REASON_COLORS: Record<string, string> = {
   TRAIL_STOP:    '#10b981', // emerald
@@ -238,10 +239,11 @@ function TradeTable({ trades }: { trades: Trade[] }) {
               const rowBg = profit ? 'bg-emerald-950/20' : 'bg-red-950/20'
               const pnlColor = profit ? 'text-emerald-400' : 'text-red-400'
               const symbol = (t.option_symbol ?? t.symbol).replace('NSE:', '')
-              const date = new Date(t.entry_time).toLocaleDateString('en-IN', {
+              const entryTs = parseDate(t.entry_time)
+              const date = entryTs.toLocaleDateString('en-IN', {
                 day: '2-digit', month: 'short',
               })
-              const entryTime = new Date(t.entry_time).toLocaleTimeString('en-IN', {
+              const entryTime = entryTs.toLocaleTimeString('en-IN', {
                 hour: '2-digit', minute: '2-digit', hour12: false,
               })
               return (

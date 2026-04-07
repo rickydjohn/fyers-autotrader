@@ -64,12 +64,18 @@ async def _refresh_news(redis_client: aioredis.Redis) -> None:
     logger.info("Refreshing news feeds...")
     items = await get_all_news()
 
-    # Deduplicate against the previous cycle: only persist headlines we haven't
-    # seen before.  Comparison is on normalised title so minor whitespace/case
-    # differences in repeated RSS entries are also caught.
+    # Build seen_titles from either the in-memory cache (fast path, normal operation)
+    # or from a recent Redis snapshot of persisted titles (after a restart when
+    # _news_cache is None).  This prevents re-inserting the full feed on every restart.
     seen_titles: set = set()
     if _news_cache:
         seen_titles = {i.title.strip().lower() for i in _news_cache.items}
+    else:
+        # Seed from Redis key written on last successful persist cycle
+        cached_raw = await redis_client.get("news:seen_titles")
+        if cached_raw:
+            import json as _json
+            seen_titles = set(_json.loads(cached_raw))
 
     new_items = [i for i in items if i.title.strip().lower() not in seen_titles]
 
@@ -79,6 +85,11 @@ async def _refresh_news(redis_client: aioredis.Redis) -> None:
         3600,
         _news_cache.model_dump_json(),
     )
+
+    # Persist a snapshot of all current titles so the next restart can seed from it
+    all_titles = [i.title.strip().lower() for i in items]
+    await redis_client.setex("news:seen_titles", 3600 * 12, __import__("json").dumps(all_titles))
+
     logger.info(
         f"News refreshed: {len(items)} total, {len(new_items)} new, "
         f"sentiment={_news_cache.label}"

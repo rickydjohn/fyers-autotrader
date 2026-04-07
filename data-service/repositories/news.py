@@ -18,14 +18,34 @@ IST = pytz.timezone("Asia/Kolkata")
 
 
 async def insert_news_batch(db: AsyncSession, items: List[Dict[str, Any]]) -> int:
-    """Insert news items, skip duplicates by title+time."""
+    """Insert news items, skipping titles already stored in the last 48 hours."""
     if not items:
         return 0
-    stmt = insert(NewsItem).values(items)
-    stmt = stmt.on_conflict_do_nothing()
-    result = await db.execute(stmt)
+
+    # Deduplicate within the incoming batch itself first
+    seen_in_batch: set = set()
+    unique_items = []
+    for item in items:
+        key = item["title"].strip().lower()
+        if key not in seen_in_batch:
+            seen_in_batch.add(key)
+            unique_items.append(item)
+
+    # Then filter against what's already in the DB
+    cutoff = datetime.now(IST) - timedelta(hours=48)
+    existing = await db.execute(
+        select(NewsItem.title).where(
+            NewsItem.time >= cutoff,
+            func.lower(func.trim(NewsItem.title)).in_(list(seen_in_batch)),
+        )
+    )
+    seen_in_db = {row[0].strip().lower() for row in existing}
+    new_items = [i for i in unique_items if i["title"].strip().lower() not in seen_in_db]
+    if not new_items:
+        return 0
+    await db.execute(insert(NewsItem).values(new_items))
     await db.commit()
-    return result.rowcount
+    return len(new_items)
 
 
 async def get_news_sentiment_summary(
