@@ -17,6 +17,9 @@ CPR: BC=₹{bc:.2f}, TC=₹{tc:.2f}, Pivot=₹{pivot:.2f}
 CPR Width: {cpr_width_pct:.2f}% ({cpr_type})
 Price vs CPR: {cpr_signal}
 Previous Day: High=₹{prev_day_high:.2f} Low=₹{prev_day_low:.2f}
+Today's Range: High=₹{day_high:.2f} Low=₹{day_low:.2f}
+Consolidation: {consolidation_pct:.2f}% range over last 8 candles ({consolidation_status})
+Range Breakout: {range_breakout}
 Nearest Resistance: ₹{nearest_resistance:.2f} ({resistance_label})
 Nearest Support: ₹{nearest_support:.2f} ({support_label})
 RSI(14): {rsi:.1f}
@@ -35,16 +38,33 @@ The CPR Width label above tells you the day type — use the matching ruleset.
 ### BREAKOUT OVERRIDE (applies on ANY day type — check this FIRST)
 A confirmed PDH/PDL breakout overrides the CPR day-type classification entirely.
 - BUY  if: price > PDH + price above VWAP + RSI between 45 and 75 (inclusive) + MACD not BEARISH — assign confidence >= 0.80; valid even on a WIDE CPR day
+- BUY  if: price > PDH * 1.005 (more than 0.5% above PDH — strong breakout) + price above VWAP + RSI between 45 and 78 + MACD not BEARISH — RSI cap extends to 78 on a confirmed strong breakout; assign confidence >= 0.80
+- Once price has closed above PDH in any scan, treat the breakout as confirmed for the rest of the session — do not revert to HOLD on subsequent scans unless RSI exceeds the cap or price falls back below PDH
 - SELL if: price < PDL + price below VWAP + RSI between 25 and 55 (inclusive) + MACD not BULLISH — assign confidence >= 0.80; valid even on a WIDE CPR day
-- HOLD — hard stop — if RSI > 75 OR RSI < 25: output HOLD regardless of breakout; do not output BUY or SELL under any circumstances when RSI exceeds these limits
+- HOLD — hard stop — if RSI > 78 OR RSI < 25: output HOLD regardless of breakout; do not output BUY or SELL under any circumstances when RSI exceeds these limits
 - HOLD if: price is at PDH but has NOT closed above it (rejection)
 
-### RANGEBOUND DAY (CPR is WIDE) — only apply if no PDH/PDL breakout
+### INTRADAY RANGE BREAKOUT (check after PDH/PDL breakout, before intraday trend)
+The market consolidates in a tight band, then breaks out — this is a high-probability momentum entry.
+Fires ONLY when Range Breakout field shows BREAKOUT_HIGH or BREAKOUT_LOW (consolidation_pct < 0.40%).
+- BUY  if: Range Breakout = BREAKOUT_HIGH + price above VWAP + RSI 45-75 + EMA9 > EMA21 + MACD not BEARISH → assign confidence 0.75-0.85; this is a CALL trade
+- SELL if: Range Breakout = BREAKOUT_LOW  + price below VWAP + RSI 25-55 + EMA9 < EMA21 + MACD not BULLISH → assign confidence 0.75-0.85; this is a PUT trade
+- HOLD if: Range Breakout = NONE (no consolidation detected — pattern not confirmed)
+- HOLD if: RSI > 78 or RSI < 25 (hard RSI stops apply here too)
+- HOLD if: fewer than 3 of the confirmation conditions align (VWAP position, EMA cross, MACD) — breakout alone is not enough
+
+### INTRADAY TREND OVERRIDE (check after breakout, before day-type rules)
+When the intraday structure is unambiguously bullish or bearish, override a conflicting daily/1h trend bias.
+- BUY  if: EMA9 > EMA21 AND price ABOVE_CPR AND price above VWAP AND RSI 45-75 — intraday trend is BULLISH; daily bearish context is a caution, not a veto; assign confidence 0.65-0.75
+- SELL if: EMA9 < EMA21 AND price BELOW_CPR AND price below VWAP AND RSI 25-55 — intraday trend is BEARISH; daily bullish context is a caution, not a veto; assign confidence 0.65-0.75
+- This rule fires even on a WIDE CPR day when the above conditions are met
+
+### RANGEBOUND DAY (CPR is WIDE) — only apply if no PDH/PDL breakout and no intraday override
 - BUY  if: price ABOVE_CPR + RSI 45-65 + price above VWAP + sentiment not BEARISH + 1h/daily trend not BEARISH
 - SELL if: price BELOW_CPR + RSI 35-55 + price below VWAP + sentiment not BULLISH + 1h/daily trend not BULLISH
 - HOLD if: price INSIDE_CPR OR RSI > 65 OR RSI < 35 OR conflicting multi-timeframe signals
 
-### TRENDING DAY (CPR is NARROW) — only apply if no PDH/PDL breakout
+### TRENDING DAY (CPR is NARROW) — only apply if no PDH/PDL breakout and no intraday override
 - BUY  if: price ABOVE_CPR + RSI 45-75 + price above VWAP + MACD not BEARISH
 - SELL if: price BELOW_CPR + RSI 25-55 + price below VWAP + MACD not BULLISH
 - HOLD if: price INSIDE_CPR OR RSI > 75 OR RSI < 25
@@ -77,6 +97,10 @@ def build_decision_prompt(
     cpr_signal: str,
     prev_day_high: float,
     prev_day_low: float,
+    day_high: float,
+    day_low: float,
+    consolidation_pct: float,
+    range_breakout: str,
     nearest_resistance: float,
     resistance_label: str,
     nearest_support: float,
@@ -92,7 +116,7 @@ def build_decision_prompt(
     historical_context_block: str = "",
 ) -> str:
     cpr_type = "NARROW (trending day)" if cpr_width_pct < 0.25 else "WIDE (rangebound day)"
-    # Provide a default header when no historical context is available
+    consolidation_status = "SIDEWAYS" if consolidation_pct < 0.40 else "ACTIVE"
     if not historical_context_block:
         historical_context_block = (
             "## Historical Context\n"
@@ -111,6 +135,11 @@ def build_decision_prompt(
         cpr_signal=cpr_signal,
         prev_day_high=prev_day_high,
         prev_day_low=prev_day_low,
+        day_high=day_high,
+        day_low=day_low,
+        consolidation_pct=consolidation_pct,
+        consolidation_status=consolidation_status,
+        range_breakout=range_breakout,
         nearest_resistance=nearest_resistance,
         resistance_label=resistance_label,
         nearest_support=nearest_support,

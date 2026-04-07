@@ -1,0 +1,175 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Release pipeline — triggered on every push to main.
+#
+# Versioning follows Conventional Commits:
+#   feat!: / BREAKING CHANGE  →  MAJOR  (1.x.x → 2.0.0)
+#   feat:                     →  MINOR  (x.1.x → x.2.0)
+#   fix: / chore: / etc.      →  PATCH  (x.x.1 → x.x.2)
+#   No conventional prefix    →  skipped (no release)
+#
+# On a version bump:
+#   1. Tag the commit with the new semver tag (vX.Y.Z)
+#   2. Build all 5 service images → ghcr.io/rickydjohn/fyers-autotrader/<svc>:vX.Y.Z + :latest
+#   3. Package the Helm chart and push → oci://ghcr.io/rickydjohn/fyers-autotrader/charts
+#   4. Create a GitHub Release with auto-generated changelog
+# ──────────────────────────────────────────────────────────────────────────────
+
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write   # create tags + GitHub releases
+  packages: write   # push images + charts to GHCR
+
+jobs:
+  # ── Step 1: Bump version and create git tag ──────────────────────────────────
+  version:
+    name: Bump version
+    runs-on: ubuntu-latest
+    outputs:
+      new_tag: ${{ steps.tag.outputs.new_tag }}
+      changelog: ${{ steps.tag.outputs.changelog }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history so tag-action can walk commits
+
+      - name: Bump version from commit messages
+        id: tag
+        uses: mathieudutour/github-tag-action@v6.2
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          # Only create a tag when commit follows conventional-commits spec.
+          # Ordinary commits (no prefix) produce no tag → downstream jobs skip.
+          default_bump: false
+          release_branches: main
+          tag_prefix: "v"
+
+  # ── Step 2: Build and push Docker images ─────────────────────────────────────
+  build:
+    name: Build ${{ matrix.service.name }}
+    needs: version
+    if: needs.version.outputs.new_tag != ''
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - name: core-engine
+            context: ./core-engine
+          - name: simulation-engine
+            context: ./simulation-engine
+          - name: api-service
+            context: ./api-service
+          - name: data-service
+            context: ./data-service
+          - name: ui-service
+            context: ./ui-service
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push ${{ matrix.service.name }}
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.service.context }}
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}/${{ matrix.service.name }}:${{ needs.version.outputs.new_tag }}
+            ghcr.io/${{ github.repository }}/${{ matrix.service.name }}:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ needs.version.outputs.new_tag }}
+          # Layer cache keyed per service so parallel jobs don't compete
+          cache-from: type=gha,scope=${{ matrix.service.name }}
+          cache-to: type=gha,scope=${{ matrix.service.name }},mode=max
+
+  # ── Step 3: Package and push Helm chart to GHCR OCI ─────────────────────────
+  helm-release:
+    name: Release Helm chart
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    env:
+      CHART_DIR: helm/fyers-autotrader
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: "3.14.0"
+
+      - name: Log in to GHCR (Helm OCI)
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+            helm registry login ghcr.io \
+              --username "${{ github.actor }}" \
+              --password-stdin
+
+      - name: Stamp chart version
+        run: |
+          # Helm chart versions must not carry a 'v' prefix
+          VERSION="${{ needs.version.outputs.new_tag }}"
+          CHART_VER="${VERSION#v}"
+
+          sed -i "s/^version:.*/version: ${CHART_VER}/" "${CHART_DIR}/Chart.yaml"
+          sed -i "s/^appVersion:.*/appVersion: \"${VERSION}\"/" "${CHART_DIR}/Chart.yaml"
+
+          # Also stamp the default imageTag in values so the chart is self-contained
+          sed -i "s/^  tag:.*/  tag: \"${VERSION}\"/" "${CHART_DIR}/values.yaml"
+
+          echo "Chart stamped: version=${CHART_VER}, appVersion=${VERSION}"
+
+      - name: Package Helm chart
+        run: helm package "${CHART_DIR}" --destination /tmp/helm-charts
+
+      - name: Push chart to GHCR
+        run: |
+          helm push /tmp/helm-charts/fyers-autotrader-*.tgz \
+            oci://ghcr.io/${{ github.repository_owner }}/fyers-autotrader/charts
+
+  # ── Step 4: Create GitHub Release with changelog ─────────────────────────────
+  github-release:
+    name: GitHub Release
+    needs: [version, helm-release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.version.outputs.new_tag }}
+          name: "Release ${{ needs.version.outputs.new_tag }}"
+          body: |
+            ${{ needs.version.outputs.changelog }}
+
+            ---
+            ### Docker images
+            ```
+            ghcr.io/${{ github.repository }}/core-engine:${{ needs.version.outputs.new_tag }}
+            ghcr.io/${{ github.repository }}/simulation-engine:${{ needs.version.outputs.new_tag }}
+            ghcr.io/${{ github.repository }}/api-service:${{ needs.version.outputs.new_tag }}
+            ghcr.io/${{ github.repository }}/data-service:${{ needs.version.outputs.new_tag }}
+            ghcr.io/${{ github.repository }}/ui-service:${{ needs.version.outputs.new_tag }}
+            ```
+            ### Helm chart
+            ```bash
+            helm upgrade --install fyers-autotrader \
+              oci://ghcr.io/${{ github.repository_owner }}/fyers-autotrader/charts/fyers-autotrader \
+              --version ${{ needs.version.outputs.new_tag }}
+            ```
+          generate_release_notes: false

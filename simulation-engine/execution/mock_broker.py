@@ -150,6 +150,10 @@ async def open_position(
         "option_expiry": trade.option_expiry,
     })
 
+    # Mark the source decision as acted upon for traceability
+    if decision_id:
+        await data_client.mark_decision_acted(decision_id, trade_id)
+
     label = f"{option_symbol} (strike ₹{option_strike})" if option_symbol else trade_symbol
     logger.info(
         f"OPENED {side} {quantity}x{label} @ ₹{entry_price:.2f} "

@@ -115,6 +115,10 @@ async def make_decision(
         cpr_signal=ind.cpr_signal,
         prev_day_high=ind.prev_day_high,
         prev_day_low=ind.prev_day_low,
+        day_high=ind.day_high,
+        day_low=ind.day_low,
+        consolidation_pct=ind.consolidation_pct,
+        range_breakout=ind.range_breakout,
         nearest_resistance=ind.nearest_resistance,
         resistance_label=ind.nearest_resistance_label,
         nearest_support=ind.nearest_support,
@@ -141,6 +145,21 @@ async def make_decision(
         return None
 
     validated = _validate_decision(parsed, snapshot.ltp)
+
+    # Hard MACD filter — LLM cannot override momentum direction
+    # A SELL with BULLISH MACD or BUY with BEARISH MACD is contradictory
+    if validated["decision"] == "SELL" and macd_label == "BULLISH":
+        validated["confidence"] = max(0.0, validated["confidence"] - 0.15)
+        if validated["confidence"] < 0.5:
+            validated["decision"] = "HOLD"
+            validated["reasoning"] = f"[MACD override: BULLISH MACD contradicts SELL] {validated['reasoning']}"
+            logger.info(f"SELL overridden to HOLD for {snapshot.symbol} — MACD is BULLISH")
+    elif validated["decision"] == "BUY" and macd_label == "BEARISH":
+        validated["confidence"] = max(0.0, validated["confidence"] - 0.15)
+        if validated["confidence"] < 0.5:
+            validated["decision"] = "HOLD"
+            validated["reasoning"] = f"[MACD override: BEARISH MACD contradicts BUY] {validated['reasoning']}"
+            logger.info(f"BUY overridden to HOLD for {snapshot.symbol} — MACD is BEARISH")
 
     # Resolve ATM option for actionable decisions
     option_symbol = option_type = option_expiry = None
@@ -191,6 +210,10 @@ async def make_decision(
             "ema_21": ind.ema_21,
             "macd_signal": macd_label,
             "sentiment_score": snapshot.news.aggregate_score if snapshot.news else 0.0,
+            "day_high": ind.day_high,
+            "day_low": ind.day_low,
+            "consolidation_pct": ind.consolidation_pct,
+            "range_breakout": ind.range_breakout,
         },
     )
 

@@ -22,6 +22,8 @@ from models.schemas import OHLCBar
 from indicators.cpr import calculate_cpr, get_cpr_signal
 from indicators.pivots import calculate_pivots, get_nearest_levels
 from indicators.technicals import (
+    calculate_consolidation,
+    calculate_day_range,
     calculate_ema,
     calculate_macd,
     calculate_rsi,
@@ -57,26 +59,40 @@ async def _refresh_news(redis_client: aioredis.Redis) -> None:
     global _news_cache
     logger.info("Refreshing news feeds...")
     items = await get_all_news()
-    _news_cache = analyze_sentiment(items)
+
+    # Deduplicate against the previous cycle: only persist headlines we haven't
+    # seen before.  Comparison is on normalised title so minor whitespace/case
+    # differences in repeated RSS entries are also caught.
+    seen_titles: set = set()
+    if _news_cache:
+        seen_titles = {i.title.strip().lower() for i in _news_cache.items}
+
+    new_items = [i for i in items if i.title.strip().lower() not in seen_titles]
+
+    _news_cache = analyze_sentiment(items)   # sentiment always uses full set
     await redis_client.setex(
         "news:sentiment",
         3600,
         _news_cache.model_dump_json(),
     )
-    logger.info(f"News refreshed: {len(items)} items, sentiment={_news_cache.label}")
+    logger.info(
+        f"News refreshed: {len(items)} total, {len(new_items)} new, "
+        f"sentiment={_news_cache.label}"
+    )
 
-    # Persist news to data-service
-    news_payload = [
-        {
-            "time": item.published_at.isoformat(),
-            "title": item.title,
-            "summary": item.summary,
-            "source": item.source,
-            "sentiment_score": item.sentiment_score,
-        }
-        for item in _news_cache.items
-    ]
-    await data_client.persist_news_batch(news_payload)
+    # Persist only the genuinely new headlines to data-service
+    if new_items:
+        news_payload = [
+            {
+                "time": item.published_at.isoformat(),
+                "title": item.title,
+                "summary": item.summary,
+                "source": item.source,
+                "sentiment_score": item.sentiment_score,
+            }
+            for item in new_items
+        ]
+        await data_client.persist_news_batch(news_payload)
 
 
 async def refresh_context_cache(symbol: str) -> None:
@@ -120,6 +136,20 @@ async def _process_symbol(symbol: str, redis_client: aioredis.Redis) -> None:
     vwap = calculate_vwap(candles)
     cpr_signal = get_cpr_signal(quote["ltp"], cpr)
 
+    # Intraday range breakout detection
+    day_high, day_low = calculate_day_range(candles)
+    consolidation_pct, consol_high, consol_low = calculate_consolidation(candles)
+    ltp = quote["ltp"]
+    # Require price to clear the band by at least 0.05% to avoid noise breakouts
+    BREAKOUT_BUFFER = 0.0005
+    is_consolidating = consolidation_pct < 0.40
+    if is_consolidating and ltp > consol_high * (1 + BREAKOUT_BUFFER):
+        range_breakout = "BREAKOUT_HIGH"
+    elif is_consolidating and ltp < consol_low * (1 - BREAKOUT_BUFFER):
+        range_breakout = "BREAKOUT_LOW"
+    else:
+        range_breakout = "NONE"
+
     indicators = TechnicalIndicators(
         cpr=cpr,
         pivots=pivots,
@@ -133,6 +163,10 @@ async def _process_symbol(symbol: str, redis_client: aioredis.Redis) -> None:
         cpr_signal=cpr_signal,
         prev_day_high=prev_ohlc["high"],
         prev_day_low=prev_ohlc["low"],
+        day_high=day_high,
+        day_low=day_low,
+        consolidation_pct=consolidation_pct,
+        range_breakout=range_breakout,
         **nearest,
     )
 

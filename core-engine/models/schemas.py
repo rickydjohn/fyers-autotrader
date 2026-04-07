@@ -47,6 +47,11 @@ class TechnicalIndicators(BaseModel):
     nearest_support_label: str
     prev_day_high: float = 0.0
     prev_day_low: float = 0.0
+    # Intraday range breakout indicators
+    day_high: float = 0.0          # highest point reached today (intraday)
+    day_low: float = 0.0           # lowest point reached today (intraday)
+    consolidation_pct: float = 0.0 # range% of last 8 candles; < 0.40 = sideways
+    range_breakout: Literal["BREAKOUT_HIGH", "BREAKOUT_LOW", "NONE"] = "NONE"
 
 
 class NewsItem(BaseModel):

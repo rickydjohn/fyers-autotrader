@@ -136,6 +136,27 @@ async def ingest_trade(payload: TradeIn, db: AsyncSession = Depends(get_db)):
     return {"status": "ok"}
 
 
+@router.patch("/decision/{decision_id}/acted")
+async def mark_decision_acted(
+    decision_id: str,
+    trade_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Mark a decision as acted upon and link the resulting trade_id."""
+    from sqlalchemy import text
+    result = await db.execute(
+        text(
+            "UPDATE ai_decisions SET acted_upon = true, trade_id = :trade_id "
+            "WHERE decision_id = :decision_id"
+        ),
+        {"decision_id": decision_id, "trade_id": trade_id},
+    )
+    await db.commit()
+    if result.rowcount == 0:
+        raise HTTPException(status_code=404, detail="decision_id not found")
+    return {"status": "ok", "decision_id": decision_id, "trade_id": trade_id}
+
+
 @router.post("/news")
 async def ingest_news(payload: List[NewsItemIn], db: AsyncSession = Depends(get_db)):
     items = [n.model_dump() for n in payload]
