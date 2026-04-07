@@ -18,6 +18,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from config import settings
 from fyers.market_data import get_historical_candles, get_historical_candles_daterange, get_previous_day_ohlc, get_quote
+from fyers.greeks import get_option_quote_with_greeks
 from models.schemas import OHLCBar
 from indicators.cpr import calculate_cpr, get_cpr_signal
 from indicators.pivots import calculate_pivots, get_nearest_levels
@@ -29,6 +30,7 @@ from indicators.technicals import (
     calculate_rsi,
     calculate_vwap,
 )
+from indicators.historical_sr import compute_sr_levels, format_sr_for_prompt
 from llm.decision import make_decision
 from models.schemas import MarketSnapshot, NewsSentiment, TechnicalIndicators
 from news.scraper import get_all_news
@@ -41,6 +43,8 @@ IST = pytz.timezone("Asia/Kolkata")
 _news_cache: Optional[NewsSentiment] = None
 # Per-symbol historical context cache (refreshed at start of day)
 _context_cache: dict = {}
+# Per-symbol SR level cache (refreshed on bootstrap + weekly)
+_sr_cache: dict = {}   # symbol -> List[dict]
 
 
 def _is_market_open() -> bool:
@@ -230,7 +234,8 @@ async def _process_symbol(symbol: str, redis_client: aioredis.Redis) -> None:
 
     # ── Fetch historical context and make LLM decision ────────────────────────
     historical_context = _context_cache.get(symbol)
-    await make_decision(snapshot, redis_client, historical_context=historical_context)
+    sr_levels = _sr_cache.get(symbol, [])
+    await make_decision(snapshot, redis_client, historical_context=historical_context, sr_levels=sr_levels)
 
 
 async def _refresh_open_option_prices(redis_client: aioredis.Redis) -> None:
@@ -251,6 +256,63 @@ async def _refresh_open_option_prices(redis_client: aioredis.Redis) -> None:
                 )
         except Exception as e:
             logger.debug(f"Option price refresh failed for position: {e}")
+
+
+async def _fast_position_watcher(redis_client: aioredis.Redis) -> None:
+    """
+    High-frequency price + Greeks refresh for open positions.
+    Runs every POSITION_WATCHER_INTERVAL_SECONDS (default 10s).
+    No-op when the market is closed or no positions are open — zero overhead.
+
+    Writes underlying and option prices with a 30s TTL so stale data is never
+    silently used by the simulation-engine exit checker.  Greeks are stored
+    separately under greeks:{option_symbol} for the exit-rules engine.
+    """
+    if not _is_market_open():
+        return
+
+    positions_raw = await redis_client.hgetall("positions:open")
+    if not positions_raw:
+        return
+
+    for symbol, pos_data in positions_raw.items():
+        try:
+            pos = json.loads(pos_data)
+
+            # 1. Refresh underlying LTP with short TTL.
+            # Write to ltp:{symbol} (NOT market:{symbol}) so we don't overwrite the
+            # full market snapshot (indicators, candles, etc.) that the full scan
+            # writes every 300s.  The simulation-engine reads ltp:{symbol} first.
+            q = get_quote(symbol)
+            if q and q.get("ltp"):
+                await redis_client.setex(
+                    f"ltp:{symbol}",
+                    30,
+                    json.dumps({
+                        "ltp":    q["ltp"],
+                        "symbol": symbol,
+                        "high":   q.get("high", 0),
+                        "low":    q.get("low", 0),
+                    }),
+                )
+
+            # 2. Refresh option LTP + Greeks with short TTL
+            opt_sym = pos.get("option_symbol")
+            if opt_sym:
+                gq = get_option_quote_with_greeks(opt_sym)
+                if gq:
+                    await redis_client.setex(
+                        f"market:{opt_sym}",
+                        30,
+                        json.dumps({"ltp": gq["ltp"], "symbol": opt_sym}),
+                    )
+                    await redis_client.setex(
+                        f"greeks:{opt_sym}",
+                        30,
+                        json.dumps(gq),
+                    )
+        except Exception as e:
+            logger.debug(f"Fast position watcher error for {symbol}: {e}")
 
 
 async def run_market_scan(redis_client: aioredis.Redis) -> None:
@@ -295,6 +357,98 @@ def _chunked_historical_bars(
     for b in all_bars:
         by_ts[b.timestamp] = b
     return sorted(by_ts.values(), key=lambda x: x.timestamp)
+
+
+async def _load_sr_cache(symbol: str, redis_client: aioredis.Redis) -> None:
+    """Load SR levels from Redis into _sr_cache (fast path used by each scan)."""
+    global _sr_cache
+    raw = await redis_client.get(f"sr:levels:{symbol}")
+    if raw:
+        import json as _json
+        _sr_cache[symbol] = _json.loads(raw)
+    else:
+        # Fallback: fetch from data-service and re-cache
+        levels = await data_client.fetch_sr_levels(symbol)
+        if levels:
+            _sr_cache[symbol] = levels
+            import json as _json
+            await redis_client.setex(f"sr:levels:{symbol}", 86400, _json.dumps(levels, default=str))
+
+
+async def bootstrap_daily_ohlcv(
+    symbol: str,
+    redis_client: aioredis.Redis,
+    years: int = 5,
+) -> Dict[str, Any]:
+    """
+    Pull `years` of daily OHLCV from Fyers, store in daily_ohlcv (permanent table),
+    compute historical S/R levels, persist them, and cache in Redis.
+
+    Fyers limits daily candle requests to 365 days per call — chunked automatically.
+    """
+    global _sr_cache
+    logger.info(f"Bootstrapping {years}yr daily OHLCV for {symbol}...")
+
+    candles = _chunked_historical_bars(
+        symbol=symbol,
+        interval="1d",
+        lookback_days=years * 365,
+        max_chunk_days=365,
+    )
+    if not candles:
+        logger.warning(f"No daily candles returned for {symbol}")
+        return {"symbol": symbol, "daily_bars": 0, "sr_levels": 0}
+
+    bars = [
+        {
+            "date":   c.timestamp.strftime("%Y-%m-%d"),
+            "symbol": symbol,
+            "open":   c.open,
+            "high":   c.high,
+            "low":    c.low,
+            "close":  c.close,
+            "volume": c.volume,
+        }
+        for c in candles
+    ]
+    await data_client.persist_daily_ohlcv_batch(bars)
+    logger.info(f"Persisted {len(bars)} daily bars for {symbol}")
+
+    # Compute S/R levels from the full bar set
+    sr_levels = compute_sr_levels(bars, symbol=symbol)
+    if sr_levels:
+        sr_payload = [
+            {
+                "level":      z["level"],
+                "level_type": z["level_type"],
+                "strength":   z["strength"],
+                "first_seen": str(z["first_seen"]) if z.get("first_seen") else None,
+                "last_seen":  str(z["last_seen"])  if z.get("last_seen")  else None,
+            }
+            for z in sr_levels
+        ]
+        await data_client.persist_sr_levels(symbol, sr_payload)
+
+        # Cache in Redis (24h TTL; refreshed weekly by scheduler)
+        import json as _json
+        await redis_client.setex(
+            f"sr:levels:{symbol}",
+            86400,
+            _json.dumps(sr_payload, default=str),
+        )
+        _sr_cache[symbol] = sr_payload
+        logger.info(f"Computed and cached {len(sr_levels)} S/R levels for {symbol}")
+
+    return {"symbol": symbol, "daily_bars": len(bars), "sr_levels": len(sr_levels)}
+
+
+async def _refresh_sr_levels(redis_client: aioredis.Redis) -> None:
+    """Weekly job: re-pull the latest daily bar and recompute SR levels."""
+    for symbol in settings.symbols:
+        try:
+            await bootstrap_daily_ohlcv(symbol, redis_client)
+        except Exception as e:
+            logger.warning(f"SR level refresh failed for {symbol}: {e}")
 
 
 async def bootstrap_historical_data(
@@ -367,6 +521,14 @@ def create_scheduler(redis_client: aioredis.Redis) -> AsyncIOScheduler:
     )
 
     scheduler.add_job(
+        _fast_position_watcher,
+        "interval",
+        seconds=settings.position_watcher_interval_seconds,
+        args=[redis_client],
+        id="fast_position_watcher",
+    )
+
+    scheduler.add_job(
         _refresh_news,
         "interval",
         minutes=15,
@@ -381,6 +543,17 @@ def create_scheduler(redis_client: aioredis.Redis) -> AsyncIOScheduler:
         minutes=5,
         args=[redis_client],
         id="context_refresh",
+    )
+
+    # Recompute historical S/R levels every Sunday at 08:00 IST (pre-market week prep)
+    scheduler.add_job(
+        _refresh_sr_levels,
+        "cron",
+        day_of_week="sun",
+        hour=8,
+        minute=0,
+        args=[redis_client],
+        id="sr_levels_weekly",
     )
 
     return scheduler

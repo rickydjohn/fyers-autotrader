@@ -16,6 +16,11 @@ class Position(BaseModel):
     option_strike: Optional[int] = None
     option_type: Optional[str] = None      # CE or PE
     option_expiry: Optional[str] = None    # ISO date
+    # Exit-rules support
+    entry_option_price: float = 0.0        # option premium at open (for drawdown %)
+    peak_option_price: float = 0.0         # highest observed option LTP since entry (for trailing)
+    entry_iv: float = 0.0                  # implied volatility at entry (for IV crush detection)
+    milestone_count: int = 0               # trail milestone counter (0 = pre-trail; increments at each +10%)
 
 
 class Trade(BaseModel):
@@ -38,6 +43,8 @@ class Trade(BaseModel):
     option_strike: Optional[int] = None
     option_type: Optional[str] = None
     option_expiry: Optional[str] = None
+    exit_reason: Optional[str] = None      # detailed exit cause (e.g. PREMIUM_DECAY, TRAIL_STOP)
+    broker_order_id: Optional[str] = None  # Fyers order ID for live trades (entry order)
 
 
 class BudgetState(BaseModel):

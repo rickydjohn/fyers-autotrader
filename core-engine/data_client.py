@@ -69,6 +69,35 @@ async def persist_news_batch(items: List[Dict[str, Any]]) -> None:
         await _post("/api/v1/ingest/news", items)
 
 
+async def persist_daily_ohlcv_batch(bars: List[Dict[str, Any]]) -> None:
+    """Upsert a batch of daily OHLCV bars into the permanent daily_ohlcv table."""
+    if bars:
+        await _post("/api/v1/ingest/daily-ohlcv", bars)
+
+
+async def persist_sr_levels(symbol: str, levels: List[Dict[str, Any]]) -> None:
+    """Replace the computed S/R level set for a symbol."""
+    await _post("/api/v1/ingest/sr-levels", {"symbol": symbol, "levels": levels})
+
+
+async def fetch_sr_levels(
+    symbol: str,
+    near_price: Optional[float] = None,
+    limit: int = 25,
+) -> List[Dict[str, Any]]:
+    """Fetch historical S/R levels from data-service, optionally filtered by price proximity."""
+    try:
+        params: Dict[str, Any] = {"symbol": symbol, "limit": limit}
+        if near_price:
+            params["near_price"] = near_price
+        resp = await get_client().get("/api/v1/sr-levels", params=params, timeout=5.0)
+        resp.raise_for_status()
+        return resp.json().get("levels", [])
+    except Exception as e:
+        logger.warning(f"Could not fetch SR levels for {symbol}: {e}")
+        return []
+
+
 async def fetch_context_snapshot(symbol: str) -> Optional[Dict[str, Any]]:
     """Fetch the latest context snapshot for a symbol from data-service."""
     try:

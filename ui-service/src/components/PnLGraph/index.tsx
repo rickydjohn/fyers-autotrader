@@ -74,8 +74,14 @@ export function PnLGraph({ pnl }: Props) {
           />
         </div>
         <div className="flex justify-between text-xs text-gray-500 mt-1">
-          <span>Cash: ₹{pnl.budget.cash.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
-          <span>Invested: ₹{pnl.budget.invested.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
+          <span>Available: ₹{pnl.budget.cash.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
+          <span>In Positions: ₹{pnl.budget.invested.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
+        </div>
+        <div className="mt-2 flex items-center justify-between bg-gray-800/50 rounded px-3 py-1.5">
+          <span className="text-xs text-gray-400">Portfolio Value</span>
+          <span className="text-sm font-semibold font-mono text-white">
+            ₹{(pnl.budget.current ?? (pnl.budget.cash + pnl.budget.invested)).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </span>
         </div>
       </div>
     </div>

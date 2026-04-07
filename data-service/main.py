@@ -15,7 +15,7 @@ from sqlalchemy import text
 
 from config import settings
 from db.connection import engine
-from routers import ingest, historical, aggregated, context, decision_history
+from routers import ingest, historical, aggregated, context, decision_history, sr_levels as sr_levels_router, report as report_router
 from routers.context import set_redis_client
 from context.builder import build_context_snapshot, format_context_for_prompt
 from db.connection import AsyncSessionLocal
@@ -45,6 +45,45 @@ async def lifespan(app: FastAPI):
             "  END IF; "
             "END $$;"
         ))
+        # Migration 002: permanent daily OHLCV + historical S/R levels tables
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS daily_ohlcv (
+                date    DATE            NOT NULL,
+                symbol  TEXT            NOT NULL,
+                open    NUMERIC(12, 2)  NOT NULL,
+                high    NUMERIC(12, 2)  NOT NULL,
+                low     NUMERIC(12, 2)  NOT NULL,
+                close   NUMERIC(12, 2)  NOT NULL,
+                volume  BIGINT          NOT NULL DEFAULT 0,
+                PRIMARY KEY (date, symbol)
+            )
+        """))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS daily_ohlcv_symbol_date_idx "
+            "ON daily_ohlcv (symbol, date DESC)"
+        ))
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS historical_sr_levels (
+                id          BIGSERIAL       PRIMARY KEY,
+                symbol      TEXT            NOT NULL,
+                level       NUMERIC(12, 2)  NOT NULL,
+                level_type  TEXT            NOT NULL
+                                CHECK (level_type IN ('SUPPORT', 'RESISTANCE', 'BOTH')),
+                strength    INTEGER         NOT NULL DEFAULT 1,
+                first_seen  DATE,
+                last_seen   DATE,
+                computed_at TIMESTAMPTZ     NOT NULL DEFAULT NOW()
+            )
+        """))
+        await conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS historical_sr_symbol_level_idx "
+            "ON historical_sr_levels (symbol, level)"
+        ))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS historical_sr_symbol_strength_idx "
+            "ON historical_sr_levels (symbol, strength DESC)"
+        ))
+        logger.info("Schema guards applied (daily_ohlcv, historical_sr_levels)")
 
     # Connect Redis
     redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
@@ -92,7 +131,9 @@ app.include_router(ingest.router,           prefix=PREFIX)
 app.include_router(historical.router,       prefix=PREFIX)
 app.include_router(aggregated.router,       prefix=PREFIX)
 app.include_router(context.router,          prefix=PREFIX)
-app.include_router(decision_history.router, prefix=PREFIX)
+app.include_router(decision_history.router,      prefix=PREFIX)
+app.include_router(sr_levels_router.router,      prefix=PREFIX)
+app.include_router(report_router.router,         prefix=PREFIX)
 
 
 @app.get("/healthz")

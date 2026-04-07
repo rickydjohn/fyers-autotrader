@@ -17,9 +17,13 @@ from fastapi.responses import RedirectResponse
 
 from config import settings
 from fyers.auth import exchange_auth_code, get_auth_url, get_valid_token
-from fyers.orders import get_funds, place_market_order
+from fyers.orders import get_funds, get_order_fill, place_market_order
 from llm.client import check_ollama_health
-from scheduler.jobs import create_scheduler, _refresh_news, run_market_scan, refresh_context_cache, bootstrap_historical_data
+from scheduler.jobs import (
+    create_scheduler, _refresh_news, run_market_scan,
+    refresh_context_cache, bootstrap_historical_data,
+    bootstrap_daily_ohlcv, _load_sr_cache,
+)
 import data_client
 
 logging.basicConfig(
@@ -52,17 +56,38 @@ async def lifespan(app: FastAPI):
     # Bootstrap historical candles from Fyers for all symbols (non-blocking)
     import asyncio
     async def _do_bootstrap():
+        # 1. Intraday multi-timeframe candles (market_candles, 90-day retention)
         for symbol in settings.symbols:
             try:
                 await bootstrap_historical_data(symbol, redis_client)
             except Exception as e:
                 logger.warning(f"Historical bootstrap failed for {symbol}: {e}")
-        # After candles are persisted, refresh multi-timeframe context
+
+        # 2. Multi-year daily OHLCV → S/R level computation (permanent storage)
+        for symbol in settings.symbols:
+            try:
+                result = await bootstrap_daily_ohlcv(symbol, redis_client, years=5)
+                logger.info(
+                    f"Daily bootstrap {symbol}: "
+                    f"{result['daily_bars']} bars, {result['sr_levels']} S/R levels"
+                )
+            except Exception as e:
+                logger.warning(f"Daily OHLCV bootstrap failed for {symbol}: {e}")
+
+        # 3. Load SR cache if bootstrap didn't populate it (e.g. re-deploy on existing cluster)
+        for symbol in settings.symbols:
+            try:
+                await _load_sr_cache(symbol, redis_client)
+            except Exception as e:
+                logger.warning(f"SR cache load failed for {symbol}: {e}")
+
+        # 4. Refresh multi-timeframe context snapshots
         for symbol in settings.symbols:
             try:
                 await refresh_context_cache(symbol)
             except Exception as e:
                 logger.warning(f"Context bootstrap failed for {symbol}: {e}")
+
     asyncio.create_task(_do_bootstrap())
 
     yield
@@ -178,6 +203,18 @@ async def fyers_place_order(
         if result is None:
             raise HTTPException(status_code=500, detail="Order placement failed")
         return {"status": "ok", "order_id": result.get("id"), "data": result}
+    except RuntimeError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+
+
+@app.get("/fyers/orders/{order_id}/status")
+async def fyers_order_status(order_id: str):
+    """Poll Fyers for the fill status of a placed order. Returns traded price when filled."""
+    try:
+        result = get_order_fill(order_id, max_attempts=1, interval_s=0)
+        if result is None:
+            raise HTTPException(status_code=503, detail="Could not reach Fyers orderbook")
+        return {"status": "ok", "order": result}
     except RuntimeError as e:
         raise HTTPException(status_code=401, detail=str(e))
 

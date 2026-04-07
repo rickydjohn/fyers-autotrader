@@ -56,9 +56,14 @@ async def get_pnl(
     for symbol, pos_data in positions_raw.items():
         try:
             pos = json.loads(pos_data)
-            # For option positions use the option symbol's market price, not the underlying's
+            # For option positions use the option symbol's market price, not the underlying's.
+            # For underlying, prefer the fast-watcher ltp key (refreshed every 10s) over
+            # the full snapshot (refreshed every 300s).
             market_symbol = pos.get("option_symbol") or symbol
-            market_raw = await redis_client.get(f"market:{market_symbol}")
+            if not pos.get("option_symbol"):
+                market_raw = await redis_client.get(f"ltp:{market_symbol}") or await redis_client.get(f"market:{market_symbol}")
+            else:
+                market_raw = await redis_client.get(f"market:{market_symbol}")
             if market_raw:
                 market = json.loads(market_raw)
                 ltp = market.get("ltp", pos["avg_price"])

@@ -92,6 +92,7 @@ class TradeIn(BaseModel):
     option_strike: Optional[int] = None
     option_type: Optional[str] = None
     option_expiry: Optional[str] = None
+    exit_reason: Optional[str] = None
 
 
 class NewsItemIn(BaseModel):

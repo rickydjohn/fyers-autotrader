@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { ReportPage } from './components/ReportPage'
 import { CandlestickChart } from './components/CandlestickChart'
 import { PnLGraph } from './components/PnLGraph'
 import { DecisionFeed } from './components/DecisionFeed'
@@ -44,6 +45,8 @@ function isWithinMarketWindow(now: Date): boolean {
 }
 
 export default function App() {
+  const [page, setPage] = useState<'dashboard' | 'report'>('dashboard')
+
   const {
     selectedSymbol, setSelectedSymbol,
     marketData, decisions, sseConnected,
@@ -139,6 +142,13 @@ export default function App() {
     [trades, selectedSymbol],
   )
 
+  const todayTrades = useMemo(() => {
+    const today = new Date().toDateString()
+    return trades
+      .filter((t) => new Date(t.entry_time).toDateString() === today)
+      .sort((a, b) => new Date(a.entry_time).getTime() - new Date(b.entry_time).getTime())
+  }, [trades])
+
   // Use live 5m candles when available, otherwise fall back to historical
   const liveCandles = currentData?.candles
   const displayCandles = useMemo(() => {
@@ -155,12 +165,30 @@ export default function App() {
     }))
   }, [timeframe, liveCandles, historicalCandles])
 
+  if (page === 'report') {
+    return (
+      <div className="min-h-screen bg-gray-950 text-gray-100">
+        <nav className="flex items-center gap-1 px-6 py-3 border-b border-gray-800 bg-gray-900">
+          <span className="text-sm font-bold text-white mr-4">Trading Intelligence</span>
+          <NavTab label="Dashboard" active={false} onClick={() => setPage('dashboard')} />
+          <NavTab label="Reports"   active={true}  onClick={() => setPage('report')} />
+        </nav>
+        <ReportPage />
+      </div>
+    )
+  }
+
   return (
     <div className="min-h-screen bg-gray-950 text-gray-100 p-4">
       {/* Header */}
       <header className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-3">
           <h1 className="text-xl font-bold text-white">Trading Intelligence</h1>
+          {/* Page nav */}
+          <div className="flex items-center bg-gray-800 rounded-md p-0.5 gap-0.5">
+            <NavTab label="Dashboard" active={true}  onClick={() => setPage('dashboard')} />
+            <NavTab label="Reports"   active={false} onClick={() => setPage('report')} />
+          </div>
           <TradingModeToggle />
           <span className={`text-xs px-2 py-0.5 rounded border font-mono ${
             isLive
@@ -259,7 +287,7 @@ export default function App() {
           {pnl && <PnLGraph pnl={pnl} />}
 
           {/* Positions */}
-          <PositionTable positions={positions} />
+          <PositionTable positions={positions} trades={todayTrades} />
         </div>
 
         {/* Right column — 1/3 width */}
@@ -272,5 +300,20 @@ export default function App() {
         </div>
       </div>
     </div>
+  )
+}
+
+function NavTab({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
+        active
+          ? 'bg-gray-600 text-white'
+          : 'text-gray-400 hover:text-gray-200'
+      }`}
+    >
+      {label}
+    </button>
   )
 }

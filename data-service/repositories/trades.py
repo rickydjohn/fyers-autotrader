@@ -97,4 +97,5 @@ def _trade_to_dict(row: Trade) -> Dict[str, Any]:
         "option_strike": row.option_strike,
         "option_type":   row.option_type,
         "option_expiry": row.option_expiry,
+        "exit_reason":   row.exit_reason,
     }

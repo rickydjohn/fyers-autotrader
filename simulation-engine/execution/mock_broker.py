@@ -58,6 +58,26 @@ async def open_position(
     option_lot_size: Optional[int] = None,
 ) -> Optional[Trade]:
     """Open a new simulated position. Trades the option if one is provided."""
+    # ── Gate 1: No new positions at or after session close ────────────────────
+    _now = datetime.now(IST)
+    if _now.hour * 60 + _now.minute >= settings.session_close_hour * 60 + settings.session_close_minute:
+        logger.info(f"[GATE] Session closed ({_now.strftime('%H:%M')}) — skipping {symbol}")
+        return None
+
+    # ── Gate 2: Minimum option premium — SL is inside bid-ask below this ─────
+    if option_symbol and option_price is not None and option_price < settings.min_option_premium:
+        logger.info(
+            f"[GATE] Premium ₹{option_price:.2f} < min ₹{settings.min_option_premium:.0f} "
+            f"— skipping {option_symbol}"
+        )
+        return None
+
+    # ── Gate 3: SL cooldown — block re-entry after stop loss ─────────────────
+    if await redis_client.exists(f"sl:cooldown:{symbol}"):
+        ttl = await redis_client.ttl(f"sl:cooldown:{symbol}")
+        logger.info(f"[GATE] SL cooldown active for {symbol} ({ttl}s remaining) — skipping")
+        return None
+
     existing = await redis_client.hget("positions:open", symbol)
     if existing:
         logger.info(f"Position already open for {symbol}, skipping")
@@ -102,7 +122,17 @@ async def open_position(
         option_strike=option_strike,
         option_type=option_type,
         option_expiry=option_expiry,
+        entry_option_price=option_price or 0.0,
     )
+    # Capture entry IV from Redis if already populated by fast position watcher
+    if option_symbol:
+        try:
+            greeks_raw = await redis_client.get(f"greeks:{option_symbol}")
+            if greeks_raw:
+                g = json.loads(greeks_raw)
+                position.entry_iv = float(g.get("iv", 0) or 0)
+        except Exception:
+            pass
 
     trade = Trade(
         trade_id=trade_id,
@@ -125,6 +155,9 @@ async def open_position(
     # Persist to Redis (operational cache)
     await redis_client.hset("positions:open", symbol, position.model_dump_json())
     await redis_client.hset("trades:all", trade_id, trade.model_dump_json())
+    # Index trade_id by underlying so close_position can look it up without
+    # a symbol mismatch (trade.symbol is the option symbol, not the underlying)
+    await redis_client.hset("trades:open_id", symbol, trade_id)
     await redis_client.zadd(
         "trades:history",
         {trade.model_dump_json(): now.timestamp()},
@@ -167,6 +200,7 @@ async def close_position(
     symbol: str,
     exit_price: float,
     status: str = "CLOSED",
+    exit_reason: Optional[str] = None,
 ) -> Optional[Trade]:
     """Close an open position at exit_price."""
     pos_data = await redis_client.hget("positions:open", symbol)
@@ -190,14 +224,16 @@ async def close_position(
     net_pnl = gross_pnl - commission
     invested_amount = pos.avg_price * pos.quantity
 
-    # Find the open trade in Redis
-    all_trades_raw = await redis_client.hgetall("trades:all")
+    # Look up the open trade ID directly by underlying symbol (O(1), no mismatch)
+    # trade.symbol stores the option symbol for option trades, so scanning trades:all
+    # by t.symbol == underlying would never match — use the index instead.
     trade = None
-    for tid, tdata in all_trades_raw.items():
-        t = Trade(**json.loads(tdata))
-        if t.symbol == symbol and t.status == "OPEN":
-            trade = t
-            break
+    trade_id_raw = await redis_client.hget("trades:open_id", symbol)
+    if trade_id_raw:
+        tdata = await redis_client.hget("trades:all", trade_id_raw)
+        if tdata:
+            trade = Trade(**json.loads(tdata))
+    await redis_client.hdel("trades:open_id", symbol)
 
     if trade:
         trade.exit_price = exit_price_with_slip
@@ -207,6 +243,7 @@ async def close_position(
         trade.commission += commission
         trade.slippage += abs(exit_price_with_slip - exit_price) * pos.quantity
         trade.status = status
+        trade.exit_reason = exit_reason
 
         # Update Redis
         await redis_client.hset("trades:all", trade.trade_id, trade.model_dump_json())
@@ -237,6 +274,7 @@ async def close_position(
             "option_strike": trade.option_strike,
             "option_type":   trade.option_type,
             "option_expiry": trade.option_expiry,
+            "exit_reason":   trade.exit_reason,
         })
 
     await release(redis_client, invested_amount, net_pnl)

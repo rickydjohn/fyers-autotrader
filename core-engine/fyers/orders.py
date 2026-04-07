@@ -1,13 +1,20 @@
 """
-Fyers order placement and account funds.
+Fyers order placement, account funds, and order status.
 Used exclusively in live trading mode.
 """
 import logging
+import time
 from typing import Optional
 
 from fyers.auth import get_fyers_client
 
 logger = logging.getLogger(__name__)
+
+# Fyers order status codes
+_STATUS_TRADED    = 2
+_STATUS_REJECTED  = 5
+_STATUS_CANCELLED = 1
+_TERMINAL_STATES  = {_STATUS_TRADED, _STATUS_REJECTED, _STATUS_CANCELLED}
 
 
 def place_market_order(symbol: str, side: str, quantity: int) -> Optional[dict]:
@@ -35,6 +42,49 @@ def place_market_order(symbol: str, side: str, quantity: int) -> Optional[dict]:
     except Exception as e:
         logger.exception(f"Error placing Fyers order {symbol}: {e}")
         return None
+
+
+def get_order_fill(order_id: str, max_attempts: int = 10, interval_s: float = 1.0) -> Optional[dict]:
+    """
+    Poll Fyers orderbook until the order reaches a terminal state (filled/rejected/cancelled).
+
+    Returns a dict:
+        {"status": "TRADED"|"REJECTED"|"CANCELLED"|"TIMEOUT",
+         "traded_price": float,   # 0.0 if not filled
+         "filled_qty": int}
+    Returns None if the API call itself fails.
+    """
+    fyers = get_fyers_client()
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = fyers.get_orders({"id": order_id})
+            if response.get("s") != "ok":
+                logger.warning(f"get_orders failed for {order_id}: {response}")
+                return None
+            orders = response.get("orderBook") or []
+            if not orders:
+                logger.warning(f"Order {order_id} not found in orderbook (attempt {attempt})")
+            else:
+                order = orders[0]
+                status_code = order.get("status")
+                if status_code in _TERMINAL_STATES:
+                    label = {_STATUS_TRADED: "TRADED", _STATUS_REJECTED: "REJECTED",
+                             _STATUS_CANCELLED: "CANCELLED"}.get(status_code, "UNKNOWN")
+                    traded_price = float(order.get("tradedPrice") or 0.0)
+                    filled_qty   = int(order.get("filledQty") or 0)
+                    logger.info(
+                        f"Order {order_id} → {label} price=₹{traded_price:.2f} qty={filled_qty}"
+                    )
+                    return {"status": label, "traded_price": traded_price, "filled_qty": filled_qty}
+                logger.debug(f"Order {order_id} status={status_code} (attempt {attempt}/{max_attempts})")
+        except Exception as e:
+            logger.warning(f"Error polling order {order_id} (attempt {attempt}): {e}")
+
+        if attempt < max_attempts:
+            time.sleep(interval_s)
+
+    logger.warning(f"Order {order_id} did not reach terminal state in {max_attempts}s")
+    return {"status": "TIMEOUT", "traded_price": 0.0, "filled_qty": 0}
 
 
 def get_funds() -> Optional[dict]:

@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     market_close: str = "15:30"
     timezone: str = "Asia/Kolkata"
     scan_interval_seconds: int = Field(300, env="SCAN_INTERVAL_SECONDS")
+    position_watcher_interval_seconds: int = Field(10, env="POSITION_WATCHER_INTERVAL_SECONDS")
 
     # Watchlist
     symbols: List[str] = [

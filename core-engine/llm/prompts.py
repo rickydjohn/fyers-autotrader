@@ -27,6 +27,10 @@ EMA(9): ₹{ema_9:.2f} | EMA(21): ₹{ema_21:.2f}
 MACD Signal: {macd_signal}
 VWAP: ₹{vwap:.2f}
 
+## Historical Support/Resistance (multi-year daily chart)
+Zones where price has historically reversed — derived from {years_of_data} of daily swing data.
+{sr_levels_block}
+
 ## News Sentiment (last 2 hours)
 {news_summary}
 Overall Sentiment: {sentiment_label} (score: {sentiment_score:.2f})
@@ -68,6 +72,16 @@ When the intraday structure is unambiguously bullish or bearish, override a conf
 - BUY  if: price ABOVE_CPR + RSI 45-75 + price above VWAP + MACD not BEARISH
 - SELL if: price BELOW_CPR + RSI 25-55 + price below VWAP + MACD not BULLISH
 - HOLD if: price INSIDE_CPR OR RSI > 75 OR RSI < 25
+
+### HISTORICAL S/R CONFLUENCE
+Use the multi-year S/R zones above to adjust confidence — do not change the decision direction, only the conviction level.
+- BUY signal near a SUPPORT or BOTH zone (within 0.5%): confidence +0.05 to +0.10 — zone has held before
+- SELL signal near a RESISTANCE or BOTH zone (within 0.5%): confidence +0.05 to +0.10
+- BUY signal approaching a RESISTANCE zone (within 0.5% above): confidence -0.05 — price may stall there
+- SELL signal near a strong SUPPORT zone (within 0.5% below): confidence -0.05 — price may bounce
+- "BOTH" zones (acted as both S and R historically): strongest confluences; add +0.10 when aligned, -0.05 when opposing
+- The more tests (strength) a zone has, the more weight it carries — a 10-test zone outweighs a 2-test zone
+- If no historical S/R data is available, ignore this section
 
 ### ALL DAYS
 - Set stop_loss 0.3-0.5% from entry (below entry for BUY, above entry for SELL)
@@ -114,6 +128,8 @@ def build_decision_prompt(
     sentiment_label: str,
     sentiment_score: float,
     historical_context_block: str = "",
+    sr_levels_block: str = "",
+    years_of_data: int = 5,
 ) -> str:
     cpr_type = "NARROW (trending day)" if cpr_width_pct < 0.25 else "WIDE (rangebound day)"
     consolidation_status = "SIDEWAYS" if consolidation_pct < 0.40 else "ACTIVE"
@@ -122,6 +138,8 @@ def build_decision_prompt(
             "## Historical Context\n"
             "No historical data available — operating on intraday data only."
         )
+    if not sr_levels_block:
+        sr_levels_block = "  No historical S/R data available yet — will populate after first bootstrap."
     return DECISION_PROMPT_TEMPLATE.format(
         historical_context_block=historical_context_block,
         symbol=symbol,
@@ -152,4 +170,6 @@ def build_decision_prompt(
         news_summary=news_summary,
         sentiment_label=sentiment_label,
         sentiment_score=sentiment_score,
+        sr_levels_block=sr_levels_block,
+        years_of_data=years_of_data,
     )

@@ -20,6 +20,7 @@ from llm.prompts import build_decision_prompt
 from models.schemas import LLMDecision, MarketSnapshot, TechnicalIndicators
 from news.sentiment import format_news_for_prompt
 from indicators.technicals import get_macd_signal_label
+from indicators.historical_sr import format_sr_for_prompt
 import data_client
 from context.formatter import format_context_for_prompt
 from fyers.options import get_atm_option
@@ -91,6 +92,7 @@ async def make_decision(
     snapshot: MarketSnapshot,
     redis_client: aioredis.Redis,
     historical_context: Optional[dict] = None,
+    sr_levels: Optional[list] = None,
 ) -> Optional[LLMDecision]:
     """Build prompt (with historical context), call LLM, parse, publish to Redis and DB."""
     ind: TechnicalIndicators = snapshot.indicators
@@ -103,6 +105,9 @@ async def make_decision(
     hist_block = ""
     if historical_context:
         hist_block = format_context_for_prompt(historical_context)
+
+    # Format historical S/R levels block
+    sr_block = format_sr_for_prompt(sr_levels or [], snapshot.ltp)
 
     prompt = build_decision_prompt(
         symbol=snapshot.symbol,
@@ -119,6 +124,7 @@ async def make_decision(
         day_low=ind.day_low,
         consolidation_pct=ind.consolidation_pct,
         range_breakout=ind.range_breakout,
+        sr_levels_block=sr_block,
         nearest_resistance=ind.nearest_resistance,
         resistance_label=ind.nearest_resistance_label,
         nearest_support=ind.nearest_support,

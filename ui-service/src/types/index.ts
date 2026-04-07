@@ -69,6 +69,7 @@ export interface Trade {
   option_strike?: number
   option_type?: string   // CE or PE
   option_expiry?: string
+  exit_reason?: string
 }
 
 export interface Position {
