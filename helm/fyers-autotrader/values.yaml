@@ -23,6 +23,8 @@ services:
     port: 8003
     replicas: 1
     healthPath: /healthz
+    nodeSelector:
+      node-type: linux
     env:
       DATABASE_URL: "postgresql+asyncpg://trading:trading@timescaledb:5432/trading"
       REDIS_URL: "redis://redis:6379"
@@ -41,10 +43,15 @@ services:
     port: 8001
     replicas: 1
     healthPath: /healthz
+    # Pin to the Mac Mini GPU node so it can reach Ollama running natively on that host.
+    # hostNetwork lets the pod reach localhost:11434 on the node itself.
+    nodeSelector:
+      node-type: gpu
+    hostNetwork: true
     env:
       REDIS_URL: "redis://redis:6379"
-      # Point to your Ollama host; override in production values.
-      OLLAMA_BASE_URL: "http://host.docker.internal:11434"
+      # Ollama runs natively on the Mac Mini; localhost resolves correctly via hostNetwork.
+      OLLAMA_BASE_URL: "http://localhost:11434"
       DATA_SERVICE_URL: "http://data-service:8003"
       TZ: "Asia/Kolkata"
     # Mount the Fyers token directory so tokens survive pod restarts.
@@ -66,6 +73,8 @@ services:
     port: 8002
     replicas: 1
     healthPath: /healthz
+    nodeSelector:
+      node-type: linux
     env:
       REDIS_URL: "redis://redis:6379"
       DATA_SERVICE_URL: "http://data-service:8003"
@@ -85,6 +94,8 @@ services:
     port: 8000
     replicas: 1
     healthPath: /healthz
+    nodeSelector:
+      node-type: linux
     env:
       REDIS_URL: "redis://redis:6379"
       CORE_ENGINE_URL: "http://core-engine:8001"
@@ -105,6 +116,8 @@ services:
     port: 80
     replicas: 1
     healthPath: /
+    nodeSelector:
+      node-type: linux
     env:
       TZ: "Asia/Kolkata"
     resources:
@@ -121,6 +134,8 @@ redis:
   enabled: true
   image: redis:7.2-alpine
   port: 6379
+  nodeSelector:
+    node-type: linux
   persistence:
     enabled: true
     size: 1Gi
@@ -130,6 +145,8 @@ timescaledb:
   enabled: true
   image: timescale/timescaledb:latest-pg16
   port: 5432
+  nodeSelector:
+    node-type: linux
   persistence:
     enabled: true
     size: 20Gi

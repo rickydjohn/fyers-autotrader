@@ -94,7 +94,7 @@ spec:
           persistentVolumeClaim:
             claimName: {{ $svc.tokenVolume.claimName | default "fyers-tokens" }}
       {{- end }}
-      {{- with $.Values.nodeSelector }}
+      {{- with (coalesce $svc.nodeSelector $.Values.nodeSelector) }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -102,9 +102,13 @@ spec:
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with $.Values.tolerations }}
+      {{- with (coalesce $svc.tolerations $.Values.tolerations) }}
       tolerations:
         {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if $svc.hostNetwork }}
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
       {{- end }}
 {{- end }}
 {{- end }}
