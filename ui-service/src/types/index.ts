@@ -65,6 +65,11 @@ export interface Trade {
   status: 'OPEN' | 'CLOSED' | 'STOPPED'
   decision_id: string
   reasoning: string
+  option_symbol?: string
+  option_strike?: number
+  option_type?: string   // CE or PE
+  option_expiry?: string
+  exit_reason?: string
 }
 
 export interface Position {
@@ -78,6 +83,10 @@ export interface Position {
   stop_loss: number
   target: number
   entry_time: string
+  option_symbol?: string
+  option_strike?: number
+  option_type?: string
+  option_expiry?: string
 }
 
 export interface PnLData {
@@ -118,6 +127,11 @@ export interface Decision {
     macd_signal: string
   }
   acted_upon: boolean
+  option_symbol?: string
+  option_strike?: number
+  option_type?: string
+  option_expiry?: string
+  option_price?: number
 }
 
 export type Timeframe = '1m' | '5m' | '15m' | '1h' | 'daily'
@@ -130,6 +144,14 @@ export interface FundsData {
   total_balance?: number
   used_amount?: number
   [key: string]: number | undefined
+}
+
+export interface SimulationBudgetData {
+  initial: number
+  current: number
+  cash: number
+  invested: number
+  utilization_pct: number
 }
 
 export interface HistoricalCandle {

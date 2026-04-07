@@ -32,13 +32,21 @@ def calculate_pivots(high: float, low: float, close: float) -> PivotLevels:
     )
 
 
-def get_nearest_levels(price: float, pivots: PivotLevels) -> dict:
-    """Find the nearest support and resistance levels to current price."""
+def get_nearest_levels(price: float, pivots: PivotLevels, prev_high: float = 0.0, prev_low: float = 0.0) -> dict:
+    """Find the nearest support and resistance levels to current price.
+
+    PDH and PDL are included as named levels so the LLM knows when price is
+    testing those key boundaries, not just standard pivot math levels.
+    """
     levels = {
         "R3": pivots.r3, "R2": pivots.r2, "R1": pivots.r1,
         "Pivot": pivots.pivot,
         "S1": pivots.s1, "S2": pivots.s2, "S3": pivots.s3,
     }
+    if prev_high > 0:
+        levels["PDH"] = prev_high
+    if prev_low > 0:
+        levels["PDL"] = prev_low
     above = {k: v for k, v in levels.items() if v > price}
     below = {k: v for k, v in levels.items() if v <= price}
 

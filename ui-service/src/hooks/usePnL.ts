@@ -4,6 +4,7 @@ import { useTradingStore } from '../store'
 
 export function usePnL(intervalMs = 30000) {
   const setPnL = useTradingStore((s) => s.setPnL)
+  const tradingMode = useTradingStore((s) => s.tradingMode)
 
   useEffect(() => {
     const load = async () => {
@@ -17,5 +18,5 @@ export function usePnL(intervalMs = 30000) {
     load()
     const id = setInterval(load, intervalMs)
     return () => clearInterval(id)
-  }, [intervalMs, setPnL])
+  }, [intervalMs, setPnL, tradingMode])
 }

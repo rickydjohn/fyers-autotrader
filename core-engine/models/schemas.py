@@ -45,6 +45,13 @@ class TechnicalIndicators(BaseModel):
     nearest_resistance_label: str
     nearest_support: float
     nearest_support_label: str
+    prev_day_high: float = 0.0
+    prev_day_low: float = 0.0
+    # Intraday range breakout indicators
+    day_high: float = 0.0          # highest point reached today (intraday)
+    day_low: float = 0.0           # lowest point reached today (intraday)
+    consolidation_pct: float = 0.0 # range% of last 8 candles; < 0.40 = sideways
+    range_breakout: Literal["BREAKOUT_HIGH", "BREAKOUT_LOW", "NONE"] = "NONE"
 
 
 class NewsItem(BaseModel):
@@ -86,3 +93,10 @@ class LLMDecision(BaseModel):
     indicators_snapshot: dict
     acted_upon: bool = False
     trade_id: Optional[str] = None
+    # Options fields (populated for BUY/SELL decisions)
+    option_symbol: Optional[str] = None     # e.g. NSE:NIFTY2640322200CE
+    option_strike: Optional[int] = None     # e.g. 22200
+    option_type: Optional[str] = None       # CE or PE
+    option_expiry: Optional[str] = None     # ISO date e.g. 2026-04-03
+    option_price: Optional[float] = None    # option LTP at decision time
+    option_lot_size: Optional[int] = None   # derived from Fyers market depth

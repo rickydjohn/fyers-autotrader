@@ -8,15 +8,21 @@ import logging
 import sys
 from contextlib import asynccontextmanager
 
+from datetime import datetime
+
+import pytz
 import redis.asyncio as aioredis
 from fastapi import FastAPI
 
 from analytics.pnl import compute_pnl_summary, get_all_trades, get_open_positions
 from config import settings
 from execution import mock_broker, live_broker
+from execution.exit_rules import check_exit
 from models.schemas import Position
 from portfolio.budget import initialize_budget, load_budget
 import data_client
+
+IST = pytz.timezone("Asia/Kolkata")
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -75,6 +81,16 @@ async def _handle_decision(data: dict) -> None:
     except (ValueError, TypeError):
         stop_loss = target = 0.0
 
+    option_symbol = data.get("option_symbol") or None
+    option_type = data.get("option_type") or None
+    option_expiry = data.get("option_expiry") or None
+    try:
+        option_strike = int(float(data.get("option_strike", 0) or 0)) or None
+        option_price = float(data.get("option_price", 0) or 0) or None
+        option_lot_size = int(float(data.get("option_lot_size", 0) or 0)) or None
+    except (ValueError, TypeError):
+        option_strike = option_price = option_lot_size = None
+
     # Get current price from market snapshot
     market_raw = await redis_client.get(f"market:{symbol}")
     if not market_raw:
@@ -101,6 +117,9 @@ async def _handle_decision(data: dict) -> None:
         await broker.open_position(
             redis_client, symbol, "BUY", current_price,
             stop_loss, target, decision_id, reasoning,
+            option_symbol=option_symbol, option_strike=option_strike,
+            option_type=option_type, option_expiry=option_expiry,
+            option_price=option_price, option_lot_size=option_lot_size,
         )
 
     elif decision == "SELL":
@@ -113,6 +132,9 @@ async def _handle_decision(data: dict) -> None:
         await broker.open_position(
             redis_client, symbol, "SELL", current_price,
             stop_loss, target, decision_id, reasoning,
+            option_symbol=option_symbol, option_strike=option_strike,
+            option_type=option_type, option_expiry=option_expiry,
+            option_price=option_price, option_lot_size=option_lot_size,
         )
 
     elif decision == "HOLD":
@@ -120,39 +142,87 @@ async def _handle_decision(data: dict) -> None:
 
 
 async def _check_stop_targets() -> None:
-    """Check all open positions against stop-loss and target levels."""
+    """
+    Evaluate exit conditions for all open positions.
+    Runs on every consumer loop tick (~5s).  Prices are kept fresh by the
+    fast_position_watcher in core-engine (every POSITION_WATCHER_INTERVAL_SECONDS).
+    """
     positions_raw = await redis_client.hgetall("positions:open")
     if not positions_raw:
         return
 
+    now = datetime.now(IST)
+    mode = await redis_client.get("trading:mode") or "simulation"
+    broker = live_broker if mode == "live" else mock_broker
+
     for symbol, pos_data in positions_raw.items():
         try:
             pos = Position(**json.loads(pos_data))
-            market_raw = await redis_client.get(f"market:{symbol}")
-            if not market_raw:
+
+            # Underlying LTP — prefer the fast-watcher key (ltp:{symbol}, 30s TTL)
+            # which is refreshed every POSITION_WATCHER_INTERVAL_SECONDS; fall back
+            # to the full market snapshot written by the slower scan job.
+            ltp_raw = await redis_client.get(f"ltp:{symbol}") or await redis_client.get(f"market:{symbol}")
+            if not ltp_raw:
                 continue
-            market = json.loads(market_raw)
-            ltp = market.get("ltp", 0)
-            if not ltp:
+            underlying_ltp = json.loads(ltp_raw).get("ltp", 0)
+            if not underlying_ltp:
                 continue
 
-            mode = await redis_client.get("trading:mode") or "simulation"
-            broker = live_broker if mode == "live" else mock_broker
+            # Option LTP and Greeks (populated by fast_position_watcher)
+            option_ltp: float | None = None
+            greeks: dict | None = None
+            if pos.option_symbol:
+                opt_raw = await redis_client.get(f"market:{pos.option_symbol}")
+                if opt_raw:
+                    option_ltp = json.loads(opt_raw).get("ltp")
+                greeks_raw = await redis_client.get(f"greeks:{pos.option_symbol}")
+                if greeks_raw:
+                    greeks = json.loads(greeks_raw)
 
-            if pos.side == "BUY":
-                if ltp <= pos.stop_loss:
-                    logger.info(f"STOP LOSS triggered for {symbol} @ ₹{ltp:.2f}")
-                    await broker.close_position(redis_client, symbol, ltp, status="STOPPED")
-                elif ltp >= pos.target:
-                    logger.info(f"TARGET hit for {symbol} @ ₹{ltp:.2f}")
-                    await broker.close_position(redis_client, symbol, ltp, status="CLOSED")
-            else:  # SELL
-                if ltp >= pos.stop_loss:
-                    logger.info(f"STOP LOSS triggered for {symbol} @ ₹{ltp:.2f}")
-                    await broker.close_position(redis_client, symbol, ltp, status="STOPPED")
-                elif ltp <= pos.target:
-                    logger.info(f"TARGET hit for {symbol} @ ₹{ltp:.2f}")
-                    await broker.close_position(redis_client, symbol, ltp, status="CLOSED")
+            # Index indicators for milestone confirmation (from full market snapshot)
+            indicators: dict = {}
+            market_full_raw = await redis_client.get(f"market:{symbol}")
+            if market_full_raw:
+                mfull = json.loads(market_full_raw)
+                ind = mfull.get("indicators", {})
+                indicators = {
+                    "rsi":         ind.get("rsi"),
+                    "vwap":        ind.get("vwap"),
+                    "ltp":         mfull.get("ltp"),
+                    "macd":        ind.get("macd"),
+                    "macd_signal": ind.get("macd_signal"),
+                }
+
+            # Track peak option price (update pos in memory; write-back deferred below)
+            peak_updated = False
+            if option_ltp and option_ltp > pos.peak_option_price:
+                pos.peak_option_price = option_ltp
+                peak_updated = True
+
+            should_exit, reason, exit_price, new_milestone = check_exit(
+                pos, underlying_ltp, option_ltp, greeks, indicators, now
+            )
+
+            if should_exit:
+                # Map detailed reason to the CLOSED/STOPPED DB status enum
+                db_status = "CLOSED" if reason == "CLOSED" else "STOPPED"
+                await broker.close_position(
+                    redis_client, symbol, exit_price,
+                    status=db_status, exit_reason=reason,
+                )
+                # Block re-entry after a stop loss to prevent chasing
+                if reason == "STOP_LOSS":
+                    await redis_client.setex(
+                        f"sl:cooldown:{symbol}",
+                        settings.sl_cooldown_minutes * 60,
+                        "1",
+                    )
+            elif peak_updated or new_milestone != pos.milestone_count:
+                # Write back peak and/or milestone advance in a single Redis call
+                pos.milestone_count = new_milestone
+                await redis_client.hset("positions:open", symbol, pos.model_dump_json())
+
         except Exception as e:
             logger.exception(f"Error checking stop/target for {symbol}: {e}")
 

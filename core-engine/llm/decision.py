@@ -20,8 +20,11 @@ from llm.prompts import build_decision_prompt
 from models.schemas import LLMDecision, MarketSnapshot, TechnicalIndicators
 from news.sentiment import format_news_for_prompt
 from indicators.technicals import get_macd_signal_label
+from indicators.historical_sr import format_sr_for_prompt
 import data_client
 from context.formatter import format_context_for_prompt
+from fyers.options import get_atm_option
+from fyers.market_data import get_quote
 
 logger = logging.getLogger(__name__)
 IST = pytz.timezone("Asia/Kolkata")
@@ -89,6 +92,7 @@ async def make_decision(
     snapshot: MarketSnapshot,
     redis_client: aioredis.Redis,
     historical_context: Optional[dict] = None,
+    sr_levels: Optional[list] = None,
 ) -> Optional[LLMDecision]:
     """Build prompt (with historical context), call LLM, parse, publish to Redis and DB."""
     ind: TechnicalIndicators = snapshot.indicators
@@ -102,6 +106,9 @@ async def make_decision(
     if historical_context:
         hist_block = format_context_for_prompt(historical_context)
 
+    # Format historical S/R levels block
+    sr_block = format_sr_for_prompt(sr_levels or [], snapshot.ltp)
+
     prompt = build_decision_prompt(
         symbol=snapshot.symbol,
         price=snapshot.ltp,
@@ -111,6 +118,13 @@ async def make_decision(
         pivot=ind.cpr.pivot,
         cpr_width_pct=ind.cpr.width_pct,
         cpr_signal=ind.cpr_signal,
+        prev_day_high=ind.prev_day_high,
+        prev_day_low=ind.prev_day_low,
+        day_high=ind.day_high,
+        day_low=ind.day_low,
+        consolidation_pct=ind.consolidation_pct,
+        range_breakout=ind.range_breakout,
+        sr_levels_block=sr_block,
         nearest_resistance=ind.nearest_resistance,
         resistance_label=ind.nearest_resistance_label,
         nearest_support=ind.nearest_support,
@@ -138,6 +152,45 @@ async def make_decision(
 
     validated = _validate_decision(parsed, snapshot.ltp)
 
+    # Hard MACD filter — LLM cannot override momentum direction
+    # A SELL with BULLISH MACD or BUY with BEARISH MACD is contradictory
+    if validated["decision"] == "SELL" and macd_label == "BULLISH":
+        validated["confidence"] = max(0.0, validated["confidence"] - 0.15)
+        if validated["confidence"] < 0.5:
+            validated["decision"] = "HOLD"
+            validated["reasoning"] = f"[MACD override: BULLISH MACD contradicts SELL] {validated['reasoning']}"
+            logger.info(f"SELL overridden to HOLD for {snapshot.symbol} — MACD is BULLISH")
+    elif validated["decision"] == "BUY" and macd_label == "BEARISH":
+        validated["confidence"] = max(0.0, validated["confidence"] - 0.15)
+        if validated["confidence"] < 0.5:
+            validated["decision"] = "HOLD"
+            validated["reasoning"] = f"[MACD override: BEARISH MACD contradicts BUY] {validated['reasoning']}"
+            logger.info(f"BUY overridden to HOLD for {snapshot.symbol} — MACD is BEARISH")
+
+    # Resolve ATM option for actionable decisions
+    option_symbol = option_type = option_expiry = None
+    option_strike = None
+    option_price = None
+    option_lot_size = None
+    if validated["decision"] in ("BUY", "SELL"):
+        opt = get_atm_option(snapshot.symbol, snapshot.ltp, validated["decision"])
+        if opt:
+            option_symbol, option_strike, option_type, option_expiry, option_lot_size = opt
+            try:
+                q = get_quote(option_symbol)
+                option_price = q["ltp"] if q else None
+            except Exception as e:
+                logger.warning(f"Could not fetch option quote for {option_symbol}: {e}")
+            if option_price:
+                await redis_client.setex(
+                    f"market:{option_symbol}",
+                    600,
+                    json.dumps({"ltp": option_price, "symbol": option_symbol}),
+                )
+                logger.info(f"Option selected: {option_symbol} @ ₹{option_price:.2f}")
+            else:
+                logger.warning(f"No price for {option_symbol}, will trade without option price")
+
     decision = LLMDecision(
         decision_id=str(uuid.uuid4()),
         symbol=snapshot.symbol,
@@ -148,6 +201,12 @@ async def make_decision(
         stop_loss=validated["stop_loss"],
         target=validated["target"],
         risk_reward=validated["risk_reward"],
+        option_symbol=option_symbol,
+        option_strike=option_strike,
+        option_type=option_type,
+        option_expiry=option_expiry,
+        option_price=option_price,
+        option_lot_size=option_lot_size,
         indicators_snapshot={
             "price": snapshot.ltp,
             "cpr_signal": ind.cpr_signal,
@@ -157,6 +216,10 @@ async def make_decision(
             "ema_21": ind.ema_21,
             "macd_signal": macd_label,
             "sentiment_score": snapshot.news.aggregate_score if snapshot.news else 0.0,
+            "day_high": ind.day_high,
+            "day_low": ind.day_low,
+            "consolidation_pct": ind.consolidation_pct,
+            "range_breakout": ind.range_breakout,
         },
     )
 
@@ -174,6 +237,12 @@ async def make_decision(
             "target": str(decision.target),
             "risk_reward": str(decision.risk_reward),
             "indicators": json.dumps(decision.indicators_snapshot),
+            "option_symbol": decision.option_symbol or "",
+            "option_strike": str(decision.option_strike or 0),
+            "option_type": decision.option_type or "",
+            "option_expiry": decision.option_expiry or "",
+            "option_price": str(decision.option_price or 0),
+            "option_lot_size": str(decision.option_lot_size or 0),
         },
         maxlen=1000,
     )

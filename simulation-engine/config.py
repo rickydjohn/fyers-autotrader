@@ -13,9 +13,20 @@ class Settings(BaseSettings):
     core_engine_url: str = Field("http://core-engine:8001", env="CORE_ENGINE_URL")
     log_level: str = Field("INFO", env="LOG_LEVEL")
 
+    # Session close time (IST) — no new positions opened at or after this time
+    session_close_hour: int = Field(15, env="SESSION_CLOSE_HOUR")
+    session_close_minute: int = Field(15, env="SESSION_CLOSE_MINUTE")
+
+    # Minimum option premium (₹) — below this, a 10% SL is within the bid-ask spread
+    min_option_premium: float = Field(30.0, env="MIN_OPTION_PREMIUM")
+
+    # Minutes to block re-entry on an underlying after a STOP_LOSS
+    sl_cooldown_minutes: int = Field(5, env="SL_COOLDOWN_MINUTES")
+
     class Config:
         env_file = ".env"
         case_sensitive = False
+        extra = "ignore"
 
 
 settings = Settings()

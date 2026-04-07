@@ -7,6 +7,7 @@ import {
   type CandlestickSeriesOptions,
 } from 'lightweight-charts'
 import type { OHLCBar, Trade } from '../../types'
+import { parseDate } from '../../utils/date'
 
 interface Props {
   candles: OHLCBar[]
@@ -20,6 +21,11 @@ export function CandlestickChart({ candles, trades = [], height = 400, cprLevels
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
+  // Track previous candle dataset to avoid full setData on every render
+  const prevFirstTimeRef = useRef<number | null>(null)
+  const prevLengthRef = useRef<number>(0)
+  // Track price line objects so we can remove them before recreating
+  const priceLineRefsRef = useRef<ReturnType<ISeriesApi<'Candlestick'>['createPriceLine']>[]>([])
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -35,6 +41,14 @@ export function CandlestickChart({ candles, trades = [], height = 400, cprLevels
       },
       crosshair: { mode: 1 },
       rightPriceScale: { borderColor: '#30363d' },
+      localization: {
+        timeFormatter: (timestamp: number) =>
+          new Date(timestamp * 1000).toLocaleTimeString('en-IN', {
+            timeZone: 'Asia/Kolkata',
+            hour: '2-digit',
+            minute: '2-digit',
+          }),
+      },
       timeScale: { borderColor: '#30363d', timeVisible: true },
       width: containerRef.current.clientWidth,
       height,
@@ -61,6 +75,9 @@ export function CandlestickChart({ candles, trades = [], height = 400, cprLevels
     return () => {
       resizeObserver.disconnect()
       chart.remove()
+      prevFirstTimeRef.current = null
+      prevLengthRef.current = 0
+      priceLineRefsRef.current = []
     }
   }, [height])
 
@@ -75,20 +92,42 @@ export function CandlestickChart({ candles, trades = [], height = 400, cprLevels
       close: c.close,
     }))
 
-    candleSeriesRef.current.setData(chartData)
+    const firstTime = chartData[0]?.time as number
+    const length = chartData.length
 
-    // Add CPR lines as price lines
+    if (prevFirstTimeRef.current === firstTime && prevLengthRef.current === length) {
+      // Same set of bars — only the last bar may have changed. Use update() to
+      // avoid clearing the canvas (setData blanks the chart before redrawing).
+      candleSeriesRef.current.update(chartData[length - 1])
+    } else {
+      // New dataset (symbol/timeframe change or first load) — full replace
+      candleSeriesRef.current.setData(chartData)
+      prevFirstTimeRef.current = firstTime
+      prevLengthRef.current = length
+      chartRef.current?.timeScale().fitContent()
+    }
+
+    // Remove stale price lines before recreating to avoid accumulation
+    priceLineRefsRef.current.forEach((pl) => {
+      try { candleSeriesRef.current?.removePriceLine(pl) } catch { /* already removed */ }
+    })
+    priceLineRefsRef.current = []
+
     if (cprLevels && candleSeriesRef.current) {
-      candleSeriesRef.current.createPriceLine({ price: cprLevels.tc, color: '#58a6ff', lineWidth: 1, lineStyle: 2, title: 'TC' })
-      candleSeriesRef.current.createPriceLine({ price: cprLevels.pivot, color: '#f0883e', lineWidth: 1, lineStyle: 2, title: 'Pivot' })
-      candleSeriesRef.current.createPriceLine({ price: cprLevels.bc, color: '#58a6ff', lineWidth: 1, lineStyle: 2, title: 'BC' })
+      priceLineRefsRef.current.push(
+        candleSeriesRef.current.createPriceLine({ price: cprLevels.tc, color: '#58a6ff', lineWidth: 1, lineStyle: 2, title: 'TC' }),
+        candleSeriesRef.current.createPriceLine({ price: cprLevels.pivot, color: '#f0883e', lineWidth: 1, lineStyle: 2, title: 'Pivot' }),
+        candleSeriesRef.current.createPriceLine({ price: cprLevels.bc, color: '#58a6ff', lineWidth: 1, lineStyle: 2, title: 'BC' }),
+      )
     }
 
     if (pivots && candleSeriesRef.current) {
-      candleSeriesRef.current.createPriceLine({ price: pivots.r1, color: '#f85149', lineWidth: 1, lineStyle: 3, title: 'R1' })
-      candleSeriesRef.current.createPriceLine({ price: pivots.r2, color: '#f85149', lineWidth: 1, lineStyle: 3, title: 'R2' })
-      candleSeriesRef.current.createPriceLine({ price: pivots.s1, color: '#3fb950', lineWidth: 1, lineStyle: 3, title: 'S1' })
-      candleSeriesRef.current.createPriceLine({ price: pivots.s2, color: '#3fb950', lineWidth: 1, lineStyle: 3, title: 'S2' })
+      priceLineRefsRef.current.push(
+        candleSeriesRef.current.createPriceLine({ price: pivots.r1, color: '#f85149', lineWidth: 1, lineStyle: 3, title: 'R1' }),
+        candleSeriesRef.current.createPriceLine({ price: pivots.r2, color: '#f85149', lineWidth: 1, lineStyle: 3, title: 'R2' }),
+        candleSeriesRef.current.createPriceLine({ price: pivots.s1, color: '#3fb950', lineWidth: 1, lineStyle: 3, title: 'S1' }),
+        candleSeriesRef.current.createPriceLine({ price: pivots.s2, color: '#3fb950', lineWidth: 1, lineStyle: 3, title: 'S2' }),
+      )
     }
 
     // Trade markers
@@ -96,7 +135,7 @@ export function CandlestickChart({ candles, trades = [], height = 400, cprLevels
       const markers = trades
         .filter((t) => t.entry_time)
         .map((t) => ({
-          time: Math.floor(new Date(t.entry_time).getTime() / 1000) as any,
+          time: Math.floor(parseDate(t.entry_time).getTime() / 1000) as any,
           position: t.side === 'BUY' ? 'belowBar' as const : 'aboveBar' as const,
           color: t.side === 'BUY' ? '#3fb950' : '#f85149',
           shape: t.side === 'BUY' ? 'arrowUp' as const : 'arrowDown' as const,
@@ -105,8 +144,6 @@ export function CandlestickChart({ candles, trades = [], height = 400, cprLevels
         }))
       candleSeriesRef.current.setMarkers(markers)
     }
-
-    chartRef.current?.timeScale().fitContent()
   }, [candles, trades, cprLevels, pivots])
 
   return <div ref={containerRef} className="w-full rounded-lg overflow-hidden" style={{ height }} />

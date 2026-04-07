@@ -1,0 +1,19 @@
+apiVersion: v2
+name: fyers-autotrader
+description: >
+  Fyers AutoTrader — LLM-driven intraday trading system for NSE indices.
+  Includes core-engine (Ollama/LLM), simulation-engine, api-service,
+  data-service (TimescaleDB ingest), and ui-service (React dashboard).
+type: application
+# Stamped automatically by the release workflow; do not edit manually.
+version: 0.1.0
+appVersion: "v0.1.0"
+keywords:
+  - trading
+  - fintech
+  - algorithmic-trading
+  - nse
+home: https://github.com/rickydjohn/fyers-autotrader
+maintainers:
+  - name: Ricky DJ
+    url: https://github.com/rickydjohn

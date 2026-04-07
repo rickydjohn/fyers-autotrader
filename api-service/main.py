@@ -18,6 +18,7 @@ from config import settings
 from routers import decision_log, market_data, pnl, positions, trades
 from routers.historical import router as historical_router
 from routers.trading_mode import router as trading_mode_router
+from routers.report import router as report_router
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -38,10 +39,15 @@ async def lifespan(app: FastAPI):
         base_url=settings.core_engine_url,
         timeout=10.0,
     )
+    app.state.http_sim_client = httpx.AsyncClient(
+        base_url=settings.sim_engine_url,
+        timeout=10.0,
+    )
     logger.info("API service started")
     yield
     await app.state.http_client.aclose()
     await app.state.http_core_client.aclose()
+    await app.state.http_sim_client.aclose()
     await app.state.redis.aclose()
     logger.info("API service shutdown")
 
@@ -69,6 +75,7 @@ app.include_router(pnl.router,          prefix=PREFIX)
 app.include_router(decision_log.router, prefix=PREFIX)
 app.include_router(historical_router,   prefix=PREFIX)
 app.include_router(trading_mode_router, prefix=PREFIX)
+app.include_router(report_router,       prefix=PREFIX)
 
 
 @app.get("/healthz")

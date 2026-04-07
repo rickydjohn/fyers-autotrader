@@ -1,0 +1,193 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Default values for fyers-autotrader Helm chart.
+# Override per-environment with -f values-prod.yaml or --set key=value.
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Global image settings — shared by all application services.
+image:
+  registry: ghcr.io/rickydjohn/fyers-autotrader
+  # Stamped to the release tag (vX.Y.Z) by the CI workflow; "latest" for local dev.
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+# ── Service definitions ────────────────────────────────────────────────────────
+# Each entry produces a Deployment + ClusterIP Service.
+# All services inherit image.registry and image.tag unless overridden.
+
+services:
+  data-service:
+    enabled: true
+    image: data-service      # appended to image.registry
+    port: 8003
+    replicas: 1
+    healthPath: /healthz
+    env:
+      DATABASE_URL: "postgresql+asyncpg://trading:trading@timescaledb:5432/trading"
+      REDIS_URL: "redis://redis:6379"
+      TZ: "Asia/Kolkata"
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+  core-engine:
+    enabled: true
+    image: core-engine
+    port: 8001
+    replicas: 1
+    healthPath: /healthz
+    env:
+      REDIS_URL: "redis://redis:6379"
+      # Point to your Ollama host; override in production values.
+      OLLAMA_BASE_URL: "http://host.docker.internal:11434"
+      DATA_SERVICE_URL: "http://data-service:8003"
+      TZ: "Asia/Kolkata"
+    # Mount the Fyers token directory so tokens survive pod restarts.
+    tokenVolume:
+      enabled: true
+      claimName: fyers-tokens
+      mountPath: /app/tokens
+    resources:
+      requests:
+        cpu: 200m
+        memory: 256Mi
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+
+  simulation-engine:
+    enabled: true
+    image: simulation-engine
+    port: 8002
+    replicas: 1
+    healthPath: /healthz
+    env:
+      REDIS_URL: "redis://redis:6379"
+      DATA_SERVICE_URL: "http://data-service:8003"
+      CORE_ENGINE_URL: "http://core-engine:8001"
+      TZ: "Asia/Kolkata"
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+  api-service:
+    enabled: true
+    image: api-service
+    port: 8000
+    replicas: 1
+    healthPath: /healthz
+    env:
+      REDIS_URL: "redis://redis:6379"
+      CORE_ENGINE_URL: "http://core-engine:8001"
+      SIM_ENGINE_URL: "http://simulation-engine:8002"
+      DATA_SERVICE_URL: "http://data-service:8003"
+      TZ: "Asia/Kolkata"
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+  ui-service:
+    enabled: true
+    image: ui-service
+    port: 80
+    replicas: 1
+    healthPath: /
+    env:
+      TZ: "Asia/Kolkata"
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 200m
+        memory: 128Mi
+
+# ── Infrastructure (optional — disable if using managed services) ──────────────
+
+redis:
+  enabled: true
+  image: redis:7.2-alpine
+  port: 6379
+  persistence:
+    enabled: true
+    size: 1Gi
+    storageClass: ""    # use cluster default
+
+timescaledb:
+  enabled: true
+  image: timescale/timescaledb:latest-pg16
+  port: 5432
+  persistence:
+    enabled: true
+    size: 20Gi
+    storageClass: ""
+  credentials:
+    database: trading
+    username: trading
+    # Override with a proper secret in production:
+    # --set timescaledb.credentials.password=<secret>
+    password: trading
+  shmSize: "256Mi"
+
+# ── Fyers tokens PVC ────────────────────────────────────────────────────────────
+fyersTokens:
+  persistence:
+    enabled: true
+    size: 100Mi
+    storageClass: ""
+
+# ── Ingress ─────────────────────────────────────────────────────────────────────
+ingress:
+  enabled: false
+  className: nginx
+  annotations: {}
+  # Map of hostname → service:port pairs exposed via Ingress.
+  # Example:
+  #   trade.example.com → ui-service:80
+  #   api.trade.example.com → api-service:8000
+  hosts:
+    - host: trade.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+          service: ui-service
+          port: 80
+    - host: api.trade.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+          service: api-service
+          port: 8000
+  tls: []
+  # tls:
+  #   - secretName: trade-tls
+  #     hosts:
+  #       - trade.example.com
+  #       - api.trade.example.com
+
+# ── Fyers credentials (set at deploy time, never commit real values) ──────────
+secrets:
+  FYERS_CLIENT_ID: ""
+  FYERS_SECRET_KEY: ""
+  FYERS_ACCESS_TOKEN: ""
+
+# ── Pod-level settings ────────────────────────────────────────────────────────
+podAnnotations: {}
+podSecurityContext: {}
+securityContext: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

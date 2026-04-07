@@ -33,12 +33,20 @@ async def get_decision_history(
 async def get_trade_history(
     symbol: Optional[str] = Query(None),
     status: Optional[str] = Query(None, regex="^(OPEN|CLOSED|STOPPED)$"),
+    trading_mode: Optional[str] = Query(None, regex="^(simulation|live)$"),
     limit:  int           = Query(100, ge=1, le=500),
     since:  Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
     since_dt = datetime.fromisoformat(since) if since else None
-    trades = await get_trades(db, symbol=symbol, status=status, limit=limit, since=since_dt)
+    trades = await get_trades(
+        db,
+        symbol=symbol,
+        status=status,
+        trading_mode=trading_mode,
+        limit=limit,
+        since=since_dt,
+    )
     return {"status": "ok", "count": len(trades), "trades": trades}
 
 

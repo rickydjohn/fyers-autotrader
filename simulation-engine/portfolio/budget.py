@@ -43,14 +43,20 @@ async def save_budget(redis_client: aioredis.Redis, state: BudgetState) -> None:
     await redis_client.set(BUDGET_KEY, json.dumps(state.model_dump()))
 
 
-async def allocate(redis_client: aioredis.Redis, amount: float) -> bool:
-    """Deduct amount from cash, add to invested. Returns False if insufficient funds."""
+async def allocate(redis_client: aioredis.Redis, invest_amount: float, fee: float = 0.0) -> bool:
+    """
+    Deduct invest_amount + fee from cash; add only invest_amount to invested.
+    Fee (commission) is a sunk cost — it leaves cash but never enters invested,
+    so it doesn't inflate the invested balance after the position closes.
+    Returns False if insufficient funds.
+    """
     state = await load_budget(redis_client)
-    if state.cash < amount:
-        logger.warning(f"Insufficient cash: need ₹{amount:.0f}, have ₹{state.cash:.0f}")
+    total_needed = invest_amount + fee
+    if state.cash < total_needed:
+        logger.warning(f"Insufficient cash: need ₹{total_needed:.0f}, have ₹{state.cash:.0f}")
         return False
-    state.cash -= amount
-    state.invested += amount
+    state.cash -= total_needed
+    state.invested += invest_amount
     await save_budget(redis_client, state)
     return True
 

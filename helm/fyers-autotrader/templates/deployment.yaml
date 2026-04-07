@@ -1,0 +1,110 @@
+{{- range $name, $svc := .Values.services }}
+{{- if $svc.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "fyers-autotrader.labels" $ | nindent 4 }}
+    app.kubernetes.io/name: {{ $name }}
+spec:
+  replicas: {{ $svc.replicas | default 1 }}
+  selector:
+    matchLabels:
+      {{- include "fyers-autotrader.selectorLabels" (dict "name" $name "root" $) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "fyers-autotrader.selectorLabels" (dict "name" $name "root" $) | nindent 8 }}
+      {{- with $.Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with $.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ $name }}
+          image: {{ include "fyers-autotrader.image" (dict "svc" $svc "root" $) }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ $svc.port }}
+              protocol: TCP
+          {{- with $.Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          env:
+            {{- range $k, $v := $svc.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+            # Inject secrets from the shared secret (fyers credentials etc.)
+            - name: FYERS_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: fyers-autotrader-secrets
+                  key: FYERS_CLIENT_ID
+                  optional: true
+            - name: FYERS_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: fyers-autotrader-secrets
+                  key: FYERS_SECRET_KEY
+                  optional: true
+            - name: FYERS_ACCESS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: fyers-autotrader-secrets
+                  key: FYERS_ACCESS_TOKEN
+                  optional: true
+          livenessProbe:
+            httpGet:
+              path: {{ $svc.healthPath | default "/healthz" }}
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            failureThreshold: 5
+          readinessProbe:
+            httpGet:
+              path: {{ $svc.healthPath | default "/healthz" }}
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            {{- toYaml $svc.resources | nindent 12 }}
+          {{- if and $svc.tokenVolume $svc.tokenVolume.enabled }}
+          volumeMounts:
+            - name: fyers-tokens
+              mountPath: {{ $svc.tokenVolume.mountPath }}
+          {{- end }}
+      {{- if and $svc.tokenVolume $svc.tokenVolume.enabled }}
+      volumes:
+        - name: fyers-tokens
+          persistentVolumeClaim:
+            claimName: {{ $svc.tokenVolume.claimName | default "fyers-tokens" }}
+      {{- end }}
+      {{- with $.Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
+{{- end }}

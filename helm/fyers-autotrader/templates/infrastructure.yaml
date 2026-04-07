@@ -1,0 +1,228 @@
+# ── Redis ─────────────────────────────────────────────────────────────────────
+{{- if .Values.redis.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-data
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fyers-autotrader.labels" . | nindent 4 }}
+    app.kubernetes.io/name: redis
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- if .Values.redis.persistence.storageClass }}
+  storageClassName: {{ .Values.redis.persistence.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.redis.persistence.size }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fyers-autotrader.labels" . | nindent 4 }}
+    app.kubernetes.io/name: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redis
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      containers:
+        - name: redis
+          image: {{ .Values.redis.image }}
+          ports:
+            - name: redis
+              containerPort: {{ .Values.redis.port }}
+          command: ["redis-server", "--appendonly", "yes"]
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+      volumes:
+        - name: redis-data
+          persistentVolumeClaim:
+            claimName: redis-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fyers-autotrader.labels" . | nindent 4 }}
+    app.kubernetes.io/name: redis
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - name: redis
+      port: {{ .Values.redis.port }}
+      targetPort: redis
+{{- end }}
+
+# ── TimescaleDB ───────────────────────────────────────────────────────────────
+{{- if .Values.timescaledb.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: timescale-data
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fyers-autotrader.labels" . | nindent 4 }}
+    app.kubernetes.io/name: timescaledb
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- if .Values.timescaledb.persistence.storageClass }}
+  storageClassName: {{ .Values.timescaledb.persistence.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.timescaledb.persistence.size }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: timescaledb-credentials
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fyers-autotrader.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+type: Opaque
+stringData:
+  POSTGRES_DB: {{ .Values.timescaledb.credentials.database | quote }}
+  POSTGRES_USER: {{ .Values.timescaledb.credentials.username | quote }}
+  POSTGRES_PASSWORD: {{ .Values.timescaledb.credentials.password | quote }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: timescaledb
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fyers-autotrader.labels" . | nindent 4 }}
+    app.kubernetes.io/name: timescaledb
+spec:
+  serviceName: timescaledb
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: timescaledb
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: timescaledb
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      containers:
+        - name: timescaledb
+          image: {{ .Values.timescaledb.image }}
+          ports:
+            - name: postgres
+              containerPort: {{ .Values.timescaledb.port }}
+          envFrom:
+            - secretRef:
+                name: timescaledb-credentials
+          env:
+            - name: TZ
+              value: "Asia/Kolkata"
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", {{ .Values.timescaledb.credentials.username | quote }}, "-d", {{ .Values.timescaledb.credentials.database | quote }}]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 10
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", {{ .Values.timescaledb.credentials.username | quote }}, "-d", {{ .Values.timescaledb.credentials.database | quote }}]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: 1000m
+              memory: 2Gi
+          volumeMounts:
+            - name: timescale-data
+              mountPath: /var/lib/postgresql/data
+          securityContext:
+            runAsUser: 999
+      volumes:
+        - name: timescale-data
+          persistentVolumeClaim:
+            claimName: timescale-data
+      shareProcessNamespace: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: timescaledb
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fyers-autotrader.labels" . | nindent 4 }}
+    app.kubernetes.io/name: timescaledb
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: timescaledb
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - name: postgres
+      port: {{ .Values.timescaledb.port }}
+      targetPort: postgres
+{{- end }}
+
+# ── Fyers tokens PVC ──────────────────────────────────────────────────────────
+{{- if .Values.fyersTokens.persistence.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: fyers-tokens
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fyers-autotrader.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep   # tokens survive helm upgrades
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- if .Values.fyersTokens.persistence.storageClass }}
+  storageClassName: {{ .Values.fyersTokens.persistence.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.fyersTokens.persistence.size }}
+{{- end }}

@@ -74,12 +74,10 @@ CREATE TABLE IF NOT EXISTS ai_decisions (
     historical_context  JSONB
 );
 
-SELECT create_hypertable(
-    'ai_decisions', 'time',
-    chunk_time_interval => INTERVAL '7 days',
-    migrate_data        => TRUE,
-    if_not_exists       => TRUE
-);
+-- NOTE:
+-- Keep ai_decisions as a regular table (not hypertable) because decision_id
+-- is the primary key used by upserts; Timescale hypertables require unique
+-- constraints/indexes to include the partitioning column (time).
 
 CREATE INDEX IF NOT EXISTS ai_decisions_symbol_time_idx
     ON ai_decisions (symbol, time DESC);
@@ -102,14 +100,24 @@ CREATE TABLE IF NOT EXISTS trades (
     slippage    NUMERIC(10, 2)  NOT NULL DEFAULT 0,
     status      TEXT            NOT NULL DEFAULT 'OPEN',
     decision_id TEXT,
-    reasoning   TEXT
+    reasoning   TEXT,
+    trading_mode TEXT           NOT NULL DEFAULT 'simulation' CHECK (trading_mode IN ('simulation', 'live')),
+    exit_reason  TEXT
 );
 
-CREATE INDEX IF NOT EXISTS trades_symbol_entry_time_idx
-    ON trades (symbol, entry_time DESC);
+DO $$
+BEGIN
+    IF to_regclass('public.trades') IS NOT NULL THEN
+        CREATE INDEX IF NOT EXISTS trades_symbol_entry_time_idx
+            ON trades (symbol, entry_time DESC);
 
-CREATE INDEX IF NOT EXISTS trades_entry_time_idx
-    ON trades (entry_time DESC);
+        CREATE INDEX IF NOT EXISTS trades_entry_time_idx
+            ON trades (entry_time DESC);
+
+        CREATE INDEX IF NOT EXISTS trades_mode_entry_time_idx
+            ON trades (trading_mode, entry_time DESC);
+    END IF;
+END $$;
 
 -- ============================================================
 -- 5. News Items
@@ -244,16 +252,7 @@ SELECT add_compression_policy(
     if_not_exists => TRUE
 );
 
-ALTER TABLE ai_decisions SET (
-    timescaledb.compress,
-    timescaledb.compress_segmentby = 'symbol'
-);
-
-SELECT add_compression_policy(
-    'ai_decisions',
-    INTERVAL '30 days',
-    if_not_exists => TRUE
-);
+-- ai_decisions compression policy intentionally omitted because it is not a hypertable.
 
 -- ============================================================
 -- 8. Retention (optional — keep 90 days of 1-min candles)
@@ -261,5 +260,119 @@ SELECT add_compression_policy(
 SELECT add_retention_policy(
     'market_candles',
     INTERVAL '90 days',
+    if_not_exists => TRUE
+);
+
+-- ============================================================
+-- 9. Multi-year Daily OHLCV  (permanent — no retention)
+-- ============================================================
+-- Raw daily bars spanning several years, used to compute long-term S/R levels.
+-- Deliberately NOT a hypertable so it is never subject to retention policies.
+CREATE TABLE IF NOT EXISTS daily_ohlcv (
+    date    DATE            NOT NULL,
+    symbol  TEXT            NOT NULL,
+    open    NUMERIC(12, 2)  NOT NULL,
+    high    NUMERIC(12, 2)  NOT NULL,
+    low     NUMERIC(12, 2)  NOT NULL,
+    close   NUMERIC(12, 2)  NOT NULL,
+    volume  BIGINT          NOT NULL DEFAULT 0,
+    PRIMARY KEY (date, symbol)
+);
+
+CREATE INDEX IF NOT EXISTS daily_ohlcv_symbol_date_idx
+    ON daily_ohlcv (symbol, date DESC);
+
+-- ============================================================
+-- 10. Historical Support/Resistance Levels
+-- ============================================================
+-- Computed swing-high/low clusters from the multi-year daily chart.
+-- Recomputed on every cluster bootstrap and weekly thereafter.
+CREATE TABLE IF NOT EXISTS historical_sr_levels (
+    id          BIGSERIAL       PRIMARY KEY,
+    symbol      TEXT            NOT NULL,
+    level       NUMERIC(12, 2)  NOT NULL,
+    level_type  TEXT            NOT NULL
+                    CHECK (level_type IN ('SUPPORT', 'RESISTANCE', 'BOTH')),
+    strength    INTEGER         NOT NULL DEFAULT 1,
+    first_seen  DATE,
+    last_seen   DATE,
+    computed_at TIMESTAMPTZ     NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS historical_sr_symbol_level_idx
+    ON historical_sr_levels (symbol, level);
+
+CREATE INDEX IF NOT EXISTS historical_sr_symbol_strength_idx
+    ON historical_sr_levels (symbol, strength DESC);
+
+-- ============================================================
+-- 11. Retention Policies
+-- ============================================================
+-- 1-min base candles: reduce to 30 days — 5m/15m/1h/daily aggregates
+-- already materialise older data so raw 1m rows beyond 30 days are redundant.
+SELECT remove_retention_policy('market_candles', if_not_exists => TRUE);
+SELECT add_retention_policy(
+    'market_candles',
+    INTERVAL '30 days',
+    if_not_exists => TRUE
+);
+
+-- Continuous aggregate retention (each view is a Timescale hypertable internally)
+SELECT add_retention_policy(
+    'candles_5m',
+    INTERVAL '90 days',
+    if_not_exists => TRUE
+);
+
+SELECT add_retention_policy(
+    'candles_15m',
+    INTERVAL '180 days',
+    if_not_exists => TRUE
+);
+
+SELECT add_retention_policy(
+    'candles_1h',
+    INTERVAL '365 days',
+    if_not_exists => TRUE
+);
+
+-- News items: 30 days is sufficient for sentiment analysis context
+SELECT create_hypertable(
+    'news_items', 'time',
+    if_not_exists => TRUE
+);
+
+SELECT add_retention_policy(
+    'news_items',
+    INTERVAL '30 days',
+    if_not_exists => TRUE
+);
+
+-- AI decisions: keep 180 days for backtesting and strategy review
+-- ai_decisions is a regular table (not hypertable); use a pg_cron job instead.
+-- Scheduled via migrations/003_compaction.sql for existing clusters.
+
+-- ============================================================
+-- 12. Compression Policies for Continuous Aggregates
+-- ============================================================
+-- Compress 5m and 15m aggregates after 7 days of inactivity (~10x storage saving).
+-- candles_1h and candles_daily have fewer rows — not worth the compression overhead.
+ALTER MATERIALIZED VIEW candles_5m SET (
+    timescaledb.compress = true
+);
+
+SELECT add_compression_policy(
+    'candles_5m',
+    compress_after => INTERVAL '7 days',
+    if_not_exists => TRUE
+);
+
+ALTER MATERIALIZED VIEW candles_15m SET (
+    timescaledb.compress = true
+);
+
+SELECT add_compression_policy(
+    'candles_15m',
+    compress_after => INTERVAL '7 days',
     if_not_exists => TRUE
 );

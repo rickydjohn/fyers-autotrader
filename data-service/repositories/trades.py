@@ -30,6 +30,7 @@ async def get_trades(
     db: AsyncSession,
     symbol: Optional[str] = None,
     status: Optional[str] = None,
+    trading_mode: Optional[str] = None,
     limit: int = 100,
     since: Optional[datetime] = None,
 ) -> List[Dict[str, Any]]:
@@ -38,6 +39,8 @@ async def get_trades(
         q = q.where(Trade.symbol == symbol)
     if status:
         q = q.where(Trade.status == status.upper())
+    if trading_mode:
+        q = q.where(Trade.trading_mode == trading_mode)
     if since:
         q = q.where(Trade.entry_time >= since)
     result = await db.execute(q)
@@ -74,19 +77,25 @@ async def get_pnl_summary(
 
 def _trade_to_dict(row: Trade) -> Dict[str, Any]:
     return {
-        "trade_id":    row.trade_id,
-        "symbol":      row.symbol,
-        "side":        row.side,
-        "quantity":    row.quantity,
-        "entry_price": float(row.entry_price),
-        "entry_time":  row.entry_time.isoformat(),
-        "exit_price":  float(row.exit_price) if row.exit_price is not None else None,
-        "exit_time":   row.exit_time.isoformat() if row.exit_time else None,
-        "pnl":         float(row.pnl) if row.pnl is not None else None,
-        "pnl_pct":     float(row.pnl_pct) if row.pnl_pct is not None else None,
-        "commission":  float(row.commission),
-        "slippage":    float(row.slippage),
-        "status":      row.status,
-        "decision_id": row.decision_id,
-        "reasoning":   row.reasoning,
+        "trade_id":      row.trade_id,
+        "symbol":        row.symbol,
+        "side":          row.side,
+        "quantity":      row.quantity,
+        "entry_price":   float(row.entry_price),
+        "entry_time":    row.entry_time.isoformat(),
+        "exit_price":    float(row.exit_price) if row.exit_price is not None else None,
+        "exit_time":     row.exit_time.isoformat() if row.exit_time else None,
+        "pnl":           float(row.pnl) if row.pnl is not None else None,
+        "pnl_pct":       float(row.pnl_pct) if row.pnl_pct is not None else None,
+        "commission":    float(row.commission),
+        "slippage":      float(row.slippage),
+        "status":        row.status,
+        "decision_id":   row.decision_id,
+        "reasoning":     row.reasoning,
+        "trading_mode":  row.trading_mode,
+        "option_symbol": row.option_symbol,
+        "option_strike": row.option_strike,
+        "option_type":   row.option_type,
+        "option_expiry": row.option_expiry,
+        "exit_reason":   row.exit_reason,
     }

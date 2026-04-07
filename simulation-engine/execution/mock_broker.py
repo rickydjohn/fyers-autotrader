@@ -50,21 +50,59 @@ async def open_position(
     target: float,
     decision_id: str,
     reasoning: str,
+    option_symbol: Optional[str] = None,
+    option_strike: Optional[int] = None,
+    option_type: Optional[str] = None,
+    option_expiry: Optional[str] = None,
+    option_price: Optional[float] = None,
+    option_lot_size: Optional[int] = None,
 ) -> Optional[Trade]:
-    """Open a new simulated position."""
+    """Open a new simulated position. Trades the option if one is provided."""
+    # ── Gate 1: No new positions at or after session close ────────────────────
+    _now = datetime.now(IST)
+    if _now.hour * 60 + _now.minute >= settings.session_close_hour * 60 + settings.session_close_minute:
+        logger.info(f"[GATE] Session closed ({_now.strftime('%H:%M')}) — skipping {symbol}")
+        return None
+
+    # ── Gate 2: Minimum option premium — SL is inside bid-ask below this ─────
+    if option_symbol and option_price is not None and option_price < settings.min_option_premium:
+        logger.info(
+            f"[GATE] Premium ₹{option_price:.2f} < min ₹{settings.min_option_premium:.0f} "
+            f"— skipping {option_symbol}"
+        )
+        return None
+
+    # ── Gate 3: SL cooldown — block re-entry after stop loss ─────────────────
+    if await redis_client.exists(f"sl:cooldown:{symbol}"):
+        ttl = await redis_client.ttl(f"sl:cooldown:{symbol}")
+        logger.info(f"[GATE] SL cooldown active for {symbol} ({ttl}s remaining) — skipping")
+        return None
+
     existing = await redis_client.hget("positions:open", symbol)
     if existing:
         logger.info(f"Position already open for {symbol}, skipping")
         return None
 
     max_value = await get_max_position_value(redis_client)
-    entry_price = _apply_slippage(price, side)
-    quantity = _calculate_quantity(entry_price, max_value)
+
+    if option_symbol and option_price:
+        # Trade the option: entry_price = option premium; quantity = 1 lot (from Fyers depth)
+        lot_size = option_lot_size or 1
+        entry_price = _apply_slippage(option_price, side)
+        quantity = lot_size
+        trade_symbol = option_symbol
+        raw_price = option_price
+    else:
+        # Fallback: trade the underlying directly
+        entry_price = _apply_slippage(price, side)
+        quantity = _calculate_quantity(entry_price, max_value)
+        trade_symbol = symbol
+        raw_price = price
+
     trade_value = entry_price * quantity
     commission = _calculate_commission(trade_value)
-    total_cost = trade_value + commission
 
-    if not await allocate(redis_client, total_cost):
+    if not await allocate(redis_client, trade_value, fee=commission):
         return None
 
     trade_id = str(uuid.uuid4())
@@ -79,25 +117,46 @@ async def open_position(
         stop_loss=stop_loss,
         target=target,
         decision_id=decision_id,
+        option_symbol=option_symbol,
+        option_strike=option_strike,
+        option_type=option_type,
+        option_expiry=option_expiry,
+        entry_option_price=option_price or 0.0,
     )
+    # Capture entry IV from Redis if already populated by fast position watcher
+    if option_symbol:
+        try:
+            greeks_raw = await redis_client.get(f"greeks:{option_symbol}")
+            if greeks_raw:
+                g = json.loads(greeks_raw)
+                position.entry_iv = float(g.get("iv", 0) or 0)
+        except Exception:
+            pass
 
     trade = Trade(
         trade_id=trade_id,
-        symbol=symbol,
+        symbol=trade_symbol,
         side=side,
         quantity=quantity,
         entry_price=entry_price,
         entry_time=now,
         commission=commission,
-        slippage=abs(entry_price - price) * quantity,
+        slippage=abs(entry_price - raw_price) * quantity,
         status="OPEN",
         decision_id=decision_id,
         reasoning=reasoning,
+        option_symbol=option_symbol,
+        option_strike=option_strike,
+        option_type=option_type,
+        option_expiry=option_expiry,
     )
 
     # Persist to Redis (operational cache)
     await redis_client.hset("positions:open", symbol, position.model_dump_json())
     await redis_client.hset("trades:all", trade_id, trade.model_dump_json())
+    # Index trade_id by underlying so close_position can look it up without
+    # a symbol mismatch (trade.symbol is the option symbol, not the underlying)
+    await redis_client.hset("trades:open_id", symbol, trade_id)
     await redis_client.zadd(
         "trades:history",
         {trade.model_dump_json(): now.timestamp()},
@@ -105,21 +164,31 @@ async def open_position(
 
     # Persist to TimescaleDB via data-service (durable storage)
     await data_client.persist_trade({
-        "trade_id":    trade.trade_id,
-        "symbol":      trade.symbol,
-        "side":        trade.side,
-        "quantity":    trade.quantity,
-        "entry_price": trade.entry_price,
-        "entry_time":  trade.entry_time.isoformat(),
-        "commission":  trade.commission,
-        "slippage":    trade.slippage,
-        "status":      trade.status,
-        "decision_id": trade.decision_id,
-        "reasoning":   trade.reasoning,
+        "trade_id":      trade.trade_id,
+        "symbol":        trade.symbol,
+        "side":          trade.side,
+        "quantity":      trade.quantity,
+        "entry_price":   trade.entry_price,
+        "entry_time":    trade.entry_time.isoformat(),
+        "commission":    trade.commission,
+        "slippage":      trade.slippage,
+        "status":        trade.status,
+        "decision_id":   trade.decision_id,
+        "reasoning":     trade.reasoning,
+        "trading_mode":  "simulation",
+        "option_symbol": trade.option_symbol,
+        "option_strike": trade.option_strike,
+        "option_type":   trade.option_type,
+        "option_expiry": trade.option_expiry,
     })
 
+    # Mark the source decision as acted upon for traceability
+    if decision_id:
+        await data_client.mark_decision_acted(decision_id, trade_id)
+
+    label = f"{option_symbol} (strike ₹{option_strike})" if option_symbol else trade_symbol
     logger.info(
-        f"OPENED {side} {quantity}x{symbol} @ ₹{entry_price:.2f} "
+        f"OPENED {side} {quantity}x{label} @ ₹{entry_price:.2f} "
         f"(commission=₹{commission:.0f})"
     )
     return trade
@@ -130,6 +199,7 @@ async def close_position(
     symbol: str,
     exit_price: float,
     status: str = "CLOSED",
+    exit_reason: Optional[str] = None,
 ) -> Optional[Trade]:
     """Close an open position at exit_price."""
     pos_data = await redis_client.hget("positions:open", symbol)
@@ -150,26 +220,33 @@ async def close_position(
     else:
         gross_pnl = (pos.avg_price - exit_price_with_slip) * pos.quantity
 
-    net_pnl = gross_pnl - commission
+    # net_pnl for budget: entry commission already deducted from cash via allocate()
+    budget_pnl = gross_pnl - commission
     invested_amount = pos.avg_price * pos.quantity
 
-    # Find the open trade in Redis
-    all_trades_raw = await redis_client.hgetall("trades:all")
+    # Look up the open trade ID directly by underlying symbol (O(1), no mismatch)
+    # trade.symbol stores the option symbol for option trades, so scanning trades:all
+    # by t.symbol == underlying would never match — use the index instead.
     trade = None
-    for tid, tdata in all_trades_raw.items():
-        t = Trade(**json.loads(tdata))
-        if t.symbol == symbol and t.status == "OPEN":
-            trade = t
-            break
+    trade_id_raw = await redis_client.hget("trades:open_id", symbol)
+    if trade_id_raw:
+        tdata = await redis_client.hget("trades:all", trade_id_raw)
+        if tdata:
+            trade = Trade(**json.loads(tdata))
+    await redis_client.hdel("trades:open_id", symbol)
 
     if trade:
+        entry_commission = trade.commission  # already stored at open time
+        # true net pnl = gross minus both entry and exit commissions
+        true_net_pnl = gross_pnl - commission - entry_commission
         trade.exit_price = exit_price_with_slip
         trade.exit_time = now
-        trade.pnl = round(net_pnl, 2)
-        trade.pnl_pct = round(net_pnl / invested_amount * 100, 3)
-        trade.commission += commission
+        trade.pnl = round(true_net_pnl, 2)
+        trade.pnl_pct = round(true_net_pnl / invested_amount * 100, 3)
+        trade.commission += commission  # total = entry + exit
         trade.slippage += abs(exit_price_with_slip - exit_price) * pos.quantity
         trade.status = status
+        trade.exit_reason = exit_reason
 
         # Update Redis
         await redis_client.hset("trades:all", trade.trade_id, trade.model_dump_json())
@@ -180,30 +257,36 @@ async def close_position(
 
         # Persist closed trade to TimescaleDB (upsert updates the existing record)
         await data_client.persist_trade({
-            "trade_id":    trade.trade_id,
-            "symbol":      trade.symbol,
-            "side":        trade.side,
-            "quantity":    trade.quantity,
-            "entry_price": trade.entry_price,
-            "entry_time":  trade.entry_time.isoformat(),
-            "exit_price":  trade.exit_price,
-            "exit_time":   trade.exit_time.isoformat(),
-            "pnl":         trade.pnl,
-            "pnl_pct":     trade.pnl_pct,
-            "commission":  trade.commission,
-            "slippage":    trade.slippage,
-            "status":      trade.status,
-            "decision_id": trade.decision_id,
-            "reasoning":   trade.reasoning,
+            "trade_id":      trade.trade_id,
+            "symbol":        trade.symbol,
+            "side":          trade.side,
+            "quantity":      trade.quantity,
+            "entry_price":   trade.entry_price,
+            "entry_time":    trade.entry_time.isoformat(),
+            "exit_price":    trade.exit_price,
+            "exit_time":     trade.exit_time.isoformat(),
+            "pnl":           trade.pnl,
+            "pnl_pct":       trade.pnl_pct,
+            "commission":    trade.commission,
+            "slippage":      trade.slippage,
+            "status":        trade.status,
+            "decision_id":   trade.decision_id,
+            "reasoning":     trade.reasoning,
+            "trading_mode":  "simulation",
+            "option_symbol": trade.option_symbol,
+            "option_strike": trade.option_strike,
+            "option_type":   trade.option_type,
+            "option_expiry": trade.option_expiry,
+            "exit_reason":   trade.exit_reason,
         })
 
-    await release(redis_client, invested_amount, net_pnl)
+    await release(redis_client, invested_amount, budget_pnl)
     await redis_client.hdel("positions:open", symbol)
-    await _record_pnl_snapshot(redis_client, net_pnl)
+    await _record_pnl_snapshot(redis_client, budget_pnl)
 
     logger.info(
         f"CLOSED {pos.side} {pos.quantity}x{symbol} @ ₹{exit_price_with_slip:.2f} "
-        f"P&L=₹{net_pnl:+.2f} ({status})"
+        f"P&L=₹{budget_pnl:+.2f} ({status})"
     )
     return trade
 

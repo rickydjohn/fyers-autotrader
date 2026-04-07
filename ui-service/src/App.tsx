@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { ReportPage } from './components/ReportPage'
 import { CandlestickChart } from './components/CandlestickChart'
 import { PnLGraph } from './components/PnLGraph'
 import { DecisionFeed } from './components/DecisionFeed'
@@ -17,6 +18,7 @@ import { fetchPositions } from './api/positions'
 import { fetchSymbols } from './api/marketData'
 import { fetchHistoricalData, fetchAggregatedView, fetchContextSnapshot, fetchDecisionHistory } from './api/historical'
 import type { Timeframe, HistoricalCandle, ContextSnapshot, Decision } from './types'
+import { parseDate } from './utils/date'
 
 const SYMBOLS = ['NSE:NIFTY50-INDEX', 'NSE:NIFTYBANK-INDEX']
 const MARKET_OPEN_MINUTES = 9 * 60 + 15
@@ -44,6 +46,8 @@ function isWithinMarketWindow(now: Date): boolean {
 }
 
 export default function App() {
+  const [page, setPage] = useState<'dashboard' | 'report'>('dashboard')
+
   const {
     selectedSymbol, setSelectedSymbol,
     marketData, decisions, sseConnected,
@@ -54,7 +58,7 @@ export default function App() {
     tradingMode,
   } = useTradingStore()
 
-  useMarketData(selectedSymbol)
+  useMarketData(SYMBOLS)
   useDecisionFeed()
   usePnL()
 
@@ -84,38 +88,45 @@ export default function App() {
 
   // Load historical candles when symbol or timeframe changes
   useEffect(() => {
+    let cancelled = false
+    // Clear immediately so the chart doesn't show the previous symbol's data
+    setHistoricalCandles([])
     const load = async () => {
       try {
+        let data
         if (timeframe === '1m') {
-          const data = await fetchHistoricalData(selectedSymbol, '1m', 200)
-          setHistoricalCandles(data)
+          data = await fetchHistoricalData(selectedSymbol, '1m', 200)
         } else {
-          const data = await fetchAggregatedView(selectedSymbol, timeframe, 200)
-          setHistoricalCandles(data)
+          data = await fetchAggregatedView(selectedSymbol, timeframe, 200)
         }
+        if (!cancelled) setHistoricalCandles(data)
       } catch {
-        setHistoricalCandles([])
+        // leave chart blank rather than showing wrong symbol's candles
       }
     }
     load()
+    return () => { cancelled = true }
   }, [selectedSymbol, timeframe])
 
   // Load context snapshot when symbol changes
   useEffect(() => {
+    let cancelled = false
     setContextLoading(true)
     fetchContextSnapshot(selectedSymbol)
-      .then(setContext)
-      .catch(() => setContext(null))
-      .finally(() => setContextLoading(false))
+      .then((data) => { if (!cancelled) setContext(data) })
+      .catch(() => { /* keep previous context rather than clearing */ })
+      .finally(() => { if (!cancelled) setContextLoading(false) })
+    return () => { cancelled = true }
   }, [selectedSymbol])
 
   // Load decision history from DB when panel is opened
   useEffect(() => {
-    if (showHistory) {
-      fetchDecisionHistory(selectedSymbol, 50)
-        .then((r) => setDecisionHistory(r.decisions ?? []))
-        .catch(() => setDecisionHistory([]))
-    }
+    if (!showHistory) return
+    let cancelled = false
+    fetchDecisionHistory(selectedSymbol, 50)
+      .then((r) => { if (!cancelled) setDecisionHistory(r.decisions ?? []) })
+      .catch(() => { /* keep previous history rather than clearing */ })
+    return () => { cancelled = true }
   }, [showHistory, selectedSymbol])
 
   useEffect(() => {
@@ -124,21 +135,49 @@ export default function App() {
   }, [])
 
   const currentData = marketData[selectedSymbol]
-  const symbolTrades = trades.filter((t) => t.symbol === selectedSymbol)
   const marketOpen = useMemo(() => isWithinMarketWindow(now), [now])
   const isLive = sseConnected && marketOpen
 
-  // Use historical candles when a non-live timeframe is selected, else live candles
-  const displayCandles = timeframe === '5m' && currentData?.candles?.length
-    ? currentData.candles
-    : historicalCandles.map((c) => ({
-        timestamp: c.time,
-        open: c.open,
-        high: c.high,
-        low: c.low,
-        close: c.close,
-        volume: c.volume,
-      }))
+  const symbolTrades = useMemo(
+    () => trades.filter((t) => t.symbol === selectedSymbol),
+    [trades, selectedSymbol],
+  )
+
+  const todayTrades = useMemo(() => {
+    const today = new Date().toDateString()
+    return trades
+      .filter((t) => parseDate(t.entry_time).toDateString() === today)
+      .sort((a, b) => parseDate(a.entry_time).getTime() - parseDate(b.entry_time).getTime())
+  }, [trades])
+
+  // Use live 5m candles when available, otherwise fall back to historical
+  const liveCandles = currentData?.candles
+  const displayCandles = useMemo(() => {
+    if (timeframe === '5m' && liveCandles?.length) {
+      return liveCandles
+    }
+    return historicalCandles.map((c) => ({
+      timestamp: c.time,
+      open: c.open,
+      high: c.high,
+      low: c.low,
+      close: c.close,
+      volume: c.volume,
+    }))
+  }, [timeframe, liveCandles, historicalCandles])
+
+  if (page === 'report') {
+    return (
+      <div className="min-h-screen bg-gray-950 text-gray-100">
+        <nav className="flex items-center gap-1 px-6 py-3 border-b border-gray-800 bg-gray-900">
+          <span className="text-sm font-bold text-white mr-4">Trading Intelligence</span>
+          <NavTab label="Dashboard" active={false} onClick={() => setPage('dashboard')} />
+          <NavTab label="Reports"   active={true}  onClick={() => setPage('report')} />
+        </nav>
+        <ReportPage />
+      </div>
+    )
+  }
 
   return (
     <div className="min-h-screen bg-gray-950 text-gray-100 p-4">
@@ -146,6 +185,11 @@ export default function App() {
       <header className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-3">
           <h1 className="text-xl font-bold text-white">Trading Intelligence</h1>
+          {/* Page nav */}
+          <div className="flex items-center bg-gray-800 rounded-md p-0.5 gap-0.5">
+            <NavTab label="Dashboard" active={true}  onClick={() => setPage('dashboard')} />
+            <NavTab label="Reports"   active={false} onClick={() => setPage('report')} />
+          </div>
           <TradingModeToggle />
           <span className={`text-xs px-2 py-0.5 rounded border font-mono ${
             isLive
@@ -221,6 +265,7 @@ export default function App() {
             </div>
 
             <CandlestickChart
+              key={selectedSymbol}
               candles={displayCandles}
               trades={symbolTrades}
               height={380}
@@ -243,7 +288,7 @@ export default function App() {
           {pnl && <PnLGraph pnl={pnl} />}
 
           {/* Positions */}
-          <PositionTable positions={positions} />
+          <PositionTable positions={positions} trades={todayTrades} />
         </div>
 
         {/* Right column — 1/3 width */}
@@ -256,5 +301,20 @@ export default function App() {
         </div>
       </div>
     </div>
+  )
+}
+
+function NavTab({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
+        active
+          ? 'bg-gray-600 text-white'
+          : 'text-gray-400 hover:text-gray-200'
+      }`}
+    >
+      {label}
+    </button>
   )
 }

@@ -1,34 +1,66 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useTradingStore } from '../../store'
-import { fetchFunds, fetchTradingMode, updateTradingMode } from '../../api/tradingMode'
+import { fetchFunds, fetchSimulationBudget, fetchTradingMode, updateTradingMode } from '../../api/tradingMode'
 import type { TradingMode } from '../../types'
 
 export function TradingModeToggle() {
-  const { tradingMode, setTradingMode, fundsData, setFundsData } = useTradingStore()
+  const {
+    tradingMode, setTradingMode,
+    fundsData, setFundsData,
+    simulationBudget, setSimulationBudget,
+  } = useTradingStore()
   const [loading, setLoading] = useState(false)
   const [showConfirm, setShowConfirm] = useState(false)
   const [pendingMode, setPendingMode] = useState<TradingMode | null>(null)
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  // Load initial mode from backend
+  // Sync with backend on mount — but never override a persisted 'live' mode with simulation
   useEffect(() => {
     fetchTradingMode()
-      .then((r) => setTradingMode(r.mode))
+      .then((r) => {
+        // Only apply backend mode if it's 'live', or if we're currently in simulation
+        if (r.mode === 'live' || tradingMode === 'simulation') {
+          setTradingMode(r.mode)
+        }
+      })
       .catch(() => {})
   }, [])
 
-  // Fetch funds whenever live mode is active
+  // Fetch mode-specific balances whenever trading mode changes
   useEffect(() => {
     if (tradingMode === 'live') {
       fetchFunds()
         .then(setFundsData)
         .catch(() => setFundsData(null))
+      setSimulationBudget(null)
+
+      // Poll live funds every 30 seconds
+      pollRef.current = setInterval(() => {
+        fetchFunds()
+          .then(setFundsData)
+          .catch(() => {})
+      }, 30_000)
     } else {
+      if (pollRef.current) {
+        clearInterval(pollRef.current)
+        pollRef.current = null
+      }
       setFundsData(null)
+      fetchSimulationBudget()
+        .then(setSimulationBudget)
+        .catch(() => setSimulationBudget(null))
+    }
+
+    return () => {
+      if (pollRef.current) {
+        clearInterval(pollRef.current)
+        pollRef.current = null
+      }
     }
   }, [tradingMode])
 
   function requestSwitch(mode: TradingMode) {
-    if (mode === tradingMode) return
+    if (mode === tradingMode || loading) return
     if (mode === 'live') {
       setPendingMode(mode)
       setShowConfirm(true)
@@ -56,36 +88,44 @@ export function TradingModeToggle() {
 
   return (
     <div className="flex items-center gap-3">
-      {/* Mode toggle */}
-      <div className="flex rounded-md overflow-hidden border border-gray-700 text-xs font-mono">
+      {/* Segmented mode control */}
+      <div className={`flex items-center rounded-md overflow-hidden border text-xs font-mono font-semibold tracking-wide transition-colors ${
+        tradingMode === 'live' ? 'border-red-500/50' : 'border-blue-500/30'
+      } ${loading ? 'opacity-60 pointer-events-none' : ''}`}>
         <button
           onClick={() => requestSwitch('simulation')}
-          disabled={loading}
           className={`px-3 py-1.5 transition-colors ${
             tradingMode === 'simulation'
               ? 'bg-blue-600 text-white'
-              : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
+              : 'bg-gray-800/80 text-gray-400 hover:bg-gray-700 hover:text-gray-200'
           }`}
+          aria-pressed={tradingMode === 'simulation'}
         >
-          SIMULATION
+          SIM
         </button>
+        <div className={`w-px self-stretch ${tradingMode === 'live' ? 'bg-red-500/40' : 'bg-blue-500/20'}`} />
         <button
           onClick={() => requestSwitch('live')}
-          disabled={loading}
           className={`px-3 py-1.5 transition-colors ${
             tradingMode === 'live'
               ? 'bg-red-600 text-white'
-              : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
+              : 'bg-gray-800/80 text-gray-400 hover:bg-gray-700 hover:text-gray-200'
           }`}
+          aria-pressed={tradingMode === 'live'}
         >
-          LIVE
+          {loading ? '...' : 'LIVE'}
         </button>
       </div>
 
-      {/* Funds display when in live mode */}
+      {/* Mode-specific balance display */}
       {tradingMode === 'live' && availableBalance !== null && (
         <span className="text-xs font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 px-2 py-1 rounded">
-          Avail: ₹{availableBalance.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+          Funds: ₹{availableBalance.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+        </span>
+      )}
+      {tradingMode === 'simulation' && simulationBudget && (
+        <span className="text-xs font-mono text-blue-300 bg-blue-500/10 border border-blue-500/30 px-2 py-1 rounded">
+          Sim Budget: ₹{simulationBudget.current.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
         </span>
       )}
 

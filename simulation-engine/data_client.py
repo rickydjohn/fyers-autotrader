@@ -37,3 +37,14 @@ async def persist_trade(trade: Dict[str, Any]) -> None:
         resp.raise_for_status()
     except Exception as e:
         logger.warning(f"data-service trade persist failed: {e}")
+
+
+async def mark_decision_acted(decision_id: str, trade_id: str) -> None:
+    try:
+        resp = await get_client().patch(
+            f"/api/v1/ingest/decision/{decision_id}/acted",
+            params={"trade_id": trade_id},
+        )
+        resp.raise_for_status()
+    except Exception as e:
+        logger.warning(f"data-service acted_upon update failed: {e}")

@@ -79,21 +79,28 @@ class AiDecision(Base):
 class Trade(Base):
     __tablename__ = "trades"
 
-    trade_id:    Mapped[str]            = mapped_column(String(64), primary_key=True)
-    symbol:      Mapped[str]            = mapped_column(String(64), index=True)
-    side:        Mapped[str]            = mapped_column(String(8))
-    quantity:    Mapped[int]            = mapped_column(Integer)
-    entry_price: Mapped[float]          = mapped_column(Numeric(12, 2))
-    entry_time:  Mapped[datetime]       = mapped_column(TIMESTAMP(timezone=True), index=True)
-    exit_price:  Mapped[Optional[float]] = mapped_column(Numeric(12, 2), nullable=True)
-    exit_time:   Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
-    pnl:         Mapped[Optional[float]] = mapped_column(Numeric(12, 2), nullable=True)
-    pnl_pct:     Mapped[Optional[float]] = mapped_column(Numeric(8, 4), nullable=True)
-    commission:  Mapped[float]          = mapped_column(Numeric(10, 2), default=0)
-    slippage:    Mapped[float]          = mapped_column(Numeric(10, 2), default=0)
-    status:      Mapped[str]            = mapped_column(String(16), default="OPEN")
-    decision_id: Mapped[Optional[str]]  = mapped_column(String(64), nullable=True)
-    reasoning:   Mapped[Optional[str]]  = mapped_column(Text, nullable=True)
+    trade_id:      Mapped[str]            = mapped_column(String(64), primary_key=True)
+    symbol:        Mapped[str]            = mapped_column(String(64), index=True)
+    side:          Mapped[str]            = mapped_column(String(8))
+    quantity:      Mapped[int]            = mapped_column(Integer)
+    entry_price:   Mapped[float]          = mapped_column(Numeric(12, 2))
+    entry_time:    Mapped[datetime]       = mapped_column(TIMESTAMP(timezone=True), index=True)
+    exit_price:    Mapped[Optional[float]] = mapped_column(Numeric(12, 2), nullable=True)
+    exit_time:     Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+    pnl:           Mapped[Optional[float]] = mapped_column(Numeric(12, 2), nullable=True)
+    pnl_pct:       Mapped[Optional[float]] = mapped_column(Numeric(8, 4), nullable=True)
+    commission:    Mapped[float]          = mapped_column(Numeric(10, 2), default=0)
+    slippage:      Mapped[float]          = mapped_column(Numeric(10, 2), default=0)
+    status:        Mapped[str]            = mapped_column(String(16), default="OPEN")
+    decision_id:   Mapped[Optional[str]]  = mapped_column(String(64), nullable=True)
+    reasoning:     Mapped[Optional[str]]  = mapped_column(Text, nullable=True)
+    trading_mode:  Mapped[str]            = mapped_column(String(16), default="simulation", index=True)
+    option_symbol: Mapped[Optional[str]]  = mapped_column(String(64), nullable=True)
+    option_strike: Mapped[Optional[int]]  = mapped_column(Integer, nullable=True)
+    option_type:   Mapped[Optional[str]]  = mapped_column(String(4), nullable=True)
+    option_expiry: Mapped[Optional[str]]  = mapped_column(String(16), nullable=True)
+    exit_reason:      Mapped[Optional[str]]  = mapped_column(String(32), nullable=True)
+    broker_order_id:  Mapped[Optional[str]]  = mapped_column(String(64), nullable=True)
 
 
 class NewsItem(Base):
@@ -105,3 +112,30 @@ class NewsItem(Base):
     summary:         Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     source:          Mapped[str]  = mapped_column(String(128))
     sentiment_score: Mapped[float] = mapped_column(Numeric(4, 3), default=0.0)
+
+
+class DailyOhlcv(Base):
+    """Multi-year daily OHLCV bars — permanent storage, no retention policy."""
+    __tablename__ = "daily_ohlcv"
+
+    date:   Mapped[date]  = mapped_column(Date, primary_key=True)
+    symbol: Mapped[str]   = mapped_column(String(64), primary_key=True)
+    open:   Mapped[float] = mapped_column(Numeric(12, 2))
+    high:   Mapped[float] = mapped_column(Numeric(12, 2))
+    low:    Mapped[float] = mapped_column(Numeric(12, 2))
+    close:  Mapped[float] = mapped_column(Numeric(12, 2))
+    volume: Mapped[int]   = mapped_column(BigInteger, default=0)
+
+
+class HistoricalSRLevel(Base):
+    """Computed S/R zones from swing-high/low clustering on the daily chart."""
+    __tablename__ = "historical_sr_levels"
+
+    id:          Mapped[int]            = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    symbol:      Mapped[str]            = mapped_column(String(64), index=True)
+    level:       Mapped[float]          = mapped_column(Numeric(12, 2))
+    level_type:  Mapped[str]            = mapped_column(String(16))   # SUPPORT|RESISTANCE|BOTH
+    strength:    Mapped[int]            = mapped_column(Integer, default=1)
+    first_seen:  Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    last_seen:   Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    computed_at: Mapped[datetime]       = mapped_column(TIMESTAMP(timezone=True))
