@@ -194,7 +194,7 @@ function CountPieChart({ breakdown }: { breakdown: Record<string, { count: numbe
 const PAGE_SIZE = 25
 
 function TradeTable({ trades }: { trades: Trade[] }) {
-  const closed = trades.filter((t) => t.status !== 'OPEN')
+  const closed = trades.filter((t) => t.status !== 'OPEN').reverse()
   const [page, setPage] = useState(1)
   const totalPages = Math.ceil(closed.length / PAGE_SIZE)
   const paginated = closed.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
