@@ -21,6 +21,7 @@ class Position(BaseModel):
     peak_option_price: float = 0.0         # highest observed option LTP since entry (for trailing)
     entry_iv: float = 0.0                  # implied volatility at entry (for IV crush detection)
     milestone_count: int = 0               # trail milestone counter (0 = pre-trail; increments at each +10%)
+    day_type: Optional[str] = None         # "RANGING" or "TRENDING" — set at entry from CPR width
 
 
 class Trade(BaseModel):

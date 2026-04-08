@@ -46,10 +46,6 @@ async def get_pnl(
     mode_raw = await redis_client.get("trading:mode")
     trading_mode = mode_raw if isinstance(mode_raw, str) else (mode_raw.decode() if mode_raw else "simulation")
 
-    # Realized P&L
-    realized_raw = await redis_client.get("pnl:realized:total")
-    realized_pnl = float(realized_raw or 0)
-
     # Unrealized from open positions
     positions_raw = await redis_client.hgetall("positions:open")
     unrealized_pnl = 0.0
@@ -99,19 +95,24 @@ async def get_pnl(
             "utilization_pct": round(budget.get("invested", 0) / initial * 100, 2) if initial else 0,
         }
 
-    # Trade stats
+    # Trade stats — scoped to today only
     trades_raw = await redis_client.zrevrange("trades:history", 0, -1)
-    closed_trades = []
+    today_closed = []
     for item in trades_raw:
         try:
             t = json.loads(item)
-            if t.get("status") in ("CLOSED", "STOPPED"):
-                closed_trades.append(t)
+            if t.get("status") not in ("CLOSED", "STOPPED"):
+                continue
+            # Match on exit_time if present, else entry_time — both stored as IST ISO strings
+            trade_date = (t.get("exit_time") or t.get("entry_time") or "")[:10]
+            if trade_date == date_str:
+                today_closed.append(t)
         except Exception:
             pass
 
-    wins = [t for t in closed_trades if (t.get("pnl") or 0) > 0]
-    losses = [t for t in closed_trades if (t.get("pnl") or 0) < 0]
+    realized_pnl = sum(t.get("pnl", 0) for t in today_closed)
+    wins = [t for t in today_closed if (t.get("pnl") or 0) > 0]
+    losses = [t for t in today_closed if (t.get("pnl") or 0) < 0]
 
     # Timeline
     timeline_raw = await redis_client.zrange(f"pnl:daily:{date_str}", 0, -1)
@@ -129,9 +130,9 @@ async def get_pnl(
         "total_pnl": round(total_pnl, 2),
         "total_pnl_pct": round(total_pnl / initial * 100, 3) if initial else 0,
         "budget": budget_info,
-        "win_rate": round(len(wins) / len(closed_trades), 3) if closed_trades else 0,
+        "win_rate": round(len(wins) / len(today_closed), 3) if today_closed else 0,
         "avg_win": round(sum(t.get("pnl", 0) for t in wins) / len(wins), 2) if wins else 0,
         "avg_loss": round(sum(t.get("pnl", 0) for t in losses) / len(losses), 2) if losses else 0,
-        "total_trades": len(closed_trades),
+        "total_trades": len(today_closed),
         "timeline": timeline,
     })
