@@ -11,9 +11,10 @@ Rule priority:
   3. DELTA_ERODED   — |delta| < 0.20 (option far OTM, premium bleeding pointlessly)
   4. IV_CRUSH       — IV fell >20% from entry (vega working against us)
   5. TRAIL_FLOOR    — option LTP ≤ peak − (entry × 5%), active after trail engaged
-  6. MILESTONE      — at +20% and every +10% of entry thereafter:
-                       indicators confirmed  → trail continues (no exit)
-                       indicators not confirmed → lock in gains at milestone (exit)
+  6. MILESTONE      — TRENDING day: at +20% and every +10% of entry thereafter:
+                         indicators confirmed  → trail continues (no exit)
+                         indicators not confirmed → lock in gains at milestone (exit)
+                       RANGING day: at +10%, always exit immediately (no trail)
 
 For non-option trades (underlying/equity directly):
   7. STOPPED        — underlying LTP crossed stop_loss
@@ -42,10 +43,11 @@ IST = pytz.timezone("Asia/Kolkata")
 SESSION_CLOSE_HOUR: int    = settings.session_close_hour
 SESSION_CLOSE_MINUTE: int  = settings.session_close_minute
 
-PREMIUM_SL_PCT: float      = 0.10   # hard stop: exit if option loses ≥10% of entry premium
-FIRST_MILESTONE_PCT: float = 0.20   # trail activates at +20% gain from entry
-MILESTONE_STEP_PCT: float  = 0.10   # subsequent milestones every +10% of entry
-TRAIL_OFFSET_PCT: float    = 0.05   # trail floor = peak_price × (1 − 5%)
+PREMIUM_SL_PCT: float         = 0.10   # hard stop: exit if option loses ≥10% of entry premium
+FIRST_MILESTONE_PCT: float    = 0.20   # TRENDING: trail activates at +20% gain from entry
+RANGING_MILESTONE_PCT: float  = 0.10   # RANGING: exit immediately at +10% gain from entry
+MILESTONE_STEP_PCT: float     = 0.10   # subsequent milestones every +10% of entry
+TRAIL_OFFSET_PCT: float       = 0.05   # trail floor = peak_price × (1 − 5%)
 
 DELTA_EROSION_MIN: float   = 0.20   # exit if |delta| drops below this
 IV_CRUSH_THRESHOLD: float  = 0.80   # exit if iv < entry_iv × this
@@ -173,27 +175,40 @@ def check_exit(
                 return True, "TRAIL_STOP", option_ltp, milestone
 
         # ── Rule 6: Milestone check ───────────────────────────────────────────
-        # milestone 0 → first target at entry + 20%
-        # milestone N → next target at entry + 20% + N × 10%
-        next_target = entry * (1.0 + FIRST_MILESTONE_PCT + milestone * MILESTONE_STEP_PCT)
+        # Day type determines behaviour:
+        #   RANGING  → first milestone at +10%, exit immediately (no indicator
+        #               check, no trailing) — range-bound days are mean-reverting
+        #   TRENDING → first milestone at +20%, indicators checked; trail if
+        #               confirmed, lock in gains if not
+        is_ranging = pos.day_type == "RANGING"
+        first_milestone_pct = RANGING_MILESTONE_PCT if is_ranging else FIRST_MILESTONE_PCT
+        next_target = entry * (1.0 + first_milestone_pct + milestone * MILESTONE_STEP_PCT)
         if option_ltp >= next_target:
             new_milestone = milestone + 1
-            confirmed = _indicators_confirm(pos.side, indicators)
             gain_pct = (option_ltp / entry - 1) * 100
-            if confirmed:
-                logger.info(
-                    f"[MILESTONE {new_milestone}] {pos.symbol}: "
-                    f"option ₹{option_ltp:.2f} (+{gain_pct:.0f}%) — "
-                    f"indicators confirmed, trail continues"
-                )
-                return False, "", 0.0, new_milestone
-            else:
+            if is_ranging:
                 logger.info(
                     f"[MILESTONE EXIT {new_milestone}] {pos.symbol}: "
                     f"option ₹{option_ltp:.2f} (+{gain_pct:.0f}%) — "
-                    f"indicators not confirmed, locking in gains"
+                    f"RANGING day, locking in gains immediately"
                 )
                 return True, "CLOSED", option_ltp, new_milestone
+            else:
+                confirmed = _indicators_confirm(pos.side, indicators)
+                if confirmed:
+                    logger.info(
+                        f"[MILESTONE {new_milestone}] {pos.symbol}: "
+                        f"option ₹{option_ltp:.2f} (+{gain_pct:.0f}%) — "
+                        f"indicators confirmed, trail continues"
+                    )
+                    return False, "", 0.0, new_milestone
+                else:
+                    logger.info(
+                        f"[MILESTONE EXIT {new_milestone}] {pos.symbol}: "
+                        f"option ₹{option_ltp:.2f} (+{gain_pct:.0f}%) — "
+                        f"indicators not confirmed, locking in gains"
+                    )
+                    return True, "CLOSED", option_ltp, new_milestone
 
         return False, "", 0.0, milestone
 

@@ -23,7 +23,7 @@ from indicators.technicals import get_macd_signal_label
 from indicators.historical_sr import format_sr_for_prompt
 import data_client
 from context.formatter import format_context_for_prompt
-from fyers.options import get_atm_option
+from fyers.options import get_affordable_option
 from fyers.market_data import get_quote
 
 logger = logging.getLogger(__name__)
@@ -167,13 +167,40 @@ async def make_decision(
             validated["reasoning"] = f"[MACD override: BEARISH MACD contradicts BUY] {validated['reasoning']}"
             logger.info(f"BUY overridden to HOLD for {snapshot.symbol} — MACD is BEARISH")
 
-    # Resolve ATM option for actionable decisions
+    # Determine available budget for option selection
+    available_cash: Optional[float] = None
+    try:
+        mode_raw = await redis_client.get("trading:mode")
+        trading_mode = (
+            mode_raw.decode() if isinstance(mode_raw, bytes) else (mode_raw or "simulation")
+        )
+        if trading_mode == "live":
+            from fyers.orders import get_funds
+            funds_data = get_funds()
+            if funds_data:
+                for _key in ("available_balance", "net_available", "available_margin"):
+                    _val = funds_data.get(_key)
+                    if _val is not None:
+                        available_cash = float(_val)
+                        break
+        else:
+            budget_raw = await redis_client.get("budget:state")
+            if budget_raw:
+                b = json.loads(budget_raw)
+                available_cash = float(b.get("cash", 0))
+    except Exception as _e:
+        logger.warning(f"Could not determine budget for option sizing: {_e}")
+
+    # Resolve affordable option for actionable decisions
     option_symbol = option_type = option_expiry = None
     option_strike = None
     option_price = None
     option_lot_size = None
     if validated["decision"] in ("BUY", "SELL"):
-        opt = get_atm_option(snapshot.symbol, snapshot.ltp, validated["decision"])
+        opt = get_affordable_option(
+            snapshot.symbol, snapshot.ltp, validated["decision"],
+            max_spend=available_cash,
+        )
         if opt:
             option_symbol, option_strike, option_type, option_expiry, option_lot_size = opt
             try:
@@ -210,6 +237,7 @@ async def make_decision(
         indicators_snapshot={
             "price": snapshot.ltp,
             "cpr_signal": ind.cpr_signal,
+            "cpr_width_pct": ind.cpr.width_pct,
             "rsi": ind.rsi,
             "vwap": ind.vwap,
             "ema_9": ind.ema_9,

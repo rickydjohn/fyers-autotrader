@@ -16,6 +16,7 @@ from execution.exit_rules import (
     IV_CRUSH_THRESHOLD,
     PREMIUM_SL_PCT,
     FIRST_MILESTONE_PCT,
+    RANGING_MILESTONE_PCT,
     MILESTONE_STEP_PCT,
     TRAIL_OFFSET_PCT,
     SESSION_CLOSE_HOUR,
@@ -37,6 +38,7 @@ def _pos(
     peak_option_price=0.0,
     entry_iv=18.0,
     milestone_count=0,
+    day_type=None,
 ) -> Position:
     return Position(
         symbol="NSE:NIFTY50-INDEX",
@@ -52,6 +54,7 @@ def _pos(
         peak_option_price=peak_option_price,
         entry_iv=entry_iv,
         milestone_count=milestone_count,
+        day_type=day_type,
     )
 
 
@@ -539,3 +542,140 @@ class TestRulePriority:
         assert should_exit
         assert reason == "STOPPED"
         assert exit_price == 21990.0
+
+
+# ── Day-type-aware milestone exits ────────────────────────────────────────────
+
+class TestDayTypeExits:
+    """
+    RANGING day (CPR width ≥ 0.25%): first milestone at +10%, always exit immediately.
+    TRENDING day (CPR width < 0.25%): existing +20% milestone with indicator check.
+    None day_type: treated as TRENDING (backward-compatible default).
+    """
+
+    # ── RANGING: +10% immediate exit ──────────────────────────────────────────
+
+    def test_ranging_exits_at_10pct_milestone(self):
+        entry = 100.0
+        at_target = entry * (1 + RANGING_MILESTONE_PCT)  # ₹110
+        should_exit, reason, exit_price, new_ms = check_exit(
+            _pos(entry_option_price=entry, milestone_count=0, day_type="RANGING"),
+            underlying_ltp=22500.0, option_ltp=at_target, greeks=_greeks(),
+            indicators=_indicators_bullish(), now=_now(11, 0),
+        )
+        assert should_exit
+        assert reason == "CLOSED"
+        assert exit_price == at_target
+        assert new_ms == 1
+
+    def test_ranging_exits_immediately_without_indicator_check(self):
+        """RANGING always exits — indicators are irrelevant."""
+        entry = 100.0
+        at_target = entry * (1 + RANGING_MILESTONE_PCT)
+        # Use neutral indicators (would normally NOT confirm on TRENDING)
+        should_exit, reason, _, _ = check_exit(
+            _pos(entry_option_price=entry, milestone_count=0, day_type="RANGING"),
+            underlying_ltp=22500.0, option_ltp=at_target, greeks=_greeks(),
+            indicators=_indicators_neutral(), now=_now(11, 0),
+        )
+        assert should_exit
+        assert reason == "CLOSED"
+
+    def test_ranging_does_not_exit_below_10pct(self):
+        """Below +10% on a RANGING day — no milestone exit."""
+        entry = 100.0
+        below = entry * 1.09  # +9%, below RANGING_MILESTONE_PCT threshold
+        should_exit, _, _, ms = check_exit(
+            _pos(entry_option_price=entry, milestone_count=0, day_type="RANGING"),
+            underlying_ltp=22500.0, option_ltp=below, greeks=_greeks(),
+            indicators=_indicators_bullish(), now=_now(11, 0),
+        )
+        assert not should_exit
+        assert ms == 0
+
+    def test_ranging_does_not_exit_at_19pct_which_is_below_trending_milestone(self):
+        """RANGING exits at +10%, NOT +20% — verify it fires before TRENDING threshold."""
+        entry = 100.0
+        at_19pct = entry * 1.19
+        should_exit, _, _, _ = check_exit(
+            _pos(entry_option_price=entry, milestone_count=0, day_type="RANGING"),
+            underlying_ltp=22500.0, option_ltp=at_19pct, greeks=_greeks(),
+            indicators=_indicators_bullish(), now=_now(11, 0),
+        )
+        # +19% > RANGING_MILESTONE_PCT (10%) → should exit
+        assert should_exit
+
+    def test_ranging_pe_exits_at_10pct(self):
+        entry = 100.0
+        at_target = entry * (1 + RANGING_MILESTONE_PCT)
+        should_exit, reason, _, _ = check_exit(
+            _pos(side="SELL", entry_option_price=entry, milestone_count=0, day_type="RANGING"),
+            underlying_ltp=22500.0, option_ltp=at_target, greeks=_greeks(),
+            indicators=_indicators_bearish(), now=_now(11, 0),
+        )
+        assert should_exit
+        assert reason == "CLOSED"
+
+    def test_ranging_stop_loss_still_fires_before_milestone(self):
+        """Hard stop (−10%) always takes priority even on RANGING days."""
+        entry = 100.0
+        below_sl = entry * (1 - PREMIUM_SL_PCT)
+        should_exit, reason, _, _ = check_exit(
+            _pos(entry_option_price=entry, milestone_count=0, day_type="RANGING"),
+            underlying_ltp=22500.0, option_ltp=below_sl, greeks=_greeks(),
+            now=_now(11, 0),
+        )
+        assert should_exit
+        assert reason == "STOP_LOSS"
+
+    # ── TRENDING: +20% milestone with indicator check ────────────────────────
+
+    def test_trending_does_not_exit_at_10pct_with_confirmed_indicators(self):
+        """TRENDING day: +10% is not a milestone — position should stay open."""
+        entry = 100.0
+        at_10pct = entry * (1 + RANGING_MILESTONE_PCT)  # ₹110 — below TRENDING threshold
+        should_exit, _, _, ms = check_exit(
+            _pos(entry_option_price=entry, milestone_count=0, day_type="TRENDING"),
+            underlying_ltp=22500.0, option_ltp=at_10pct, greeks=_greeks(),
+            indicators=_indicators_bullish(), now=_now(11, 0),
+        )
+        assert not should_exit
+        assert ms == 0
+
+    def test_trending_exits_at_20pct_when_not_confirmed(self):
+        entry = 100.0
+        at_target = entry * (1 + FIRST_MILESTONE_PCT)  # ₹120
+        should_exit, reason, exit_price, _ = check_exit(
+            _pos(entry_option_price=entry, milestone_count=0, day_type="TRENDING"),
+            underlying_ltp=22500.0, option_ltp=at_target, greeks=_greeks(),
+            indicators=_indicators_neutral(), now=_now(11, 0),
+        )
+        assert should_exit
+        assert reason == "CLOSED"
+        assert exit_price == at_target
+
+    def test_trending_trails_at_20pct_when_confirmed(self):
+        entry = 100.0
+        at_target = entry * (1 + FIRST_MILESTONE_PCT)
+        should_exit, _, _, new_ms = check_exit(
+            _pos(entry_option_price=entry, milestone_count=0, day_type="TRENDING"),
+            underlying_ltp=22500.0, option_ltp=at_target, greeks=_greeks(),
+            indicators=_indicators_bullish(), now=_now(11, 0),
+        )
+        assert not should_exit
+        assert new_ms == 1
+
+    # ── None day_type: backward-compatible (treated as TRENDING) ─────────────
+
+    def test_none_day_type_behaves_as_trending(self):
+        """Positions without day_type (e.g. carried over from before this feature)
+        use TRENDING behaviour — first milestone at +20%."""
+        entry = 100.0
+        at_10pct = entry * (1 + RANGING_MILESTONE_PCT)
+        should_exit, _, _, ms = check_exit(
+            _pos(entry_option_price=entry, milestone_count=0, day_type=None),
+            underlying_ltp=22500.0, option_ltp=at_10pct, greeks=_greeks(),
+            indicators=_indicators_bullish(), now=_now(11, 0),
+        )
+        assert not should_exit
+        assert ms == 0

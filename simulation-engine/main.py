@@ -91,6 +91,17 @@ async def _handle_decision(data: dict) -> None:
     except (ValueError, TypeError):
         option_strike = option_price = option_lot_size = None
 
+    # Determine day type from CPR width embedded in the decision's indicators snapshot
+    day_type: str = "TRENDING"
+    try:
+        ind_raw = data.get("indicators") or "{}"
+        ind_dict = json.loads(ind_raw) if isinstance(ind_raw, str) else ind_raw
+        cpr_width_pct = float(ind_dict.get("cpr_width_pct") or 0)
+        if cpr_width_pct >= 0.25:
+            day_type = "RANGING"
+    except Exception:
+        pass
+
     # Get current price from market snapshot
     market_raw = await redis_client.get(f"market:{symbol}")
     if not market_raw:
@@ -120,6 +131,7 @@ async def _handle_decision(data: dict) -> None:
             option_symbol=option_symbol, option_strike=option_strike,
             option_type=option_type, option_expiry=option_expiry,
             option_price=option_price, option_lot_size=option_lot_size,
+            day_type=day_type,
         )
 
     elif decision == "SELL":
@@ -135,6 +147,7 @@ async def _handle_decision(data: dict) -> None:
             option_symbol=option_symbol, option_strike=option_strike,
             option_type=option_type, option_expiry=option_expiry,
             option_price=option_price, option_lot_size=option_lot_size,
+            day_type=day_type,
         )
 
     elif decision == "HOLD":

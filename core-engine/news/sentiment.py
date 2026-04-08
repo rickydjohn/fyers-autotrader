@@ -11,6 +11,10 @@ BULLISH_KEYWORDS = {
     "growth": 0.6, "profit": 0.6, "beat": 0.7, "record": 0.6, "high": 0.4,
     "positive": 0.5, "strong": 0.5, "boost": 0.6, "bull": 0.7, "upside": 0.5,
     "recovery": 0.5, "outperform": 0.7, "upgrade": 0.6, "buy": 0.5,
+    # ── Geopolitical de-escalation ────────────────────────────────────────────
+    "ceasefire": 0.7, "peace deal": 0.8, "truce": 0.7, "diplomacy": 0.5,
+    "negotiation": 0.4, "de-escalat": 0.7, "sanctions lifted": 0.8,
+    "trade deal": 0.7, "treaty": 0.6, "resolution": 0.5, "stability": 0.5,
 }
 
 BEARISH_KEYWORDS = {
@@ -18,6 +22,28 @@ BEARISH_KEYWORDS = {
     "plunge": -0.8, "sell": -0.5, "bear": -0.7, "downside": -0.5, "weak": -0.5,
     "concern": -0.4, "risk": -0.4, "warn": -0.6, "fear": -0.6, "cut": -0.5,
     "negative": -0.5, "below": -0.3, "miss": -0.6, "downgrade": -0.7,
+    # ── Geopolitical / war keywords ───────────────────────────────────────────
+    # Armed conflict & escalation
+    "war": -0.9, "airstrike": -0.9, "missile": -0.8, "bomb": -0.8,
+    "invasion": -0.9, "attack": -0.7, "conflict": -0.7, "escalat": -0.8,
+    "ceasefire violation": -0.7, "offensive": -0.7, "troops": -0.6,
+    "military action": -0.8, "nuclear": -0.9, "chemical weapon": -0.9,
+    "drone strike": -0.8, "shelling": -0.8, "artillery": -0.7,
+    # Sanctions & trade war
+    "sanction": -0.7, "tariff": -0.6, "trade war": -0.8, "embargo": -0.7,
+    "blockade": -0.7, "ban": -0.5, "restriction": -0.5, "levy": -0.4,
+    "retaliatory": -0.7, "countermeasure": -0.6,
+    # Political instability
+    "coup": -0.9, "overthrow": -0.9, "assassination": -0.9, "protest": -0.5,
+    "riot": -0.7, "unrest": -0.6, "crisis": -0.7, "instability": -0.6,
+    "martial law": -0.8, "emergency": -0.6, "shutdown": -0.6,
+    # Energy & supply chain shocks
+    "oil shock": -0.8, "supply disruption": -0.7, "pipeline": -0.5,
+    "strait": -0.6, "chokepoint": -0.7, "blockade": -0.7,
+    # Macro / financial contagion
+    "recession": -0.8, "default": -0.8, "sovereign debt": -0.7,
+    "inflation surge": -0.7, "stagflation": -0.8, "currency crisis": -0.8,
+    "banking crisis": -0.9, "contagion": -0.8, "liquidity crunch": -0.8,
 }
 
 

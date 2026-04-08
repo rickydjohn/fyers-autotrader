@@ -99,6 +99,7 @@ async def open_position(
     option_expiry: Optional[str] = None,
     option_price: Optional[float] = None,
     option_lot_size: Optional[int] = None,
+    day_type: Optional[str] = None,
 ) -> Optional[Trade]:
     """Place a live Fyers order and record the position in Redis + data-service."""
     # ── Gate 1: No new positions at or after session close ────────────────────
@@ -134,6 +135,14 @@ async def open_position(
 
     if option_symbol and option_price:
         lot_size = option_lot_size or 1
+        total_option_cost = option_price * lot_size
+        if total_option_cost > available:
+            logger.warning(
+                f"[GATE] Option {option_symbol} costs ₹{total_option_cost:.0f} "
+                f"(₹{option_price:.2f} × {lot_size} lots) exceeds available funds "
+                f"₹{available:.0f} — skipping trade"
+            )
+            return None
         trade_price = option_price
         trade_symbol = option_symbol
         quantity = lot_size
@@ -177,6 +186,7 @@ async def open_position(
         option_type=option_type,
         option_expiry=option_expiry,
         entry_option_price=actual_entry_price,
+        day_type=day_type,
     )
     # Capture entry IV from Redis if already populated by fast position watcher
     if option_symbol:

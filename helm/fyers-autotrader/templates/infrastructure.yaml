@@ -69,6 +69,10 @@ spec:
         - name: redis-data
           persistentVolumeClaim:
             claimName: redis-data
+      {{- with .Values.redis.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
 ---
 apiVersion: v1
 kind: Service
@@ -185,6 +189,10 @@ spec:
           persistentVolumeClaim:
             claimName: timescale-data
       shareProcessNamespace: false
+      {{- with .Values.timescaledb.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
 ---
 apiVersion: v1
 kind: Service

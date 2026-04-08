@@ -56,6 +56,7 @@ async def open_position(
     option_expiry: Optional[str] = None,
     option_price: Optional[float] = None,
     option_lot_size: Optional[int] = None,
+    day_type: Optional[str] = None,
 ) -> Optional[Trade]:
     """Open a new simulated position. Trades the option if one is provided."""
     # ── Gate 1: No new positions at or after session close ────────────────────
@@ -89,6 +90,14 @@ async def open_position(
         # Trade the option: entry_price = option premium; quantity = 1 lot (from Fyers depth)
         lot_size = option_lot_size or 1
         entry_price = _apply_slippage(option_price, side)
+        total_option_cost = entry_price * lot_size
+        if total_option_cost > max_value:
+            logger.warning(
+                f"[GATE] Option {option_symbol} costs ₹{total_option_cost:.0f} "
+                f"(₹{entry_price:.2f} × {lot_size} lots) exceeds max position value "
+                f"₹{max_value:.0f} — skipping trade"
+            )
+            return None
         quantity = lot_size
         trade_symbol = option_symbol
         raw_price = option_price
@@ -122,6 +131,7 @@ async def open_position(
         option_type=option_type,
         option_expiry=option_expiry,
         entry_option_price=option_price or 0.0,
+        day_type=day_type,
     )
     # Capture entry IV from Redis if already populated by fast position watcher
     if option_symbol:
