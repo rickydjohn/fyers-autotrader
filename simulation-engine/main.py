@@ -19,7 +19,7 @@ from config import settings
 from execution import mock_broker, live_broker
 from execution.exit_rules import check_exit
 from models.schemas import Position
-from portfolio.budget import initialize_budget, load_budget
+from portfolio.budget import initialize_budget, load_budget, reconcile_invested
 import data_client
 
 IST = pytz.timezone("Asia/Kolkata")
@@ -245,6 +245,7 @@ async def lifespan(app: FastAPI):
     global redis_client, _consumer_task
     redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
     await initialize_budget(redis_client)
+    await reconcile_invested(redis_client)
     _consumer_task = asyncio.create_task(_consume_decisions())
     logger.info("Simulation engine started")
     yield

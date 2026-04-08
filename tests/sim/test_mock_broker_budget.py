@@ -155,16 +155,42 @@ class TestBudgetGate:
         mock_alloc.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_gate_does_not_fire_for_non_option_trades(self):
-        """Budget gate only applies to options — direct equity trades skip it."""
+    async def test_no_trade_when_get_affordable_option_returns_none(self):
+        """When get_affordable_option returns None (no option_symbol), no trade is made.
+
+        Previously the broker fell back to trading the underlying index at the raw
+        LTP — this test pins the corrected behaviour: return None without calling
+        allocate().
+        """
         with (
             patch.object(_mb, "get_max_position_value", AsyncMock(return_value=MAX_VALUE)),
             patch.object(_mb, "allocate", AsyncMock(return_value=True)) as mock_alloc,
-            patch.object(_mb, "data_client") as mock_dc,
         ):
-            mock_dc.persist_trade = AsyncMock()
-            mock_dc.mark_decision_acted = AsyncMock()
-            await open_position(
+            result = await open_position(
+                redis_client=_redis(),
+                symbol="NSE:NIFTY50-INDEX",
+                side="BUY",
+                price=24010.0,        # underlying index LTP — must NOT be used as entry
+                stop_loss=23800.0,
+                target=24400.0,
+                decision_id="test-decision",
+                reasoning="test",
+                option_symbol=None,   # get_affordable_option returned None
+                option_price=None,
+                option_lot_size=None,
+            )
+
+        assert result is None
+        mock_alloc.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_trade_when_option_price_missing(self):
+        """option_symbol present but option_price is None/0 — no trade."""
+        with (
+            patch.object(_mb, "get_max_position_value", AsyncMock(return_value=MAX_VALUE)),
+            patch.object(_mb, "allocate", AsyncMock(return_value=True)) as mock_alloc,
+        ):
+            result = await open_position(
                 redis_client=_redis(),
                 symbol="NSE:NIFTY50-INDEX",
                 side="BUY",
@@ -173,12 +199,13 @@ class TestBudgetGate:
                 target=24400.0,
                 decision_id="test-decision",
                 reasoning="test",
-                option_symbol=None,
-                option_price=None,
-                option_lot_size=None,
+                option_symbol="NSE:NIFTY24000CE",
+                option_price=None,    # price lookup failed after option was selected
+                option_lot_size=LOT_SIZE,
             )
 
-        mock_alloc.assert_called_once()
+        assert result is None
+        mock_alloc.assert_not_called()
 
 
 class TestExistingGatesStillWork:

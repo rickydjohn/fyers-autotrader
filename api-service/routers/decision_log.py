@@ -11,6 +11,20 @@ from models.schemas import ApiResponse
 router = APIRouter(prefix="/decision-log", tags=["Decision Log"])
 
 
+def _decode_stream_entry(data: dict) -> dict:
+    """Redis Streams store all values as strings.
+    Decode each field back to its native type via json.loads(), and
+    rename 'indicators' → 'indicators_snapshot' to match the Decision schema."""
+    result = {}
+    for k, v in data.items():
+        key = "indicators_snapshot" if k == "indicators" else k
+        try:
+            result[key] = json.loads(v)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            result[key] = v
+    return result
+
+
 @router.get("")
 async def get_decision_log(
     symbol: Optional[str] = Query(None),
@@ -67,7 +81,7 @@ async def stream_decisions(
                         last_id = entry_id
                         yield {
                             "event": "decision",
-                            "data": json.dumps(data),
+                            "data": json.dumps(_decode_stream_entry(data)),
                             "id": entry_id,
                         }
 

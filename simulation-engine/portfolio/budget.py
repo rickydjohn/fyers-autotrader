@@ -69,6 +69,36 @@ async def release(redis_client: aioredis.Redis, invested_amount: float, pnl: flo
     await save_budget(redis_client, state)
 
 
+async def reconcile_invested(redis_client: aioredis.Redis) -> None:
+    """
+    Recompute invested from positions:open and correct budget:state.
+
+    Called at startup so that a crash or bad-cleanup path that cleared
+    positions:open without calling release() doesn't leave invested
+    permanently stranded.
+    """
+    state = await load_budget(redis_client)
+    pos_raw = await redis_client.hgetall("positions:open")
+    actual_invested = 0.0
+    for pos_data in pos_raw.values():
+        try:
+            import json as _json
+            pos = _json.loads(pos_data)
+            actual_invested += float(pos.get("avg_price", 0)) * int(pos.get("quantity", 0))
+        except Exception:
+            pass
+
+    if abs(actual_invested - state.invested) > 0.01:
+        logger.warning(
+            f"Budget reconciliation: invested ₹{state.invested:.2f} → ₹{actual_invested:.2f} "
+            f"(positions:open has {len(pos_raw)} entries)"
+        )
+        delta = state.invested - actual_invested
+        state.invested = actual_invested
+        state.cash += delta
+        await save_budget(redis_client, state)
+
+
 async def get_max_position_value(redis_client: aioredis.Redis) -> float:
     """Maximum value for a single position based on config."""
     state = await load_budget(redis_client)

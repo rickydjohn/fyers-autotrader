@@ -72,29 +72,6 @@ async def get_pnl(
         except Exception:
             pass
 
-    total_pnl = realized_pnl + unrealized_pnl
-
-    # Budget — mode-aware
-    if trading_mode == "live":
-        budget_info = await _live_budget(request)
-        if budget_info is None:
-            # Fyers unavailable: fall back gracefully with zeros
-            budget_info = {"initial": 0, "current": 0, "cash": 0, "invested": 0, "utilization_pct": 0}
-        initial = budget_info["initial"]
-    else:
-        budget_raw = await redis_client.get("budget:state")
-        budget = json.loads(budget_raw) if budget_raw else {
-            "initial": 100000, "cash": 100000, "invested": 0
-        }
-        initial = budget.get("initial", 100000)
-        budget_info = {
-            "initial": initial,
-            "current": round(initial + total_pnl, 2),
-            "cash": round(budget.get("cash", 0), 2),
-            "invested": round(budget.get("invested", 0), 2),
-            "utilization_pct": round(budget.get("invested", 0) / initial * 100, 2) if initial else 0,
-        }
-
     # Trade stats — scoped to today only
     trades_raw = await redis_client.zrevrange("trades:history", 0, -1)
     today_closed = []
@@ -111,8 +88,32 @@ async def get_pnl(
             pass
 
     realized_pnl = sum(t.get("pnl", 0) for t in today_closed)
+    total_pnl = realized_pnl + unrealized_pnl
     wins = [t for t in today_closed if (t.get("pnl") or 0) > 0]
     losses = [t for t in today_closed if (t.get("pnl") or 0) < 0]
+
+    # Budget — mode-aware
+    if trading_mode == "live":
+        budget_info = await _live_budget(request)
+        if budget_info is None:
+            # Fyers unavailable: fall back gracefully with zeros
+            budget_info = {"initial": 0, "current": 0, "cash": 0, "invested": 0, "utilization_pct": 0}
+        initial = budget_info["initial"]
+    else:
+        budget_raw = await redis_client.get("budget:state")
+        budget = json.loads(budget_raw) if budget_raw else {
+            "initial": 100000, "cash": 100000, "invested": 0
+        }
+        initial = budget.get("initial", 100000)
+        cash = round(budget.get("cash", 0), 2)
+        invested = round(budget.get("invested", 0), 2)
+        budget_info = {
+            "initial": initial,
+            "current": round(cash + invested, 2),
+            "cash": cash,
+            "invested": invested,
+            "utilization_pct": round(invested / initial * 100, 2) if initial else 0,
+        }
 
     # Timeline
     timeline_raw = await redis_client.zrange(f"pnl:daily:{date_str}", 0, -1)
