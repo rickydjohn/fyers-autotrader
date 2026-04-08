@@ -86,27 +86,29 @@ async def open_position(
 
     max_value = await get_max_position_value(redis_client)
 
-    if option_symbol and option_price:
-        # Trade the option: entry_price = option premium; quantity = 1 lot (from Fyers depth)
-        lot_size = option_lot_size or 1
-        entry_price = _apply_slippage(option_price, side)
-        total_option_cost = entry_price * lot_size
-        if total_option_cost > max_value:
-            logger.warning(
-                f"[GATE] Option {option_symbol} costs ₹{total_option_cost:.0f} "
-                f"(₹{entry_price:.2f} × {lot_size} lots) exceeds max position value "
-                f"₹{max_value:.0f} — skipping trade"
-            )
-            return None
-        quantity = lot_size
-        trade_symbol = option_symbol
-        raw_price = option_price
-    else:
-        # Fallback: trade the underlying directly
-        entry_price = _apply_slippage(price, side)
-        quantity = _calculate_quantity(entry_price, max_value)
-        trade_symbol = symbol
-        raw_price = price
+    if not option_symbol:
+        # No affordable option was found (get_affordable_option returned None) — skip trade
+        logger.info(f"[GATE] No option symbol for {symbol} — skipping trade")
+        return None
+
+    if not option_price:
+        logger.info(f"[GATE] No option price for {option_symbol} — skipping trade")
+        return None
+
+    # Trade the option: entry_price = option premium; quantity = 1 lot (from Fyers depth)
+    lot_size = option_lot_size or 1
+    entry_price = _apply_slippage(option_price, side)
+    total_option_cost = entry_price * lot_size
+    if total_option_cost > max_value:
+        logger.warning(
+            f"[GATE] Option {option_symbol} costs ₹{total_option_cost:.0f} "
+            f"(₹{entry_price:.2f} × {lot_size} lots) exceeds max position value "
+            f"₹{max_value:.0f} — skipping trade"
+        )
+        return None
+    quantity = lot_size
+    trade_symbol = option_symbol
+    raw_price = option_price
 
     trade_value = entry_price * quantity
     commission = _calculate_commission(trade_value)

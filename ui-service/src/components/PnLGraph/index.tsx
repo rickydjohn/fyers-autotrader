@@ -1,16 +1,18 @@
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
-import { format } from 'date-fns'
 import type { PnLData } from '../../types'
+import { safeFormat } from '../../utils/date'
 
 interface Props {
   pnl: PnLData
 }
 
 export function PnLGraph({ pnl }: Props) {
-  const timelineData = pnl.timeline.map((t) => ({
-    time: format(new Date(t.timestamp), 'HH:mm'),
-    pnl: t.cumulative_pnl,
-  }))
+  const timelineData = pnl.timeline
+    .filter((t) => t.timestamp && !isNaN(new Date(t.timestamp).getTime()))
+    .map((t) => ({
+      time: safeFormat(t.timestamp, 'HH:mm'),
+      pnl: t.cumulative_pnl,
+    }))
 
   const isPositive = pnl.total_pnl >= 0
 
