@@ -3,6 +3,7 @@ Repository: market candles + daily indicators.
 All writes are upserts (ON CONFLICT DO UPDATE) for idempotency.
 """
 
+import logging
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -12,6 +13,8 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import DailyIndicator, MarketCandle
+
+logger = logging.getLogger(__name__)
 
 
 def _is_missing_relation_error(exc: Exception) -> bool:
@@ -195,3 +198,208 @@ async def get_recent_daily_indicators(
     )
     rows = result.scalars().all()
     return [{c.key: getattr(r, c.key) for c in DailyIndicator.__table__.columns} for r in rows]
+
+
+async def get_unfilled_gaps(
+    db: AsyncSession,
+    symbol: str,
+    min_gap_pts: float = 100.0,
+    lookback_days: int = 90,
+) -> List[Dict[str, Any]]:
+    """
+    Find opening gaps ≥ min_gap_pts (vs prior day's high/low) that remain unfilled.
+
+    Fill condition (OR):
+      UP gap   — subsequent day low  ≤ prev_close + 10  OR  low  ≤ prev_high + 10
+      DOWN gap — subsequent day high ≥ prev_open  - 10  OR  high ≥ prev_high - 10
+
+    Returns list ordered by gap_date DESC (most recent first).
+    """
+    sql = text(f"""
+        WITH daily_with_prev AS (
+            SELECT
+                date,
+                symbol,
+                open,
+                high,
+                low,
+                close,
+                LAG(high)  OVER (PARTITION BY symbol ORDER BY date) AS prev_high,
+                LAG(low)   OVER (PARTITION BY symbol ORDER BY date) AS prev_low,
+                LAG(open)  OVER (PARTITION BY symbol ORDER BY date) AS prev_open,
+                LAG(close) OVER (PARTITION BY symbol ORDER BY date) AS prev_close
+            FROM daily_ohlcv
+            WHERE symbol = :symbol
+        ),
+        gaps AS (
+            SELECT
+                date         AS gap_date,
+                symbol,
+                open         AS gap_open,
+                CASE
+                    WHEN open > prev_high + :min_gap THEN 'UP'
+                    WHEN open < prev_low  - :min_gap THEN 'DOWN'
+                END          AS gap_direction,
+                prev_high,
+                prev_low,
+                prev_open,
+                prev_close,
+                CASE
+                    WHEN open > prev_high + :min_gap THEN prev_close::numeric + 10
+                    ELSE prev_open::numeric - 10
+                END          AS fill_target_1,
+                CASE
+                    WHEN open > prev_high + :min_gap THEN prev_high::numeric + 10
+                    ELSE prev_high::numeric - 10
+                END          AS fill_target_2
+            FROM daily_with_prev
+            WHERE prev_high IS NOT NULL
+              AND date >= CURRENT_DATE - INTERVAL '{lookback_days} days'
+              AND (
+                  open > prev_high + :min_gap
+               OR open < prev_low  - :min_gap
+              )
+        ),
+        filled_gaps AS (
+            SELECT DISTINCT g.gap_date
+            FROM gaps g
+            JOIN daily_ohlcv d ON d.symbol = g.symbol AND d.date > g.gap_date
+            WHERE
+                (g.gap_direction = 'UP'   AND (d.low  <= g.fill_target_1 OR d.low  <= g.fill_target_2))
+             OR (g.gap_direction = 'DOWN' AND (d.high >= g.fill_target_1 OR d.high >= g.fill_target_2))
+        ),
+        td_since AS (
+            SELECT g.gap_date, COUNT(d.date) AS td_count
+            FROM gaps g
+            JOIN daily_ohlcv d ON d.symbol = g.symbol AND d.date > g.gap_date
+            GROUP BY g.gap_date
+        )
+        SELECT
+            g.gap_date,
+            g.gap_direction,
+            g.gap_open,
+            g.prev_high,
+            g.prev_low,
+            g.prev_open,
+            g.prev_close,
+            g.fill_target_1,
+            g.fill_target_2,
+            COALESCE(t.td_count, 0) AS trading_days_old,
+            CASE
+                WHEN g.gap_direction = 'UP'   THEN g.gap_open - g.prev_high
+                ELSE g.prev_low - g.gap_open
+            END AS gap_size_pts
+        FROM gaps g
+        LEFT JOIN td_since t ON t.gap_date = g.gap_date
+        WHERE g.gap_date NOT IN (SELECT gap_date FROM filled_gaps)
+        ORDER BY g.gap_date DESC
+    """)
+    try:
+        result = await db.execute(sql, {"symbol": symbol, "min_gap": min_gap_pts})
+        rows = result.mappings().all()
+        return [dict(r) for r in rows]
+    except Exception as exc:
+        logger.warning(f"get_unfilled_gaps failed for {symbol}: {exc}")
+        return []
+
+
+async def get_unfilled_cprs(
+    db: AsyncSession,
+    symbol: str,
+    max_age_trading_days: int = 22,
+    lookback_days: int = 60,
+) -> List[Dict[str, Any]]:
+    """
+    Find daily CPR zones (from daily_indicators) that price never touched.
+    A CPR zone [min(bc,tc), max(bc,tc)] is considered touched if any subsequent
+    day's OHLCV range overlaps with it (low ≤ cpr_high AND high ≥ cpr_low).
+
+    Returns zones ≤ max_age_trading_days old (by trading day count), ordered by
+    cpr_date DESC.
+    """
+    sql = text(f"""
+        WITH cprs AS (
+            SELECT
+                date             AS cpr_date,
+                symbol,
+                pivot,
+                LEAST(bc, tc)    AS cpr_low,
+                GREATEST(bc, tc) AS cpr_high,
+                cpr_width_pct
+            FROM daily_indicators
+            WHERE symbol = :symbol
+              AND date >= CURRENT_DATE - INTERVAL '{lookback_days} days'
+        ),
+        breached AS (
+            SELECT DISTINCT c.cpr_date
+            FROM cprs c
+            JOIN daily_ohlcv d ON d.symbol = :symbol AND d.date > c.cpr_date
+            WHERE d.low <= c.cpr_high AND d.high >= c.cpr_low
+        ),
+        td_ages AS (
+            SELECT c.cpr_date, COUNT(d.date) AS td_since
+            FROM cprs c
+            JOIN daily_ohlcv d ON d.symbol = :symbol AND d.date > c.cpr_date
+            GROUP BY c.cpr_date
+        )
+        SELECT
+            c.cpr_date,
+            c.symbol,
+            c.pivot,
+            c.cpr_low,
+            c.cpr_high,
+            c.cpr_width_pct,
+            COALESCE(a.td_since, 0) AS trading_days_old
+        FROM cprs c
+        LEFT JOIN td_ages a ON a.cpr_date = c.cpr_date
+        WHERE c.cpr_date NOT IN (SELECT cpr_date FROM breached)
+          AND COALESCE(a.td_since, 0) <= :max_age
+        ORDER BY c.cpr_date DESC
+    """)
+    try:
+        result = await db.execute(sql, {"symbol": symbol, "max_age": max_age_trading_days})
+        rows = result.mappings().all()
+        return [dict(r) for r in rows]
+    except Exception as exc:
+        logger.warning(f"get_unfilled_cprs failed for {symbol}: {exc}")
+        return []
+
+
+async def get_monthly_ohlc(
+    db: AsyncSession,
+    symbol: str,
+) -> Optional[Dict[str, Any]]:
+    """Return previous calendar month's H/L/C from daily_ohlcv table."""
+    today = date.today()
+    first_this_month = today.replace(day=1)
+    if first_this_month.month == 1:
+        first_prev_month = first_this_month.replace(year=first_this_month.year - 1, month=12)
+    else:
+        first_prev_month = first_this_month.replace(month=first_this_month.month - 1)
+    last_prev_month = first_this_month - timedelta(days=1)
+
+    sql = text("""
+        SELECT
+            MAX(high)  AS high,
+            MIN(low)   AS low,
+            (SELECT close FROM daily_ohlcv
+             WHERE symbol = :symbol AND date >= :start AND date <= :end
+             ORDER BY date DESC LIMIT 1) AS close
+        FROM daily_ohlcv
+        WHERE symbol = :symbol AND date >= :start AND date <= :end
+    """)
+    try:
+        result = await db.execute(
+            sql,
+            {"symbol": symbol, "start": first_prev_month, "end": last_prev_month},
+        )
+        row = result.mappings().first()
+        if row and row["high"] is not None and row["low"] is not None and row["close"] is not None:
+            return {
+                "high":  float(row["high"]),
+                "low":   float(row["low"]),
+                "close": float(row["close"]),
+            }
+    except Exception:
+        pass
+    return None

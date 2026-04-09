@@ -18,6 +18,12 @@ for _key in list(sys.modules):
     if _src.startswith(_core_prefix):
         del sys.modules[_key]
 
+# Stub httpx (not installed in host Python — only available inside Docker images)
+from unittest.mock import AsyncMock as _AsyncMock, MagicMock as _MagicMock
+_httpx = ModuleType("httpx")
+_httpx.AsyncClient = _MagicMock()
+sys.modules["httpx"] = _httpx
+
 # Replace any stale `config` stub (installed by core tests) with sim-compatible settings
 _sim_settings = SimpleNamespace(
     session_close_hour=15,
@@ -33,6 +39,7 @@ _sim_settings = SimpleNamespace(
     commission_flat=20.0,
     commission_pct=0.03,
     initial_capital=100000.0,
+    slack_webhook_url="",
 )
 _cfg = ModuleType("config")
 _cfg.settings = _sim_settings

@@ -65,7 +65,9 @@ async def get_pnl(
                 ltp = market.get("ltp", pos["avg_price"])
                 qty = pos["quantity"]
                 avg = pos["avg_price"]
-                if pos["side"] == "BUY":
+                # Option positions are always long (bought to open) regardless of
+                # whether the underlying signal was BUY (CE) or SELL (PE).
+                if pos.get("option_symbol") or pos["side"] == "BUY":
                     unrealized_pnl += (ltp - avg) * qty
                 else:
                     unrealized_pnl += (avg - ltp) * qty

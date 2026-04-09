@@ -17,12 +17,12 @@ from fastapi.responses import RedirectResponse
 
 from config import settings
 from fyers.auth import exchange_auth_code, get_auth_url, get_valid_token
-from fyers.orders import get_funds, get_order_fill, place_market_order
+from fyers.orders import get_funds, get_fyers_positions, get_order_fill, place_market_order
 from llm.client import check_ollama_health
 from scheduler.jobs import (
     create_scheduler, _refresh_news, run_market_scan,
     refresh_context_cache, bootstrap_historical_data,
-    bootstrap_daily_ohlcv, _load_sr_cache,
+    bootstrap_daily_ohlcv, _load_sr_cache, bootstrap_magnet_zones,
 )
 import data_client
 
@@ -87,6 +87,13 @@ async def lifespan(app: FastAPI):
                 await refresh_context_cache(symbol)
             except Exception as e:
                 logger.warning(f"Context bootstrap failed for {symbol}: {e}")
+
+        # 5. Bootstrap magnet zones (unfilled gaps + unbreached CPRs) — check Redis first
+        for symbol in settings.symbols:
+            try:
+                await bootstrap_magnet_zones(symbol, redis_client)
+            except Exception as e:
+                logger.warning(f"Magnet zone bootstrap failed for {symbol}: {e}")
 
     asyncio.create_task(_do_bootstrap())
 
@@ -184,6 +191,18 @@ async def fyers_funds():
         if funds is None:
             raise HTTPException(status_code=503, detail="Could not fetch funds — is Fyers authenticated?")
         return {"status": "ok", "funds": funds}
+    except RuntimeError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+
+
+@app.get("/fyers/positions")
+async def fyers_positions_endpoint():
+    """Return currently open positions from the Fyers account."""
+    try:
+        positions = get_fyers_positions()
+        if positions is None:
+            raise HTTPException(status_code=503, detail="Could not fetch positions — is Fyers authenticated?")
+        return {"status": "ok", "positions": positions}
     except RuntimeError as e:
         raise HTTPException(status_code=401, detail=str(e))
 

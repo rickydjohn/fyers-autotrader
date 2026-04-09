@@ -2,13 +2,15 @@ import { useState } from 'react'
 import { Badge } from '../shared/Badge'
 import type { Position, Trade } from '../../types'
 import { parseDate } from '../../utils/date'
+import { closePosition } from '../../api/positions'
 
 interface Props {
   positions: Position[]
   trades: Trade[]
+  onPositionClosed?: () => void
 }
 
-export function PositionTable({ positions, trades }: Props) {
+export function PositionTable({ positions, trades, onPositionClosed }: Props) {
   const [view, setView] = useState<'positions' | 'trades'>('positions')
 
   return (
@@ -45,7 +47,7 @@ export function PositionTable({ positions, trades }: Props) {
       </div>
 
       {view === 'positions' ? (
-        <PositionsView positions={positions} />
+        <PositionsView positions={positions} onPositionClosed={onPositionClosed} />
       ) : (
         <TradesView trades={trades} />
       )}
@@ -53,13 +55,39 @@ export function PositionTable({ positions, trades }: Props) {
   )
 }
 
-function PositionsView({ positions }: { positions: Position[] }) {
+function PositionsView({
+  positions,
+  onPositionClosed,
+}: {
+  positions: Position[]
+  onPositionClosed?: () => void
+}) {
+  const [confirmSymbol, setConfirmSymbol] = useState<string | null>(null)
+  const [closing, setClosing] = useState<string | null>(null)
+
   if (!positions.length) {
     return (
       <div className="p-6 text-center text-gray-600 text-sm">
         No open positions
       </div>
     )
+  }
+
+  async function handleExit(symbol: string) {
+    if (confirmSymbol !== symbol) {
+      setConfirmSymbol(symbol)
+      return
+    }
+    setClosing(symbol)
+    setConfirmSymbol(null)
+    try {
+      await closePosition(symbol)
+      onPositionClosed?.()
+    } catch {
+      // swallow — position refresh will reflect actual state
+    } finally {
+      setClosing(null)
+    }
   }
 
   return (
@@ -75,6 +103,7 @@ function PositionsView({ positions }: { positions: Position[] }) {
             <th className="px-4 py-2 text-right">LTP</th>
             <th className="px-4 py-2 text-right">P&L</th>
             <th className="px-4 py-2 text-right">SL / Target</th>
+            <th className="px-4 py-2 text-right">Exit</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-800">
@@ -84,6 +113,8 @@ function PositionsView({ positions }: { positions: Position[] }) {
             const optionLabel = pos.option_symbol
               ? pos.option_symbol.replace('NSE:', '')
               : '—'
+            const isConfirming = confirmSymbol === pos.symbol
+            const isClosing = closing === pos.symbol
             return (
               <tr key={pos.symbol} className="hover:bg-gray-800/40">
                 <td className="px-4 py-3">
@@ -126,6 +157,33 @@ function PositionsView({ positions }: { positions: Position[] }) {
                   <span className="text-red-400">₹{pos.stop_loss.toLocaleString('en-IN')}</span>
                   <span className="text-gray-600 mx-1">/</span>
                   <span className="text-emerald-400">₹{pos.target.toLocaleString('en-IN')}</span>
+                </td>
+                <td className="px-4 py-3 text-right">
+                  {isClosing ? (
+                    <span className="text-xs text-gray-500">closing…</span>
+                  ) : isConfirming ? (
+                    <div className="flex items-center justify-end gap-1">
+                      <button
+                        onClick={() => handleExit(pos.symbol)}
+                        className="px-2 py-0.5 rounded text-xs font-medium bg-red-600 hover:bg-red-500 text-white transition-colors"
+                      >
+                        Confirm
+                      </button>
+                      <button
+                        onClick={() => setConfirmSymbol(null)}
+                        className="px-2 py-0.5 rounded text-xs font-medium text-gray-400 hover:text-gray-200 transition-colors"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => handleExit(pos.symbol)}
+                      className="px-2 py-0.5 rounded text-xs font-medium border border-gray-700 text-gray-400 hover:border-red-500 hover:text-red-400 transition-colors"
+                    >
+                      Exit
+                    </button>
+                  )}
                 </td>
               </tr>
             )
@@ -242,11 +300,13 @@ function StatusBadge({ status, exitReason }: { status: string; exitReason?: stri
   const color =
     status === 'OPEN'
       ? 'bg-blue-900/50 text-blue-300'
-      : label === 'TRAIL_STOP'
+      : label === 'TRAIL_STOP' || label === 'CLOSED'
         ? 'bg-emerald-900/50 text-emerald-300'
-        : label === 'CLOSED'
-          ? 'bg-emerald-900/50 text-emerald-300'
-          : 'bg-red-900/50 text-red-300'
+        : label === 'MANUAL_UI_EXIT'
+          ? 'bg-violet-900/50 text-violet-300'
+          : label === 'USER_EXIT_FYERS'
+            ? 'bg-amber-900/50 text-amber-300'
+            : 'bg-red-900/50 text-red-300'
 
   return (
     <span className={`inline-block px-1.5 py-0.5 rounded text-xs font-medium ${color}`}>

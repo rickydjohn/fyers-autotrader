@@ -16,7 +16,9 @@ import redis.asyncio as aioredis
 
 from config import settings
 from models.schemas import Position, Trade
+from notifications.slack import notify_trade_opened, notify_trade_closed
 import data_client
+from execution.exit_rules import PREMIUM_SL_PCT, FIRST_MILESTONE_PCT, RANGING_MILESTONE_PCT
 
 logger = logging.getLogger(__name__)
 IST = pytz.timezone("Asia/Kolkata")
@@ -169,6 +171,14 @@ async def open_position(
     if actual_entry_price <= 0:
         actual_entry_price = trade_price
 
+    # Override underlying-based SL/target with option-premium-relative levels.
+    # The LLM decision produces index levels which are meaningless for an option
+    # position — the option's own price is the only valid reference.
+    if option_symbol:
+        first_target_pct = RANGING_MILESTONE_PCT if day_type == "RANGING" else FIRST_MILESTONE_PCT
+        stop_loss = round(actual_entry_price * (1.0 - PREMIUM_SL_PCT), 2)
+        target    = round(actual_entry_price * (1.0 + first_target_pct), 2)
+
     trade_id = str(uuid.uuid4())
     now = datetime.now(IST)
 
@@ -244,6 +254,23 @@ async def open_position(
     label = f"{option_symbol} (strike ₹{option_strike})" if option_symbol else trade_symbol
     fill_note = f"filled=₹{actual_entry_price:.2f}" if fill.get("status") == "TRADED" else "price=decision (timeout)"
     logger.info(f"LIVE OPENED {side} {quantity}x{label} | {fill_note} | order_id={broker_order_id}")
+
+    notify_trade_opened(
+        mode="live",
+        symbol=symbol,
+        side=side,
+        entry_price=actual_entry_price,
+        quantity=quantity,
+        stop_loss=stop_loss,
+        target=target,
+        entry_time=trade.entry_time,
+        option_symbol=option_symbol,
+        option_strike=option_strike,
+        option_type=option_type,
+        option_expiry=option_expiry,
+        reasoning=reasoning,
+        day_type=day_type,
+    )
     return trade
 
 
@@ -279,7 +306,9 @@ async def close_position(
 
     now = datetime.now(IST)
     commission = 20.0
-    if pos.side == "BUY":
+    # We are always long the option (bought to open regardless of underlying direction).
+    # For non-option equity trades, direction still determines PnL sign.
+    if pos.option_symbol or pos.side == "BUY":
         gross_pnl = (actual_exit_price - pos.avg_price) * pos.quantity
     else:
         gross_pnl = (pos.avg_price - actual_exit_price) * pos.quantity
@@ -339,4 +368,124 @@ async def close_position(
         f"LIVE CLOSED {pos.side} {pos.quantity}x{symbol} "
         f"@ ₹{actual_exit_price:.2f} P&L=₹{net_pnl:+.2f} ({status})"
     )
+
+    if trade:
+        notify_trade_closed(
+            mode="live",
+            symbol=symbol,
+            side=pos.side,
+            entry_price=trade.entry_price,
+            exit_price=actual_exit_price,
+            quantity=pos.quantity,
+            pnl=trade.pnl or 0.0,
+            pnl_pct=trade.pnl_pct or 0.0,
+            commission=trade.commission,
+            exit_reason=exit_reason or status,
+            entry_time=trade.entry_time,
+            exit_time=trade.exit_time,
+            option_symbol=trade.option_symbol,
+            option_strike=trade.option_strike,
+            option_type=trade.option_type,
+        )
+    return trade
+
+
+async def record_external_close(
+    redis_client: aioredis.Redis,
+    symbol: str,
+    exit_price: float,
+    exit_reason: str = "USER_EXIT_FYERS",
+) -> Optional[Trade]:
+    """
+    Record a position as closed without placing a new Fyers order.
+    Used when the position was already closed externally — by the user on the
+    Fyers platform — and the system just needs to reconcile its state.
+    """
+    pos_data = await redis_client.hget("positions:open", symbol)
+    if not pos_data:
+        return None
+
+    pos = Position(**json.loads(pos_data))
+    now = datetime.now(IST)
+    commission = 20.0
+    # Always long the option regardless of underlying direction
+    if pos.option_symbol or pos.side == "BUY":
+        gross_pnl = (exit_price - pos.avg_price) * pos.quantity
+    else:
+        gross_pnl = (pos.avg_price - exit_price) * pos.quantity
+    net_pnl = gross_pnl - commission
+    invested = pos.avg_price * pos.quantity
+
+    trade = None
+    trade_id_raw = await redis_client.hget("trades:open_id", symbol)
+    if trade_id_raw:
+        tdata = await redis_client.hget("trades:all", trade_id_raw)
+        if tdata:
+            trade = Trade(**json.loads(tdata))
+    await redis_client.hdel("trades:open_id", symbol)
+
+    if trade:
+        trade.exit_price = exit_price
+        trade.exit_time = now
+        trade.pnl = round(net_pnl, 2)
+        trade.pnl_pct = round(net_pnl / invested * 100, 3) if invested else 0.0
+        trade.commission += commission
+        trade.status = "CLOSED"
+        trade.exit_reason = exit_reason
+
+        await redis_client.hset("trades:all", trade.trade_id, trade.model_dump_json())
+        await redis_client.zadd("trades:history", {trade.model_dump_json(): now.timestamp()})
+
+        await data_client.persist_trade({
+            "trade_id":        trade.trade_id,
+            "symbol":          trade.symbol,
+            "side":            trade.side,
+            "quantity":        trade.quantity,
+            "entry_price":     trade.entry_price,
+            "entry_time":      trade.entry_time.isoformat(),
+            "exit_price":      trade.exit_price,
+            "exit_time":       trade.exit_time.isoformat(),
+            "pnl":             trade.pnl,
+            "pnl_pct":         trade.pnl_pct,
+            "commission":      trade.commission,
+            "slippage":        trade.slippage,
+            "status":          trade.status,
+            "decision_id":     trade.decision_id,
+            "reasoning":       trade.reasoning,
+            "trading_mode":    "live",
+            "option_symbol":   trade.option_symbol,
+            "option_strike":   trade.option_strike,
+            "option_type":     trade.option_type,
+            "option_expiry":   trade.option_expiry,
+            "exit_reason":     trade.exit_reason,
+            "broker_order_id": trade.broker_order_id,
+        })
+
+    await redis_client.hdel("positions:open", symbol)
+    existing_total = float(await redis_client.get("pnl:realized:total") or 0)
+    await redis_client.set("pnl:realized:total", str(existing_total + net_pnl))
+
+    logger.info(
+        f"EXTERNAL CLOSE recorded: {pos.side} {pos.quantity}x{symbol} "
+        f"@ ₹{exit_price:.2f} P&L=₹{net_pnl:+.2f} reason={exit_reason}"
+    )
+
+    if trade:
+        notify_trade_closed(
+            mode="live",
+            symbol=symbol,
+            side=pos.side,
+            entry_price=trade.entry_price,
+            exit_price=exit_price,
+            quantity=pos.quantity,
+            pnl=trade.pnl or 0.0,
+            pnl_pct=trade.pnl_pct or 0.0,
+            commission=trade.commission,
+            exit_reason=exit_reason,
+            entry_time=trade.entry_time,
+            exit_time=trade.exit_time,
+            option_symbol=trade.option_symbol,
+            option_strike=trade.option_strike,
+            option_type=trade.option_type,
+        )
     return trade

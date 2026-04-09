@@ -53,7 +53,8 @@ async def compute_pnl_summary(
     unrealized_pnl = 0.0
     for pos in positions:
         ltp = current_prices.get(pos.symbol, pos.avg_price)
-        if pos.side == "BUY":
+        # Option positions are always long regardless of underlying direction
+        if pos.option_symbol or pos.side == "BUY":
             unrealized_pnl += (ltp - pos.avg_price) * pos.quantity
         else:
             unrealized_pnl += (pos.avg_price - ltp) * pos.quantity

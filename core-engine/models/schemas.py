@@ -18,6 +18,7 @@ class CPRResult(BaseModel):
     tc: float   # Top Central
     width_pct: float
     is_narrow: bool
+    day_type: str = "WIDE"  # NARROW | MODERATE | WIDE (ATR-normalised classification)
 
 
 class PivotLevels(BaseModel):
@@ -25,9 +26,13 @@ class PivotLevels(BaseModel):
     r1: float
     r2: float
     r3: float
+    r4: float
+    r5: float
     s1: float
     s2: float
     s3: float
+    s4: float
+    s5: float
 
 
 class TechnicalIndicators(BaseModel):
@@ -52,6 +57,7 @@ class TechnicalIndicators(BaseModel):
     day_low: float = 0.0           # lowest point reached today (intraday)
     consolidation_pct: float = 0.0 # range% of last 8 candles; < 0.40 = sideways
     range_breakout: Literal["BREAKOUT_HIGH", "BREAKOUT_LOW", "NONE"] = "NONE"
+    pdh_pivot_confluence: bool = False  # PDH within 0.2% of daily Pivot
 
 
 class NewsItem(BaseModel):

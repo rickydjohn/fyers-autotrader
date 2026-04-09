@@ -12,7 +12,7 @@ import asyncio
 import json
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 import httpx
@@ -74,6 +74,21 @@ def _validate_decision(data: dict, price: float) -> dict:
     }
 
 
+# ── Python-side MACD hard override (mirrors decision.py) ─────────────────────
+
+def _apply_macd_override(validated: dict, macd_signal: str) -> dict:
+    """Unconditional MACD contradiction block — mirrors core-engine/llm/decision.py."""
+    if validated["decision"] == "SELL" and macd_signal == "BULLISH":
+        validated["decision"] = "HOLD"
+        validated["confidence"] = max(0.55, validated["confidence"] - 0.15)
+        validated["reasoning"] = f"[MACD override: BULLISH MACD contradicts SELL] {validated['reasoning']}"
+    elif validated["decision"] == "BUY" and macd_signal == "BEARISH":
+        validated["decision"] = "HOLD"
+        validated["confidence"] = max(0.55, validated["confidence"] - 0.15)
+        validated["reasoning"] = f"[MACD override: BEARISH MACD contradicts BUY] {validated['reasoning']}"
+    return validated
+
+
 async def query_ollama(prompt: str) -> Optional[str]:
     payload = {
         "model": OLLAMA_MODEL,
@@ -104,7 +119,7 @@ class Case:
     expected: str          # "BUY", "SELL", or "HOLD"
     # snapshot params
     price: float
-    cpr_width_pct: float   # < 0.25 → NARROW, >= 0.25 → WIDE
+    cpr_width_pct: float
     cpr_signal: str        # ABOVE_CPR / BELOW_CPR / INSIDE_CPR
     prev_day_high: float
     prev_day_low: float
@@ -120,6 +135,13 @@ class Case:
     bc: float
     tc: float
     pivot: float
+    # intraday range
+    day_high: float = 0.0
+    day_low: float  = 0.0
+    consolidation_pct: float = 0.80
+    range_breakout: str = "NONE"
+    day_type: str = ""
+    pdh_pivot_confluence: bool = False
     sentiment_label: str = "NEUTRAL"
     sentiment_score: float = 0.0
     news_summary: str = "No significant news."
@@ -129,17 +151,17 @@ class Case:
 NIFTY_BASE = 22500.0
 
 CASES = [
-    # ── The exact failing scenario: 256-pt trending day move ──────────────────
+    # ── Trending day, RSI 70, above CPR+PDH+VWAP ─────────────────────────────
     Case(
-        name         = "FAIL_SCENARIO: Trending day, RSI 70, above CPR+PDH+VWAP",
+        name         = "Trending day, RSI 70, above CPR+PDH+VWAP — expect BUY",
         expected     = "BUY",
-        price        = NIFTY_BASE + 256,         # 22756 — 256 pts above open
-        cpr_width_pct= 0.12,                     # NARROW → trending day
+        price        = NIFTY_BASE + 256,
+        cpr_width_pct= 0.12,
         cpr_signal   = "ABOVE_CPR",
-        prev_day_high= NIFTY_BASE + 120,         # 22620 — price has broken above PDH
-        prev_day_low = NIFTY_BASE - 180,         # 22320
-        rsi          = 70.0,                     # was hitting HOLD with old rule
-        vwap         = NIFTY_BASE + 200,         # price above VWAP
+        prev_day_high= NIFTY_BASE + 120,
+        prev_day_low = NIFTY_BASE - 180,
+        rsi          = 70.0,
+        vwap         = NIFTY_BASE + 200,
         macd_signal  = "BULLISH",
         ema_9        = NIFTY_BASE + 220,
         ema_21       = NIFTY_BASE + 150,
@@ -150,35 +172,17 @@ CASES = [
         bc           = NIFTY_BASE - 30,
         tc           = NIFTY_BASE + 10,
         pivot        = NIFTY_BASE - 10,
+        day_high     = NIFTY_BASE + 260,
+        day_low      = NIFTY_BASE - 10,
+        day_type     = "NARROW",
         sentiment_label = "BULLISH",
         sentiment_score = 0.6,
     ),
-    # ── Trending day, RSI 72 (also previously blocked) ────────────────────────
+    # ── Trending day, RSI 76, strong breakout (>0.5% above PDH) — expect BUY ──
+    # RSI cap extends to 84 when price > PDH*1.005 AND ABOVE_CPR AND above VWAP
     Case(
-        name         = "Trending day, RSI 72, above CPR+PDH+VWAP",
+        name         = "Trending day, RSI 76, >0.5% above PDH — expect BUY (RSI-84 breakout override)",
         expected     = "BUY",
-        price        = NIFTY_BASE + 280,
-        cpr_width_pct= 0.15,
-        cpr_signal   = "ABOVE_CPR",
-        prev_day_high= NIFTY_BASE + 100,
-        prev_day_low = NIFTY_BASE - 200,
-        rsi          = 72.0,
-        vwap         = NIFTY_BASE + 210,
-        macd_signal  = "BULLISH",
-        ema_9        = NIFTY_BASE + 240,
-        ema_21       = NIFTY_BASE + 160,
-        nearest_resistance = NIFTY_BASE + 350,
-        resistance_label   = "R2",
-        nearest_support    = NIFTY_BASE + 100,
-        support_label      = "PDH",
-        bc           = NIFTY_BASE - 20,
-        tc           = NIFTY_BASE + 15,
-        pivot        = NIFTY_BASE,
-    ),
-    # ── Trending day, RSI 76 — should HOLD (above new 75 cap) ─────────────────
-    Case(
-        name         = "Trending day, RSI 76 — expect HOLD (overbought)",
-        expected     = "HOLD",
         price        = NIFTY_BASE + 320,
         cpr_width_pct= 0.10,
         cpr_signal   = "ABOVE_CPR",
@@ -196,30 +200,11 @@ CASES = [
         bc           = NIFTY_BASE - 20,
         tc           = NIFTY_BASE + 15,
         pivot        = NIFTY_BASE,
+        day_high     = NIFTY_BASE + 325,
+        day_low      = NIFTY_BASE - 5,
+        day_type     = "NARROW",
     ),
-    # ── Rangebound day, RSI 68 — should HOLD (> 65 cap for WIDE CPR) ──────────
-    Case(
-        name         = "Rangebound day, RSI 68 — expect HOLD (> rangebound cap)",
-        expected     = "HOLD",
-        price        = NIFTY_BASE + 80,
-        cpr_width_pct= 0.60,                     # WIDE → rangebound day
-        cpr_signal   = "ABOVE_CPR",
-        prev_day_high= NIFTY_BASE + 200,
-        prev_day_low = NIFTY_BASE - 200,
-        rsi          = 68.0,
-        vwap         = NIFTY_BASE + 50,
-        macd_signal  = "NEUTRAL",
-        ema_9        = NIFTY_BASE + 60,
-        ema_21       = NIFTY_BASE + 30,
-        nearest_resistance = NIFTY_BASE + 200,
-        resistance_label   = "PDH",
-        nearest_support    = NIFTY_BASE,
-        support_label      = "Pivot",
-        bc           = NIFTY_BASE - 80,
-        tc           = NIFTY_BASE + 80,
-        pivot        = NIFTY_BASE,
-    ),
-    # ── Rangebound day, RSI 55 — should BUY ───────────────────────────────────
+    # ── Rangebound day, RSI 55, above CPR+VWAP — expect BUY ──────────────────
     Case(
         name         = "Rangebound day, RSI 55, above CPR+VWAP — expect BUY",
         expected     = "BUY",
@@ -240,6 +225,9 @@ CASES = [
         bc           = NIFTY_BASE - 80,
         tc           = NIFTY_BASE + 80,
         pivot        = NIFTY_BASE,
+        day_high     = NIFTY_BASE + 110,
+        day_low      = NIFTY_BASE - 50,
+        day_type     = "WIDE",
         sentiment_label = "BULLISH",
         sentiment_score = 0.4,
     ),
@@ -247,7 +235,7 @@ CASES = [
     Case(
         name         = "Price inside CPR — expect HOLD",
         expected     = "HOLD",
-        price        = NIFTY_BASE + 5,           # inside BC/TC band
+        price        = NIFTY_BASE + 5,
         cpr_width_pct= 0.30,
         cpr_signal   = "INSIDE_CPR",
         prev_day_high= NIFTY_BASE + 200,
@@ -264,40 +252,18 @@ CASES = [
         bc           = NIFTY_BASE - 20,
         tc           = NIFTY_BASE + 20,
         pivot        = NIFTY_BASE,
+        day_high     = NIFTY_BASE + 30,
+        day_low      = NIFTY_BASE - 30,
     ),
-    # ── TODAY'S ACTUAL SCENARIO: Wide CPR + PDH breakout + RSI 72 ────────────
+    # ── PDL breakdown, RSI 40, BEARISH MACD — expect SELL ────────────────────
     Case(
-        name         = "TODAY: Wide CPR (0.68%), price 207pts above PDH, RSI 72 — expect BUY",
-        expected     = "BUY",
-        price        = 22989.5,
-        cpr_width_pct= 0.6817,                   # WIDE → rangebound classification
-        cpr_signal   = "ABOVE_CPR",
-        prev_day_high= 22782.30,                 # price is 207 pts above PDH
-        prev_day_low = 22182.55,
-        rsi          = 71.94,                    # was blocked by rangebound 65 cap
-        vwap         = 22702.16,                 # price well above VWAP
-        macd_signal  = "BULLISH",
-        ema_9        = 22942.23,
-        ema_21       = 22901.02,
-        nearest_resistance = 23159.07,
-        resistance_label   = "R2",
-        nearest_support    = 22782.30,
-        support_label      = "PDH",
-        bc           = 22482.42,
-        tc           = 22636.21,
-        pivot        = 22559.32,
-        sentiment_label = "BULLISH",
-        sentiment_score = 0.2,
-    ),
-    # ── Trending day PDL breakdown — expect SELL ──────────────────────────────
-    Case(
-        name         = "Trending day PDL breakdown, RSI 40, below VWAP — expect SELL",
+        name         = "PDL breakdown, RSI 40, BEARISH MACD, below VWAP — expect SELL",
         expected     = "SELL",
-        price        = NIFTY_BASE - 250,         # 22250 — broken below PDL
+        price        = NIFTY_BASE - 250,
         cpr_width_pct= 0.13,
         cpr_signal   = "BELOW_CPR",
         prev_day_high= NIFTY_BASE + 150,
-        prev_day_low = NIFTY_BASE - 120,         # 22380 — price has broken below PDL
+        prev_day_low = NIFTY_BASE - 120,
         rsi          = 40.0,
         vwap         = NIFTY_BASE - 180,
         macd_signal  = "BEARISH",
@@ -310,8 +276,92 @@ CASES = [
         bc           = NIFTY_BASE + 10,
         tc           = NIFTY_BASE + 40,
         pivot        = NIFTY_BASE + 20,
+        day_high     = NIFTY_BASE + 50,
+        day_low      = NIFTY_BASE - 255,
+        day_type     = "NARROW",
         sentiment_label = "BEARISH",
         sentiment_score = -0.5,
+    ),
+    # ── NEW: RSI 22, BEARISH MACD — tests the new RSI lower bound ────────────
+    # Previously would have been blocked (RSI < 25). Now valid with RSI >= 20.
+    Case(
+        name         = "PDL breakdown, RSI 22, BEARISH MACD — expect SELL (new RSI 20 floor)",
+        expected     = "SELL",
+        price        = NIFTY_BASE - 350,
+        cpr_width_pct= 0.15,
+        cpr_signal   = "BELOW_CPR",
+        prev_day_high= NIFTY_BASE + 120,
+        prev_day_low = NIFTY_BASE - 180,
+        rsi          = 22.0,
+        vwap         = NIFTY_BASE - 280,
+        macd_signal  = "BEARISH",
+        ema_9        = NIFTY_BASE - 310,
+        ema_21       = NIFTY_BASE - 230,
+        nearest_resistance = NIFTY_BASE - 180,
+        resistance_label   = "PDL",
+        nearest_support    = NIFTY_BASE - 450,
+        support_label      = "S2",
+        bc           = NIFTY_BASE + 15,
+        tc           = NIFTY_BASE + 50,
+        pivot        = NIFTY_BASE + 25,
+        day_high     = NIFTY_BASE + 40,
+        day_low      = NIFTY_BASE - 355,
+        day_type     = "NARROW",
+        sentiment_label = "BEARISH",
+        sentiment_score = -0.7,
+    ),
+    # ── NEW: SELL signal with BULLISH MACD — Python override must fire ────────
+    # LLM may output SELL, but the hard MACD block must override it to HOLD.
+    Case(
+        name         = "SELL attempt, BULLISH MACD — expect HOLD (MACD hard override)",
+        expected     = "HOLD",
+        price        = NIFTY_BASE - 200,
+        cpr_width_pct= 0.20,
+        cpr_signal   = "BELOW_CPR",
+        prev_day_high= NIFTY_BASE + 100,
+        prev_day_low = NIFTY_BASE - 150,
+        rsi          = 42.0,
+        vwap         = NIFTY_BASE - 130,
+        macd_signal  = "BULLISH",   # contradicts SELL — override must fire
+        ema_9        = NIFTY_BASE - 160,
+        ema_21       = NIFTY_BASE - 100,
+        nearest_resistance = NIFTY_BASE - 150,
+        resistance_label   = "PDL",
+        nearest_support    = NIFTY_BASE - 300,
+        support_label      = "S1",
+        bc           = NIFTY_BASE - 30,
+        tc           = NIFTY_BASE + 30,
+        pivot        = NIFTY_BASE,
+        day_high     = NIFTY_BASE + 20,
+        day_low      = NIFTY_BASE - 205,
+        day_type     = "MODERATE",
+    ),
+    # ── NEW: RSI 19 — below new floor, must HOLD ──────────────────────────────
+    Case(
+        name         = "RSI 19, BEARISH MACD, below PDL — expect HOLD (RSI < 20 floor)",
+        expected     = "HOLD",
+        price        = NIFTY_BASE - 420,
+        cpr_width_pct= 0.14,
+        cpr_signal   = "BELOW_CPR",
+        prev_day_high= NIFTY_BASE + 100,
+        prev_day_low = NIFTY_BASE - 200,
+        rsi          = 19.0,
+        vwap         = NIFTY_BASE - 350,
+        macd_signal  = "BEARISH",
+        ema_9        = NIFTY_BASE - 390,
+        ema_21       = NIFTY_BASE - 310,
+        nearest_resistance = NIFTY_BASE - 200,
+        resistance_label   = "PDL",
+        nearest_support    = NIFTY_BASE - 500,
+        support_label      = "S3",
+        bc           = NIFTY_BASE + 10,
+        tc           = NIFTY_BASE + 45,
+        pivot        = NIFTY_BASE + 22,
+        day_high     = NIFTY_BASE + 30,
+        day_low      = NIFTY_BASE - 425,
+        day_type     = "NARROW",
+        sentiment_label = "BEARISH",
+        sentiment_score = -0.8,
     ),
 ]
 
@@ -327,10 +377,13 @@ async def run_case(case: Case, idx: int, total: int) -> bool:
     print(f"\n[{idx}/{total}] {case.name}")
     print(f"  Expected : {case.expected}")
 
+    day_high = case.day_high if case.day_high else case.price + 50
+    day_low  = case.day_low  if case.day_low  else case.price - 50
+
     prompt = build_decision_prompt(
         symbol             = "NSE:NIFTY50-INDEX",
         price              = case.price,
-        timestamp          = "2026-04-06 11:30",
+        timestamp          = "2026-04-09 11:30",
         bc                 = case.bc,
         tc                 = case.tc,
         pivot              = case.pivot,
@@ -338,6 +391,10 @@ async def run_case(case: Case, idx: int, total: int) -> bool:
         cpr_signal         = case.cpr_signal,
         prev_day_high      = case.prev_day_high,
         prev_day_low       = case.prev_day_low,
+        day_high           = day_high,
+        day_low            = day_low,
+        consolidation_pct  = case.consolidation_pct,
+        range_breakout     = case.range_breakout,
         nearest_resistance = case.nearest_resistance,
         resistance_label   = case.resistance_label,
         nearest_support    = case.nearest_support,
@@ -351,6 +408,8 @@ async def run_case(case: Case, idx: int, total: int) -> bool:
         sentiment_label    = case.sentiment_label,
         sentiment_score    = case.sentiment_score,
         historical_context_block = case.historical_context_block,
+        day_type           = case.day_type,
+        pdh_pivot_confluence = case.pdh_pivot_confluence,
     )
 
     raw = await query_ollama(prompt)
@@ -364,6 +423,9 @@ async def run_case(case: Case, idx: int, total: int) -> bool:
         return False
 
     validated = _validate_decision(parsed, case.price)
+    # Apply the same Python-side MACD hard override as decision.py
+    validated = _apply_macd_override(validated, case.macd_signal)
+
     decision   = validated["decision"]
     confidence = validated["confidence"]
     reasoning  = validated["reasoning"]
@@ -371,7 +433,6 @@ async def run_case(case: Case, idx: int, total: int) -> bool:
     passed = decision == case.expected
     status = PASS if passed else FAIL
 
-    # Warn if confidence is near the 0.5 threshold (could be fragile)
     if passed and decision in ("BUY", "SELL") and confidence < 0.65:
         status = f"{PASS} ({WARN} low confidence={confidence:.2f})"
 

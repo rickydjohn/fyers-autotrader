@@ -15,7 +15,7 @@ from sqlalchemy import text
 
 from config import settings
 from db.connection import engine
-from routers import ingest, historical, aggregated, context, decision_history, sr_levels as sr_levels_router, report as report_router
+from routers import ingest, historical, aggregated, context, decision_history, sr_levels as sr_levels_router, report as report_router, magnets as magnets_router
 from routers.context import set_redis_client
 from context.builder import build_context_snapshot, format_context_for_prompt
 from db.connection import AsyncSessionLocal
@@ -134,6 +134,7 @@ app.include_router(context.router,          prefix=PREFIX)
 app.include_router(decision_history.router,      prefix=PREFIX)
 app.include_router(sr_levels_router.router,      prefix=PREFIX)
 app.include_router(report_router.router,         prefix=PREFIX)
+app.include_router(magnets_router.router,        prefix=PREFIX)
 
 
 @app.get("/healthz")

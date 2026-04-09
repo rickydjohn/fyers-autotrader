@@ -98,6 +98,23 @@ async def fetch_sr_levels(
         return []
 
 
+async def fetch_magnet_zones(symbol: str) -> Optional[Dict[str, Any]]:
+    """Fetch unfilled gap and unbreached CPR magnet zones for a symbol from data-service."""
+    try:
+        import urllib.parse
+        encoded = urllib.parse.quote(symbol, safe="")
+        resp = await get_client().get(
+            f"/api/v1/magnets/{encoded}",
+            timeout=8.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return {"gaps": data.get("gaps", []), "cprs": data.get("cprs", [])}
+    except Exception as e:
+        logger.warning(f"Could not fetch magnet zones for {symbol}: {e}")
+        return None
+
+
 async def fetch_context_snapshot(symbol: str) -> Optional[Dict[str, Any]]:
     """Fetch the latest context snapshot for a symbol from data-service."""
     try:

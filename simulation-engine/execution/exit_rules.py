@@ -118,9 +118,30 @@ def check_exit(
     if indicators is None:
         indicators = {}
 
-    holding_option = bool(pos.option_symbol and option_ltp and pos.entry_option_price > 0)
+    is_option_position = bool(pos.option_symbol and pos.entry_option_price > 0)
+    milestone          = pos.milestone_count
+
+    # ── Guard: option position with stale/missing LTP ────────────────────────
+    # If this is an option trade but option_ltp is unavailable (Redis key expired,
+    # Fyers quote failed), do NOT fall through to using underlying_ltp as exit
+    # price — that produces completely wrong PnL (e.g. BankNifty 54981 vs ₹1224).
+    # Skip all rules this cycle, except SESSION_CLOSE which uses peak/entry fallback.
+    if is_option_position and not option_ltp:
+        if now.hour * 60 + now.minute >= SESSION_CLOSE_HOUR * 60 + SESSION_CLOSE_MINUTE:
+            fallback = pos.peak_option_price if pos.peak_option_price > 0 else pos.entry_option_price
+            logger.warning(
+                f"[EXIT] SESSION_CLOSE — {pos.symbol}: option_ltp unavailable, "
+                f"using last-known price ₹{fallback:.2f}"
+            )
+            return True, "SESSION_CLOSE", fallback, milestone
+        logger.debug(
+            f"[SKIP] {pos.symbol}: option_ltp unavailable this cycle — "
+            f"skipping exit check (will retry next poll)"
+        )
+        return False, "", 0.0, milestone
+
+    holding_option = is_option_position  # option_ltp is non-None here for option positions
     exit_price     = option_ltp if holding_option else underlying_ltp
-    milestone      = pos.milestone_count
 
     # ── Rule 1: Session close ─────────────────────────────────────────────────
     if now.hour * 60 + now.minute >= SESSION_CLOSE_HOUR * 60 + SESSION_CLOSE_MINUTE:
