@@ -9,8 +9,8 @@ class Position(BaseModel):
     quantity: int
     avg_price: float     # option premium at entry
     entry_time: datetime
-    stop_loss: float     # underlying price level
-    target: float        # underlying price level
+    stop_loss: float     # option premium level for option trades; underlying price for equity
+    target: float        # option premium level for option trades; underlying price for equity
     decision_id: str
     option_symbol: Optional[str] = None    # e.g. NSE:NIFTY2640322200CE
     option_strike: Optional[int] = None

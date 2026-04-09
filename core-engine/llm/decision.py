@@ -22,7 +22,7 @@ from news.sentiment import format_news_for_prompt
 from indicators.technicals import get_macd_signal_label
 from indicators.historical_sr import format_sr_for_prompt
 import data_client
-from context.formatter import format_context_for_prompt
+from context.formatter import format_context_for_prompt, format_magnet_zones
 from fyers.options import get_affordable_option
 from fyers.market_data import get_quote
 
@@ -46,6 +46,54 @@ def _parse_llm_response(raw: str, price: float) -> Optional[dict]:
             pass
     logger.warning(f"Could not parse LLM response as JSON: {raw[:200]}")
     return None
+
+
+def _apply_cross_symbol_gate(
+    validated: dict,
+    peer_signal: Optional[dict],
+    symbol: str = "",
+) -> dict:
+    """
+    Layer 2 cross-symbol confidence gate.
+
+    Rules:
+    - No peer or peer=HOLD → no-op
+    - Conflict (BUY vs SELL) → override to HOLD, -0.10 confidence
+    - Alignment (same direction) → +0.08 confidence (cap 1.0)
+
+    Mutates and returns `validated` in-place for convenience.
+    """
+    if (
+        not peer_signal
+        or peer_signal.get("decision") not in ("BUY", "SELL")
+        or validated["decision"] not in ("BUY", "SELL")
+    ):
+        return validated
+
+    peer_dir = peer_signal["decision"]
+    if peer_dir != validated["decision"]:
+        old_decision = validated["decision"]
+        validated["decision"] = "HOLD"
+        validated["confidence"] = max(0.55, validated["confidence"] - 0.10)
+        validated["reasoning"] = (
+            f"[Cross-symbol gate: NIFTY={peer_dir} conflicts with {symbol}={old_decision}, holding] "
+            + validated["reasoning"]
+        )
+        logger.info(
+            f"Cross-symbol gate: {symbol} overridden to HOLD "
+            f"(NIFTY={peer_dir} conflicts with {old_decision})"
+        )
+    else:
+        validated["confidence"] = min(1.0, validated["confidence"] + 0.08)
+        validated["reasoning"] = (
+            f"[Cross-symbol gate: NIFTY={peer_dir} aligns, +0.08 confidence] "
+            + validated["reasoning"]
+        )
+        logger.info(
+            f"Cross-symbol gate: {symbol} confidence boosted "
+            f"(NIFTY={peer_dir} aligns with {validated['decision']})"
+        )
+    return validated
 
 
 def _validate_decision(data: dict, price: float) -> dict:
@@ -93,6 +141,8 @@ async def make_decision(
     redis_client: aioredis.Redis,
     historical_context: Optional[dict] = None,
     sr_levels: Optional[list] = None,
+    magnet_zones: Optional[dict] = None,
+    peer_signal: Optional[dict] = None,
 ) -> Optional[LLMDecision]:
     """Build prompt (with historical context), call LLM, parse, publish to Redis and DB."""
     ind: TechnicalIndicators = snapshot.indicators
@@ -108,6 +158,15 @@ async def make_decision(
 
     # Format historical S/R levels block
     sr_block = format_sr_for_prompt(sr_levels or [], snapshot.ltp)
+
+    # Format price magnet zones block
+    magnet_block = ""
+    if magnet_zones:
+        magnet_block = format_magnet_zones(
+            snapshot.ltp,
+            magnet_zones.get("gaps", []),
+            magnet_zones.get("cprs", []),
+        )
 
     prompt = build_decision_prompt(
         symbol=snapshot.symbol,
@@ -138,6 +197,9 @@ async def make_decision(
         sentiment_label=snapshot.news.label if snapshot.news else "NEUTRAL",
         sentiment_score=snapshot.news.aggregate_score if snapshot.news else 0.0,
         historical_context_block=hist_block,
+        day_type=ind.cpr.day_type,
+        pdh_pivot_confluence=ind.pdh_pivot_confluence,
+        magnet_zones_block=magnet_block,
     )
 
     logger.info(f"Querying Ollama for {snapshot.symbol}...")
@@ -152,20 +214,25 @@ async def make_decision(
 
     validated = _validate_decision(parsed, snapshot.ltp)
 
-    # Hard MACD filter — LLM cannot override momentum direction
-    # A SELL with BULLISH MACD or BUY with BEARISH MACD is contradictory
+    # Hard MACD filter — LLM cannot override momentum direction.
+    # SELL+BULLISH or BUY+BEARISH is always contradictory — force HOLD unconditionally.
+    # Previously this was a confidence penalty (−0.15) with threshold at 0.5, but since
+    # LLM confidence for SELL averaged 0.78 the penalty never triggered — all contradictory
+    # SELL decisions survived and were published but never traded (PE option resolved to
+    # HOLD implicitly when the sim engine saw no valid option). Hard block prevents noise.
     if validated["decision"] == "SELL" and macd_label == "BULLISH":
-        validated["confidence"] = max(0.0, validated["confidence"] - 0.15)
-        if validated["confidence"] < 0.5:
-            validated["decision"] = "HOLD"
-            validated["reasoning"] = f"[MACD override: BULLISH MACD contradicts SELL] {validated['reasoning']}"
-            logger.info(f"SELL overridden to HOLD for {snapshot.symbol} — MACD is BULLISH")
+        validated["decision"] = "HOLD"
+        validated["confidence"] = max(0.55, validated["confidence"] - 0.15)
+        validated["reasoning"] = f"[MACD override: BULLISH MACD contradicts SELL] {validated['reasoning']}"
+        logger.info(f"SELL overridden to HOLD for {snapshot.symbol} — MACD is BULLISH")
     elif validated["decision"] == "BUY" and macd_label == "BEARISH":
-        validated["confidence"] = max(0.0, validated["confidence"] - 0.15)
-        if validated["confidence"] < 0.5:
-            validated["decision"] = "HOLD"
-            validated["reasoning"] = f"[MACD override: BEARISH MACD contradicts BUY] {validated['reasoning']}"
-            logger.info(f"BUY overridden to HOLD for {snapshot.symbol} — MACD is BEARISH")
+        validated["decision"] = "HOLD"
+        validated["confidence"] = max(0.55, validated["confidence"] - 0.15)
+        validated["reasoning"] = f"[MACD override: BEARISH MACD contradicts BUY] {validated['reasoning']}"
+        logger.info(f"BUY overridden to HOLD for {snapshot.symbol} — MACD is BEARISH")
+
+    # Layer 2 cross-symbol confidence gate
+    _apply_cross_symbol_gate(validated, peer_signal, symbol=snapshot.symbol)
 
     # Determine available budget for option selection
     available_cash: Optional[float] = None
@@ -238,6 +305,7 @@ async def make_decision(
             "price": snapshot.ltp,
             "cpr_signal": ind.cpr_signal,
             "cpr_width_pct": ind.cpr.width_pct,
+            "day_type": ind.cpr.day_type,
             "rsi": ind.rsi,
             "vwap": ind.vwap,
             "ema_9": ind.ema_9,
@@ -248,6 +316,7 @@ async def make_decision(
             "day_low": ind.day_low,
             "consolidation_pct": ind.consolidation_pct,
             "range_breakout": ind.range_breakout,
+            "pdh_pivot_confluence": ind.pdh_pivot_confluence,
         },
     )
 

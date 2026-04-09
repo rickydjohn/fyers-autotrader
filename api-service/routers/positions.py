@@ -1,5 +1,5 @@
 import json
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Request
 import redis.asyncio as aioredis
 
 from dependencies import get_redis
@@ -25,7 +25,8 @@ async def get_positions(redis_client: aioredis.Redis = Depends(get_redis)):
                 ltp = market.get("ltp", pos["avg_price"])
                 qty = pos["quantity"]
                 avg = pos["avg_price"]
-                if pos["side"] == "BUY":
+                # Option positions are always long regardless of underlying direction
+                if pos.get("option_symbol") or pos["side"] == "BUY":
                     unrealized_pnl = (ltp - avg) * qty
                 else:
                     unrealized_pnl = (avg - ltp) * qty
@@ -44,3 +45,19 @@ async def get_positions(redis_client: aioredis.Redis = Depends(get_redis)):
             "total_invested": round(total_invested, 2),
         },
     })
+
+
+@router.post("/{symbol}/close")
+async def close_position(symbol: str, request: Request):
+    """Proxy a manual close request to the simulation engine."""
+    try:
+        r = await request.app.state.http_sim_client.post(f"/positions/{symbol}/close")
+        if r.status_code == 404:
+            raise HTTPException(status_code=404, detail=f"No open position for {symbol}")
+        if r.status_code != 200:
+            raise HTTPException(status_code=502, detail="Simulation engine error")
+        return ApiResponse.ok(r.json())
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))

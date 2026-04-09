@@ -45,6 +45,15 @@ _news_cache: Optional[NewsSentiment] = None
 _context_cache: dict = {}
 # Per-symbol SR level cache (refreshed on bootstrap + weekly)
 _sr_cache: dict = {}   # symbol -> List[dict]
+# Per-symbol price magnet zones (gaps + CPRs) — bootstrapped at startup, 26h TTL
+_magnets_cache: dict = {}  # symbol -> {"gaps": [...], "cprs": [...]}
+# Cross-symbol lead-lag cache: stores last published decision per symbol
+# Used by Layer 2 gate: NIFTY decision gates BANKNIFTY confidence / direction
+_last_decisions: dict = {}  # symbol -> {"decision": str, "confidence": float, "timestamp": float}
+# NIFTY is the lead symbol — its decision gates all other symbols
+_CROSS_SYMBOL_LEAD = "NSE:NIFTY50-INDEX"
+# Maximum age (seconds) for a peer decision to be considered valid for gating
+_PEER_SIGNAL_MAX_AGE_S = 900  # 15 minutes
 
 
 def _is_market_open() -> bool:
@@ -141,9 +150,12 @@ async def _process_symbol(symbol: str, redis_client: aioredis.Redis) -> None:
         return
 
     # Compute indicators
-    cpr = calculate_cpr(prev_ohlc["high"], prev_ohlc["low"], prev_ohlc["close"])
+    daily_atr_pct = (prev_ohlc["high"] - prev_ohlc["low"]) / prev_ohlc["close"] * 100
+    cpr = calculate_cpr(prev_ohlc["high"], prev_ohlc["low"], prev_ohlc["close"], daily_atr_pct=daily_atr_pct)
     pivots = calculate_pivots(prev_ohlc["high"], prev_ohlc["low"], prev_ohlc["close"])
     nearest = get_nearest_levels(quote["ltp"], pivots, prev_ohlc["high"], prev_ohlc["low"])
+    # PDH-pivot confluence: PDH within 0.2% of daily Pivot → extra confirmation signal
+    pdh_pivot_confluence = abs(prev_ohlc["high"] - cpr.pivot) / cpr.pivot < 0.002
     rsi = calculate_rsi(candles)
     macd, macd_sig, macd_hist = calculate_macd(candles)
     ema_9 = calculate_ema(candles, 9)
@@ -182,6 +194,7 @@ async def _process_symbol(symbol: str, redis_client: aioredis.Redis) -> None:
         day_low=day_low,
         consolidation_pct=consolidation_pct,
         range_breakout=range_breakout,
+        pdh_pivot_confluence=pdh_pivot_confluence,
         **nearest,
     )
 
@@ -246,7 +259,32 @@ async def _process_symbol(symbol: str, redis_client: aioredis.Redis) -> None:
     # ── Fetch historical context and make LLM decision ────────────────────────
     historical_context = _context_cache.get(symbol)
     sr_levels = _sr_cache.get(symbol, [])
-    await make_decision(snapshot, redis_client, historical_context=historical_context, sr_levels=sr_levels)
+    magnet_zones = _magnets_cache.get(symbol)
+
+    # Layer 2 cross-symbol gate: build peer_signal from NIFTY's last decision
+    peer_signal: Optional[dict] = None
+    if symbol != _CROSS_SYMBOL_LEAD:
+        last = _last_decisions.get(_CROSS_SYMBOL_LEAD)
+        if last:
+            age_s = datetime.now(IST).timestamp() - last["timestamp"]
+            if age_s <= _PEER_SIGNAL_MAX_AGE_S:
+                peer_signal = last
+
+    decision_result = await make_decision(
+        snapshot, redis_client,
+        historical_context=historical_context,
+        sr_levels=sr_levels,
+        magnet_zones=magnet_zones,
+        peer_signal=peer_signal,
+    )
+
+    # Store final (gated) decision for downstream symbols to use as peer signal
+    if decision_result:
+        _last_decisions[symbol] = {
+            "decision":   decision_result.decision,
+            "confidence": decision_result.confidence,
+            "timestamp":  decision_result.timestamp.timestamp(),
+        }
 
 
 async def _refresh_open_option_prices(redis_client: aioredis.Redis) -> None:
@@ -384,6 +422,53 @@ async def _load_sr_cache(symbol: str, redis_client: aioredis.Redis) -> None:
             _sr_cache[symbol] = levels
             import json as _json
             await redis_client.setex(f"sr:levels:{symbol}", 86400, _json.dumps(levels, default=str))
+
+
+async def _load_magnet_cache(symbol: str, redis_client: aioredis.Redis) -> None:
+    """Read magnet zones from Redis into _magnets_cache (fast path per scan)."""
+    global _magnets_cache
+    import json as _json
+    gaps_raw = await redis_client.get(f"magnets:gaps:{symbol}")
+    cprs_raw = await redis_client.get(f"magnets:cprs:{symbol}")
+    if gaps_raw and cprs_raw:
+        _magnets_cache[symbol] = {
+            "gaps": _json.loads(gaps_raw),
+            "cprs": _json.loads(cprs_raw),
+        }
+    else:
+        logger.debug(f"Magnet zone keys missing from Redis for {symbol} — will bootstrap")
+
+
+async def bootstrap_magnet_zones(symbol: str, redis_client: aioredis.Redis) -> None:
+    """
+    Fetch magnet zones from data-service and cache in Redis (26h TTL).
+    Called at startup if keys are absent; gracefully skips if data-service has no data.
+    """
+    global _magnets_cache
+    import json as _json
+
+    # Skip if both keys already present (already bootstrapped today)
+    gaps_exists = await redis_client.exists(f"magnets:gaps:{symbol}")
+    cprs_exists = await redis_client.exists(f"magnets:cprs:{symbol}")
+    if gaps_exists and cprs_exists:
+        await _load_magnet_cache(symbol, redis_client)
+        logger.debug(f"Magnet zones already cached for {symbol}, loaded from Redis")
+        return
+
+    zones = await data_client.fetch_magnet_zones(symbol)
+    if not zones:
+        logger.debug(f"No magnet zone data returned for {symbol} (DB may be empty — skipping)")
+        return
+
+    TTL = 26 * 3600
+    await redis_client.setex(f"magnets:gaps:{symbol}", TTL, _json.dumps(zones["gaps"], default=str))
+    await redis_client.setex(f"magnets:cprs:{symbol}", TTL, _json.dumps(zones["cprs"], default=str))
+
+    _magnets_cache[symbol] = zones
+    logger.info(
+        f"Magnet zones bootstrapped for {symbol}: "
+        f"{len(zones['gaps'])} gaps, {len(zones['cprs'])} CPR zones"
+    )
 
 
 async def bootstrap_daily_ohlcv(

@@ -18,7 +18,9 @@ import redis.asyncio as aioredis
 from config import settings
 from models.schemas import Position, Trade
 from portfolio.budget import allocate, get_max_position_value, release
+from notifications.slack import notify_trade_opened, notify_trade_closed
 import data_client
+from execution.exit_rules import PREMIUM_SL_PCT, FIRST_MILESTONE_PCT, RANGING_MILESTONE_PCT
 
 logger = logging.getLogger(__name__)
 IST = pytz.timezone("Asia/Kolkata")
@@ -96,8 +98,9 @@ async def open_position(
         return None
 
     # Trade the option: entry_price = option premium; quantity = 1 lot (from Fyers depth)
+    # We always BUY to open (CE for bullish signal, PE for bearish) — slippage is always "BUY"
     lot_size = option_lot_size or 1
-    entry_price = _apply_slippage(option_price, side)
+    entry_price = _apply_slippage(option_price, "BUY")
     total_option_cost = entry_price * lot_size
     if total_option_cost > max_value:
         logger.warning(
@@ -115,6 +118,15 @@ async def open_position(
 
     if not await allocate(redis_client, trade_value, fee=commission):
         return None
+
+    # Override underlying-based SL/target with option-premium-relative levels.
+    # The LLM decision produces index levels (e.g. SL=23850, target=24200) which are
+    # meaningless for an option position whose entry is ₹150 — the option's own price
+    # is the only valid reference. Levels must mirror the exit_rules constants so
+    # Slack notifications show the actual thresholds that will trigger an exit.
+    first_target_pct = RANGING_MILESTONE_PCT if day_type == "RANGING" else FIRST_MILESTONE_PCT
+    stop_loss = round(entry_price * (1.0 - PREMIUM_SL_PCT), 2)   # e.g. entry × 0.90
+    target    = round(entry_price * (1.0 + first_target_pct), 2) # e.g. entry × 1.20 (trending)
 
     trade_id = str(uuid.uuid4())
     now = datetime.now(IST)
@@ -203,6 +215,23 @@ async def open_position(
         f"OPENED {side} {quantity}x{label} @ ₹{entry_price:.2f} "
         f"(commission=₹{commission:.0f})"
     )
+
+    notify_trade_opened(
+        mode="simulation",
+        symbol=symbol,
+        side=side,
+        entry_price=entry_price,
+        quantity=quantity,
+        stop_loss=stop_loss,
+        target=target,
+        entry_time=trade.entry_time,
+        option_symbol=option_symbol,
+        option_strike=option_strike,
+        option_type=option_type,
+        option_expiry=option_expiry,
+        reasoning=reasoning,
+        day_type=day_type,
+    )
     return trade
 
 
@@ -220,17 +249,16 @@ async def close_position(
 
     pos = Position(**json.loads(pos_data))
     now = datetime.now(IST)
-    exit_price_with_slip = _apply_slippage(
-        exit_price, "SELL" if pos.side == "BUY" else "BUY"
-    )
+    # We always sell to close (bought to open regardless of underlying direction) —
+    # slippage is always "SELL" (we receive slightly less than mid-market on exit)
+    exit_price_with_slip = _apply_slippage(exit_price, "SELL")
 
     trade_value = exit_price_with_slip * pos.quantity
     commission = _calculate_commission(trade_value)
 
-    if pos.side == "BUY":
-        gross_pnl = (exit_price_with_slip - pos.avg_price) * pos.quantity
-    else:
-        gross_pnl = (pos.avg_price - exit_price_with_slip) * pos.quantity
+    # PnL is always (exit − entry) × qty — we are always long the option,
+    # regardless of whether the underlying signal was BUY (CE) or SELL (PE).
+    gross_pnl = (exit_price_with_slip - pos.avg_price) * pos.quantity
 
     # net_pnl for budget: entry commission already deducted from cash via allocate()
     budget_pnl = gross_pnl - commission
@@ -300,6 +328,25 @@ async def close_position(
         f"CLOSED {pos.side} {pos.quantity}x{symbol} @ ₹{exit_price_with_slip:.2f} "
         f"P&L=₹{budget_pnl:+.2f} ({status})"
     )
+
+    if trade:
+        notify_trade_closed(
+            mode="simulation",
+            symbol=symbol,
+            side=pos.side,
+            entry_price=trade.entry_price,
+            exit_price=exit_price_with_slip,
+            quantity=pos.quantity,
+            pnl=trade.pnl or 0.0,
+            pnl_pct=trade.pnl_pct or 0.0,
+            commission=trade.commission,
+            exit_reason=exit_reason or status,
+            entry_time=trade.entry_time,
+            exit_time=trade.exit_time,
+            option_symbol=trade.option_symbol,
+            option_strike=trade.option_strike,
+            option_type=trade.option_type,
+        )
     return trade
 
 

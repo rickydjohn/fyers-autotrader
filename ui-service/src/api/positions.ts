@@ -5,3 +5,8 @@ export async function fetchPositions(): Promise<{ positions: Position[]; summary
   const res = await apiClient.get('/positions')
   return res.data.data
 }
+
+export async function closePosition(symbol: string): Promise<{ trade_id: string; exit_price: number; pnl: number }> {
+  const res = await apiClient.post(`/positions/${encodeURIComponent(symbol)}/close`)
+  return res.data.data
+}

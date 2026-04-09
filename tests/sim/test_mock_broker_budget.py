@@ -101,7 +101,12 @@ class TestBudgetGate:
         affordable_premium = 100.0
         assert _option_cost(affordable_premium) <= MAX_VALUE
 
+        # Freeze time at 10:00 IST so the session-close gate (15:20) does not fire
+        _dt = MagicMock()
+        _dt.now.return_value = MagicMock(hour=10, minute=0)
+
         with (
+            patch("execution.mock_broker.datetime", _dt),
             patch.object(_mb, "get_max_position_value", AsyncMock(return_value=MAX_VALUE)),
             patch.object(_mb, "allocate", AsyncMock(return_value=True)) as mock_alloc,
             patch.object(_mb, "data_client") as mock_dc,
@@ -131,7 +136,12 @@ class TestBudgetGate:
         exact_premium = MAX_VALUE / (LOT_SIZE * (1 + SLIPPAGE))
         assert abs(_option_cost(exact_premium) - MAX_VALUE) < 0.01
 
+        # Freeze time at 10:00 IST so the session-close gate (15:20) does not fire
+        _dt = MagicMock()
+        _dt.now.return_value = MagicMock(hour=10, minute=0)
+
         with (
+            patch("execution.mock_broker.datetime", _dt),
             patch.object(_mb, "get_max_position_value", AsyncMock(return_value=MAX_VALUE)),
             patch.object(_mb, "allocate", AsyncMock(return_value=True)) as mock_alloc,
             patch.object(_mb, "data_client") as mock_dc,

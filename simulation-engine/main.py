@@ -10,9 +10,11 @@ from contextlib import asynccontextmanager
 
 from datetime import datetime
 
+import httpx
 import pytz
 import redis.asyncio as aioredis
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 
 from analytics.pnl import compute_pnl_summary, get_all_trades, get_open_positions
 from config import settings
@@ -33,6 +35,47 @@ logger = logging.getLogger(__name__)
 
 redis_client: aioredis.Redis = None
 _consumer_task: asyncio.Task = None
+_last_fyers_reconcile: float = 0.0
+
+
+class ManualCloseRequest(BaseModel):
+    exit_reason: str = "MANUAL_UI_EXIT"
+
+
+async def _reconcile_fyers_positions() -> None:
+    """Detect positions closed externally on Fyers and record them with USER_EXIT_FYERS tag."""
+    positions_raw = await redis_client.hgetall("positions:open")
+    if not positions_raw:
+        return
+
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.get(f"{settings.core_engine_url}/fyers/positions")
+            if r.status_code != 200:
+                logger.warning(f"Fyers reconcile: core-engine returned {r.status_code}")
+                return
+            fyers_positions = r.json().get("positions", [])
+    except Exception as e:
+        logger.warning(f"Fyers reconcile request failed: {e}")
+        return
+
+    fyers_symbols = {p.get("symbol") for p in fyers_positions if p.get("symbol")}
+
+    for symbol, pos_data in positions_raw.items():
+        try:
+            pos = Position(**json.loads(pos_data))
+            if symbol not in fyers_symbols:
+                ltp_raw = (
+                    await redis_client.get(f"ltp:{symbol}")
+                    or await redis_client.get(f"market:{symbol}")
+                )
+                exit_price = float(json.loads(ltp_raw).get("ltp", 0)) if ltp_raw else 0.0
+                await live_broker.record_external_close(
+                    redis_client, symbol, exit_price, exit_reason="USER_EXIT_FYERS"
+                )
+                logger.info(f"Reconcile: external close detected for {symbol} @ ₹{exit_price:.2f}")
+        except Exception as e:
+            logger.exception(f"Reconcile error for {symbol}: {e}")
 
 
 async def _consume_decisions() -> None:
@@ -91,14 +134,23 @@ async def _handle_decision(data: dict) -> None:
     except (ValueError, TypeError):
         option_strike = option_price = option_lot_size = None
 
-    # Determine day type from CPR width embedded in the decision's indicators snapshot
+    # Determine day type from the ATR-normalized day_type field in indicators snapshot.
+    # NARROW → TRENDING (milestone trail at +20%); MODERATE/WIDE → RANGING (lock in at +10%).
+    # Falls back to legacy cpr_width_pct threshold for decisions missing the day_type field.
     day_type: str = "TRENDING"
     try:
         ind_raw = data.get("indicators") or "{}"
         ind_dict = json.loads(ind_raw) if isinstance(ind_raw, str) else ind_raw
-        cpr_width_pct = float(ind_dict.get("cpr_width_pct") or 0)
-        if cpr_width_pct >= 0.25:
+        dt = (ind_dict.get("day_type") or "").upper()
+        if dt == "NARROW":
+            day_type = "TRENDING"
+        elif dt in ("MODERATE", "WIDE"):
             day_type = "RANGING"
+        else:
+            # Legacy fallback for older decisions that don't carry day_type
+            cpr_width_pct = float(ind_dict.get("cpr_width_pct") or 0)
+            if cpr_width_pct >= 0.25:
+                day_type = "RANGING"
     except Exception:
         pass
 
@@ -224,8 +276,11 @@ async def _check_stop_targets() -> None:
                     redis_client, symbol, exit_price,
                     status=db_status, exit_reason=reason,
                 )
-                # Block re-entry after a stop loss to prevent chasing
-                if reason == "STOP_LOSS":
+                # Block re-entry after a stop or trail exit to prevent overtrading.
+                # STOP_LOSS: position went against us — cooldown prevents revenge trading.
+                # TRAIL_STOP: trend reversed after profit peak — same cooldown prevents
+                # immediately re-entering the same option on the next scan tick.
+                if reason in ("STOP_LOSS", "TRAIL_STOP"):
                     await redis_client.setex(
                         f"sl:cooldown:{symbol}",
                         settings.sl_cooldown_minutes * 60,
@@ -238,6 +293,17 @@ async def _check_stop_targets() -> None:
 
         except Exception as e:
             logger.exception(f"Error checking stop/target for {symbol}: {e}")
+
+    # Detect externally-closed Fyers positions (live mode only, every 30s)
+    global _last_fyers_reconcile
+    if mode == "live":
+        now_ts = now.timestamp()
+        if now_ts - _last_fyers_reconcile >= 30:
+            _last_fyers_reconcile = now_ts
+            try:
+                await _reconcile_fyers_positions()
+            except Exception as e:
+                logger.warning(f"Fyers reconcile failed: {e}")
 
 
 @asynccontextmanager
@@ -289,3 +355,46 @@ async def get_pnl():
 async def get_budget():
     state = await load_budget(redis_client)
     return state.model_dump()
+
+
+@app.post("/positions/{symbol}/close")
+async def manual_close_position(symbol: str, body: ManualCloseRequest = ManualCloseRequest()):
+    """Close an open position manually; records P&L with MANUAL_UI_EXIT tag."""
+    existing = await redis_client.hget("positions:open", symbol)
+    if not existing:
+        raise HTTPException(status_code=404, detail=f"No open position for {symbol}")
+
+    pos = Position(**json.loads(existing))
+
+    # For option positions, look up the option's own LTP — not the underlying index.
+    # Using the underlying LTP (e.g. NIFTY ~23800) as the exit price for an option
+    # premium (~₹200) produces completely wrong P&L.
+    if pos.option_symbol:
+        opt_raw = await redis_client.get(f"market:{pos.option_symbol}")
+        if not opt_raw:
+            raise HTTPException(status_code=503, detail=f"No option market price available for {pos.option_symbol}")
+        current_price = json.loads(opt_raw).get("ltp", 0.0)
+        if not current_price:
+            raise HTTPException(status_code=503, detail=f"Option market price is zero for {pos.option_symbol}")
+    else:
+        ltp_raw = (
+            await redis_client.get(f"ltp:{symbol}")
+            or await redis_client.get(f"market:{symbol}")
+        )
+        if not ltp_raw:
+            raise HTTPException(status_code=503, detail=f"No market price available for {symbol}")
+        current_price = json.loads(ltp_raw).get("ltp", 0.0)
+        if not current_price:
+            raise HTTPException(status_code=503, detail=f"Market price is zero for {symbol}")
+
+    mode = await redis_client.get("trading:mode") or "simulation"
+    broker = live_broker if mode == "live" else mock_broker
+
+    trade = await broker.close_position(
+        redis_client, symbol, current_price,
+        status="STOPPED", exit_reason=body.exit_reason,
+    )
+    if trade is None:
+        raise HTTPException(status_code=500, detail="Failed to close position")
+
+    return {"status": "ok", "trade_id": trade.trade_id, "exit_price": current_price, "pnl": trade.pnl}

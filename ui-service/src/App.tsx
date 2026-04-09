@@ -288,7 +288,11 @@ export default function App() {
           {pnl && <PnLGraph pnl={pnl} />}
 
           {/* Positions */}
-          <PositionTable positions={positions} trades={todayTrades} />
+          <PositionTable
+            positions={positions}
+            trades={todayTrades}
+            onPositionClosed={() => fetchPositions().then((r) => setPositions(r.positions)).catch(() => {})}
+          />
         </div>
 
         {/* Right column — 1/3 width */}

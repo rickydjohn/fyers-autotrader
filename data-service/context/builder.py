@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 import pytz
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repositories.market_data import get_candles, get_recent_daily_indicators
+from repositories.market_data import get_candles, get_recent_daily_indicators, get_monthly_ohlc
 from repositories.decisions import get_recent_trade_outcomes
 from repositories.news import get_news_sentiment_summary
 
@@ -108,6 +108,27 @@ async def build_context_snapshot(
             "date":  str(yesterday),
         }
 
+    # ── Monthly CPR/Pivot levels (from previous calendar month's OHLC) ────────
+    monthly_cpr: Dict[str, Any] = {}
+    monthly_ohlc = await get_monthly_ohlc(db, symbol)
+    if monthly_ohlc:
+        mh, ml, mc = monthly_ohlc["high"], monthly_ohlc["low"], monthly_ohlc["close"]
+        m_pivot = round((mh + ml + mc) / 3, 2)
+        m_bc    = round((mh + ml) / 2, 2)
+        m_tc    = round(2 * m_pivot - m_bc, 2)
+        m_hl    = mh - ml
+        monthly_cpr = {
+            "pivot": m_pivot,
+            "bc":    m_bc,
+            "tc":    m_tc,
+            "r1":    round(2 * m_pivot - ml, 2),
+            "r2":    round(m_pivot + m_hl, 2),
+            "r3":    round(mh + 2 * (m_pivot - ml), 2),
+            "s1":    round(2 * m_pivot - mh, 2),
+            "s2":    round(m_pivot - m_hl, 2),
+            "s3":    round(ml - 2 * (mh - m_pivot), 2),
+        }
+
     # ── Multi-timeframe candles ───────────────────────────────────────────────
     since_7d = now_ist - timedelta(days=7)
     candles_15m = await get_candles(db, symbol, interval="15m", limit=96, since=since_7d)
@@ -142,6 +163,7 @@ async def build_context_snapshot(
         "symbol": symbol,
         "previous_day": prev_day,
         "today_cpr": cpr_context,
+        "monthly_cpr": monthly_cpr,
         "key_levels": sr_zones,
         "multi_timeframe_trend": {
             "15m":   trend_15m,
@@ -179,17 +201,45 @@ def _summarise_outcomes(outcomes: List[Dict]) -> Dict[str, Any]:
     }
 
 
+def _detect_confluence(daily: Dict[str, Any], monthly: Dict[str, Any], threshold_pct: float = 0.5) -> List[str]:
+    if not daily or not monthly:
+        return []
+    daily_levels = {
+        "D-Pivot": daily.get("pivot"), "D-BC": daily.get("bc"), "D-TC": daily.get("tc"),
+        "D-R1": daily.get("r1"), "D-R2": daily.get("r2"),
+        "D-S1": daily.get("s1"), "D-S2": daily.get("s2"),
+    }
+    monthly_levels = {
+        "M-Pivot": monthly.get("pivot"), "M-BC": monthly.get("bc"), "M-TC": monthly.get("tc"),
+        "M-R1": monthly.get("r1"), "M-R2": monthly.get("r2"), "M-R3": monthly.get("r3"),
+        "M-S1": monthly.get("s1"), "M-S2": monthly.get("s2"), "M-S3": monthly.get("s3"),
+    }
+    confluences = []
+    for d_label, d_val in daily_levels.items():
+        if d_val is None:
+            continue
+        for m_label, m_val in monthly_levels.items():
+            if m_val is None:
+                continue
+            gap_pct = abs(float(d_val) - float(m_val)) / float(d_val) * 100
+            if gap_pct <= threshold_pct:
+                gap_pts = abs(float(d_val) - float(m_val))
+                confluences.append(f"{d_label}≈{m_label} [₹{float(d_val):,.0f}≈₹{float(m_val):,.0f}, {gap_pts:.0f}pts]")
+    return confluences
+
+
 def format_context_for_prompt(ctx: Dict[str, Any]) -> str:
     """
     Serialize context snapshot into a compact markdown block
     suitable for prepending to the Ollama decision prompt.
     """
-    prev = ctx.get("previous_day", {})
-    cpr  = ctx.get("today_cpr", {})
-    mtf  = ctx.get("multi_timeframe_trend", {})
-    news = ctx.get("news_sentiment", {})
-    vol  = ctx.get("volatility", {})
-    sr   = ctx.get("key_levels", {})
+    prev    = ctx.get("previous_day", {})
+    cpr     = ctx.get("today_cpr", {})
+    monthly = ctx.get("monthly_cpr", {})
+    mtf     = ctx.get("multi_timeframe_trend", {})
+    news    = ctx.get("news_sentiment", {})
+    vol     = ctx.get("volatility", {})
+    sr      = ctx.get("key_levels", {})
     outcomes = ctx.get("recent_trade_outcomes", {})
 
     prev_str = (
@@ -197,27 +247,40 @@ def format_context_for_prompt(ctx: Dict[str, Any]) -> str:
         if prev else "Previous day data unavailable."
     )
     cpr_str = (
-        f"Today CPR — Pivot:{cpr.get('pivot', 'N/A')} BC:{cpr.get('bc', 'N/A')} TC:{cpr.get('tc', 'N/A')} "
-        f"({cpr.get('cpr_type', '')})"
+        f"Today CPR — Pivot:{cpr.get('pivot', 'N/A')} BC:{cpr.get('bc', 'N/A')} TC:{cpr.get('tc', 'N/A')} | "
+        f"R1:{cpr.get('r1', 'N/A')} R2:{cpr.get('r2', 'N/A')} | "
+        f"S1:{cpr.get('s1', 'N/A')} S2:{cpr.get('s2', 'N/A')} ({cpr.get('cpr_type', '')})"
         if cpr else "CPR levels unavailable."
     )
+    monthly_str = (
+        f"Monthly CPR — Pivot:{monthly.get('pivot', 'N/A')} BC:{monthly.get('bc', 'N/A')} TC:{monthly.get('tc', 'N/A')} | "
+        f"R1:{monthly.get('r1', 'N/A')} R2:{monthly.get('r2', 'N/A')} R3:{monthly.get('r3', 'N/A')} | "
+        f"S1:{monthly.get('s1', 'N/A')} S2:{monthly.get('s2', 'N/A')} S3:{monthly.get('s3', 'N/A')}"
+        if monthly else ""
+    )
+    confluence_zones = _detect_confluence(cpr, monthly)
+    confluence_str = ("⚡ Confluence: " + ", ".join(confluence_zones)) if confluence_zones else ""
     sr_str = (
         f"Resistance zones: {sr.get('resistance_zones', [])} | Support zones: {sr.get('support_zones', [])}"
         if sr else ""
     )
     outcomes_str = (
         f"Last {outcomes.get('count', 0)} acted decisions: "
-        + "; ".join(
-            f"{o['decision']}@{o['confidence']:.0%}" for o in outcomes.get("recent", [])
-        )
+        + "; ".join(f"{o['decision']}@{o['confidence']:.0%}" for o in outcomes.get("recent", []))
         if outcomes.get("count", 0) > 0 else "No recent trade outcomes."
     )
 
-    return f"""## Historical Context (Multi-Timeframe)
-{prev_str}
-{cpr_str}
-Trend — 15m:{mtf.get('15m','?')} | 1h:{mtf.get('1h','?')} | Daily:{mtf.get('daily','?')}
-{sr_str}
-Volatility — 15m ATR:{vol.get('15m_atr_pct', 0):.2f}% | Daily ATR:{vol.get('daily_atr_pct', 0):.2f}%
-News 24h — {news.get('label','NEUTRAL')} (score:{news.get('avg_score', 0):.2f}, n={news.get('count', 0)})
-{outcomes_str}"""
+    lines = ["## Historical Context (Multi-Timeframe)", prev_str, cpr_str]
+    if monthly_str:
+        lines.append(monthly_str)
+    if confluence_str:
+        lines.append(confluence_str)
+    lines.append(f"Trend — 15m:{mtf.get('15m','?')} | 1h:{mtf.get('1h','?')} | Daily:{mtf.get('daily','?')}")
+    if sr_str:
+        lines.append(sr_str)
+    lines += [
+        f"Volatility — 15m ATR:{vol.get('15m_atr_pct', 0):.2f}% | Daily ATR:{vol.get('daily_atr_pct', 0):.2f}%",
+        f"News 24h — {news.get('label','NEUTRAL')} (score:{news.get('avg_score', 0):.2f}, n={news.get('count', 0)})",
+        outcomes_str,
+    ]
+    return "\n".join(lines)

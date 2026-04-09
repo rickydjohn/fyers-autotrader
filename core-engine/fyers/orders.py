@@ -87,6 +87,23 @@ def get_order_fill(order_id: str, max_attempts: int = 10, interval_s: float = 1.
     return {"status": "TIMEOUT", "traded_price": 0.0, "filled_qty": 0}
 
 
+def get_fyers_positions() -> Optional[list]:
+    """
+    Fetch open positions from the Fyers account.
+    Returns a list of net position dicts with non-zero netQty, or None if the call fails.
+    """
+    fyers = get_fyers_client()
+    try:
+        response = fyers.positions()
+        if response.get("s") != "ok":
+            logger.warning(f"Fyers positions API error: {response}")
+            return None
+        return [p for p in (response.get("netPositions") or []) if int(p.get("netQty", 0)) != 0]
+    except Exception as e:
+        logger.exception(f"Error fetching Fyers positions: {e}")
+        return None
+
+
 def get_funds() -> Optional[dict]:
     """Fetch account fund details from Fyers. Returns dict keyed by fund title or None."""
     fyers = get_fyers_client()
