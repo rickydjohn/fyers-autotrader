@@ -1,6 +1,6 @@
 from pydantic_settings import BaseSettings
 from pydantic import Field
-from typing import List
+from typing import List, Optional
 
 
 class Settings(BaseSettings):
@@ -12,8 +12,8 @@ class Settings(BaseSettings):
 
     # Ollama
     ollama_base_url: str = Field("http://localhost:11434", env="OLLAMA_BASE_URL")
-    ollama_model: str = Field("llama3.2:3b", env="OLLAMA_MODEL")
-    ollama_timeout: int = 30
+    ollama_model: str = Field("gemma4:latest", env="OLLAMA_MODEL")
+    ollama_timeout: int = 45
 
     # Redis
     redis_url: str = Field("redis://localhost:6379", env="REDIS_URL")
@@ -23,13 +23,19 @@ class Settings(BaseSettings):
     market_close: str = "15:30"
     timezone: str = "Asia/Kolkata"
     scan_interval_seconds: int = Field(300, env="SCAN_INTERVAL_SECONDS")
-    position_watcher_interval_seconds: int = Field(10, env="POSITION_WATCHER_INTERVAL_SECONDS")
+    position_watcher_interval_seconds: int = Field(5, env="POSITION_WATCHER_INTERVAL_SECONDS")
 
     # Watchlist
     symbols: List[str] = [
         "NSE:NIFTY50-INDEX",
         "NSE:NIFTYBANK-INDEX",
     ]
+
+    # Proxy (optional — routes fyers.in traffic through proxy when all four are set)
+    proxy_ip: Optional[str] = Field(None, env="PROXY_IP")
+    proxy_user: Optional[str] = Field(None, env="PROXY_USER")
+    proxy_password: Optional[str] = Field(None, env="PROXY_PASSWORD")
+    proxy_port: Optional[int] = Field(None, env="PROXY_PORT")
 
     # Data Service
     data_service_url: str = Field("http://data-service:8003", env="DATA_SERVICE_URL")

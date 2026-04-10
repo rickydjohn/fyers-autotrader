@@ -75,6 +75,12 @@ async def persist_daily_ohlcv_batch(bars: List[Dict[str, Any]]) -> None:
         await _post("/api/v1/ingest/daily-ohlcv", bars)
 
 
+async def persist_options_oi_batch(rows: List[Dict[str, Any]]) -> None:
+    """Persist a batch of options OI snapshot rows to TimescaleDB."""
+    if rows:
+        await _post("/api/v1/ingest/options-oi", rows)
+
+
 async def persist_sr_levels(symbol: str, levels: List[Dict[str, Any]]) -> None:
     """Replace the computed S/R level set for a symbol."""
     await _post("/api/v1/ingest/sr-levels", {"symbol": symbol, "levels": levels})

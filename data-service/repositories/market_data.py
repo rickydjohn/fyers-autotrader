@@ -12,7 +12,7 @@ from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models import DailyIndicator, MarketCandle
+from db.models import DailyIndicator, MarketCandle, OptionsOiSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -403,3 +403,30 @@ async def get_monthly_ohlc(
     except Exception:
         pass
     return None
+
+
+async def insert_options_oi_batch(db: AsyncSession, rows: List[Dict[str, Any]]) -> int:
+    """
+    Insert a batch of options OI snapshot rows.
+    ON CONFLICT DO NOTHING — safe to call multiple times for the same timestamp.
+    """
+    if not rows:
+        return 0
+    from datetime import date as date_type
+    parsed = []
+    for r in rows:
+        parsed.append({
+            "time":        r["time"],
+            "symbol":      r["symbol"],
+            "expiry":      date_type.fromisoformat(r["expiry"]) if isinstance(r["expiry"], str) else r["expiry"],
+            "strike":      r["strike"],
+            "option_type": r["option_type"],
+            "ltp":         r.get("ltp"),
+            "oi":          r.get("oi"),
+            "oi_change":   r.get("oi_change"),
+            "volume":      r.get("volume"),
+        })
+    stmt = insert(OptionsOiSnapshot).values(parsed).on_conflict_do_nothing()
+    await db.execute(stmt)
+    await db.commit()
+    return len(parsed)

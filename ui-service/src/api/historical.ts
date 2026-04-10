@@ -1,5 +1,5 @@
 import { apiClient } from './client'
-import type { HistoricalCandle, ContextSnapshot, Timeframe, Decision } from '../types'
+import type { HistoricalCandle, ContextSnapshot, OptionsChain, Timeframe, Decision } from '../types'
 
 export async function fetchHistoricalData(
   symbol: string,
@@ -26,6 +26,15 @@ export async function fetchAggregatedView(
 export async function fetchContextSnapshot(symbol: string): Promise<ContextSnapshot> {
   const res = await apiClient.get('/context-snapshot', { params: { symbol } })
   return res.data.context
+}
+
+export async function fetchOptionsChain(symbol: string): Promise<OptionsChain | null> {
+  try {
+    const res = await apiClient.get('/options-chain', { params: { symbol } })
+    return res.data.data ?? null
+  } catch {
+    return null
+  }
 }
 
 export async function fetchDecisionHistory(

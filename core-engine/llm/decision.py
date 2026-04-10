@@ -16,7 +16,7 @@ import redis.asyncio as aioredis
 
 from config import settings
 from llm.client import query_ollama
-from llm.prompts import build_decision_prompt
+from llm.prompts import build_decision_prompt, format_options_oi_block
 from models.schemas import LLMDecision, MarketSnapshot, TechnicalIndicators
 from news.sentiment import format_news_for_prompt
 from indicators.technicals import get_macd_signal_label
@@ -30,20 +30,82 @@ logger = logging.getLogger(__name__)
 IST = pytz.timezone("Asia/Kolkata")
 
 
+def _fix_json_strings(s: str) -> str:
+    """Replace literal newlines/tabs inside JSON string values with spaces.
+
+    JSON strings cannot contain raw newlines — they must be escaped as \\n.
+    Ollama sometimes generates multi-sentence reasoning with actual line breaks.
+    This walks the string character-by-character tracking quote state so it
+    only touches content inside string literals, leaving structural JSON intact.
+    """
+    result = []
+    in_string = False
+    escape_next = False
+    for ch in s:
+        if escape_next:
+            result.append(ch)
+            escape_next = False
+        elif ch == "\\":
+            result.append(ch)
+            escape_next = True
+        elif ch == '"':
+            result.append(ch)
+            in_string = not in_string
+        elif in_string and ch in ("\n", "\r"):
+            result.append(" ")  # flatten literal newlines inside strings
+        elif in_string and ch == "\t":
+            result.append(" ")
+        else:
+            result.append(ch)
+    return "".join(result)
+
+
 def _parse_llm_response(raw: str, price: float) -> Optional[dict]:
-    """Extract JSON from LLM response with fallback regex parsing."""
+    """Extract JSON from LLM response with fallback parsing.
+
+    Handles common Ollama output patterns:
+    - Clean JSON
+    - JSON wrapped in markdown code blocks (```json ... ```)
+    - JSON preceded/followed by explanation text
+    - Multi-line reasoning strings with literal newlines (invalid JSON)
+    """
     if not raw:
         return None
+
+    # Strip markdown code fences if present
+    clean = re.sub(r"```(?:json)?\s*", "", raw).strip()
+
+    # Attempt 1: direct parse
     try:
-        return json.loads(raw)
+        return json.loads(clean)
     except json.JSONDecodeError:
         pass
-    match = re.search(r"\{[^{}]+\}", raw, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group())
-        except json.JSONDecodeError:
-            pass
+
+    # Attempt 2: fix literal newlines inside strings, then parse
+    try:
+        return json.loads(_fix_json_strings(clean))
+    except json.JSONDecodeError:
+        pass
+
+    # Attempt 3: extract outermost { ... } by balanced brace scanning
+    start = clean.find("{")
+    if start != -1:
+        depth = 0
+        for i, ch in enumerate(clean[start:], start):
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    candidate = clean[start:i + 1]
+                    try:
+                        return json.loads(candidate)
+                    except json.JSONDecodeError:
+                        try:
+                            return json.loads(_fix_json_strings(candidate))
+                        except json.JSONDecodeError:
+                            break
+
     logger.warning(f"Could not parse LLM response as JSON: {raw[:200]}")
     return None
 
@@ -143,6 +205,7 @@ async def make_decision(
     sr_levels: Optional[list] = None,
     magnet_zones: Optional[dict] = None,
     peer_signal: Optional[dict] = None,
+    options_oi: Optional[dict] = None,
 ) -> Optional[LLMDecision]:
     """Build prompt (with historical context), call LLM, parse, publish to Redis and DB."""
     ind: TechnicalIndicators = snapshot.indicators
@@ -167,6 +230,9 @@ async def make_decision(
             magnet_zones.get("gaps", []),
             magnet_zones.get("cprs", []),
         )
+
+    # Format options OI block
+    oi_block = format_options_oi_block(options_oi)
 
     prompt = build_decision_prompt(
         symbol=snapshot.symbol,
@@ -200,6 +266,7 @@ async def make_decision(
         day_type=ind.cpr.day_type,
         pdh_pivot_confluence=ind.pdh_pivot_confluence,
         magnet_zones_block=magnet_block,
+        options_oi_block=oi_block,
     )
 
     logger.info(f"Querying Ollama for {snapshot.symbol}...")

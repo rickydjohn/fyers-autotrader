@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.connection import get_db
-from repositories.market_data import upsert_candle, upsert_daily_indicator
+from repositories.market_data import upsert_candle, upsert_daily_indicator, insert_options_oi_batch
 from repositories.decisions import upsert_decision
 from repositories.trades import upsert_trade
 from repositories.news import insert_news_batch
@@ -156,6 +156,25 @@ async def mark_decision_acted(
     if result.rowcount == 0:
         raise HTTPException(status_code=404, detail="decision_id not found")
     return {"status": "ok", "decision_id": decision_id, "trade_id": trade_id}
+
+
+class OptionsOiIn(BaseModel):
+    time: datetime
+    symbol: str
+    expiry: str          # ISO date YYYY-MM-DD
+    strike: int
+    option_type: str     # CE or PE
+    ltp: Optional[float] = None
+    oi: Optional[int] = None
+    oi_change: Optional[int] = None
+    volume: Optional[int] = None
+
+
+@router.post("/options-oi")
+async def ingest_options_oi(payload: List[OptionsOiIn], db: AsyncSession = Depends(get_db)):
+    rows = [r.model_dump() for r in payload]
+    count = await insert_options_oi_batch(db, rows)
+    return {"status": "ok", "inserted": count}
 
 
 @router.post("/news")

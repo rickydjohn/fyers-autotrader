@@ -95,7 +95,7 @@ CREATE TABLE IF NOT EXISTS trades (
     exit_price  NUMERIC(12, 2),
     exit_time   TIMESTAMPTZ,
     pnl         NUMERIC(12, 2),
-    pnl_pct     NUMERIC(8, 4),
+    pnl_pct     NUMERIC(12, 4),
     commission  NUMERIC(10, 2)  NOT NULL DEFAULT 0,
     slippage    NUMERIC(10, 2)  NOT NULL DEFAULT 0,
     status      TEXT            NOT NULL DEFAULT 'OPEN',
@@ -306,7 +306,42 @@ CREATE INDEX IF NOT EXISTS historical_sr_symbol_strength_idx
     ON historical_sr_levels (symbol, strength DESC);
 
 -- ============================================================
--- 11. Retention Policies
+-- 11. Options OI Snapshots
+-- ============================================================
+-- Intraday time-series of options chain OI, captured every 5 minutes.
+-- One row per (time, symbol, expiry, strike, option_type).
+CREATE TABLE IF NOT EXISTS options_oi_snapshots (
+    time        TIMESTAMPTZ     NOT NULL,
+    symbol      TEXT            NOT NULL,
+    expiry      DATE            NOT NULL,
+    strike      INTEGER         NOT NULL,
+    option_type TEXT            NOT NULL CHECK (option_type IN ('CE', 'PE')),
+    ltp         NUMERIC(12, 2),
+    oi          BIGINT,
+    oi_change   BIGINT,
+    volume      BIGINT
+);
+
+SELECT create_hypertable(
+    'options_oi_snapshots', 'time',
+    chunk_time_interval => INTERVAL '1 day',
+    if_not_exists => TRUE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS options_oi_unique_idx
+    ON options_oi_snapshots (time, symbol, expiry, strike, option_type);
+
+CREATE INDEX IF NOT EXISTS options_oi_symbol_expiry_strike_idx
+    ON options_oi_snapshots (symbol, expiry, strike, time DESC);
+
+SELECT add_retention_policy(
+    'options_oi_snapshots',
+    INTERVAL '90 days',
+    if_not_exists => TRUE
+);
+
+-- ============================================================
+-- 12. Retention Policies
 -- ============================================================
 -- 1-min base candles: reduce to 30 days — 5m/15m/1h/daily aggregates
 -- already materialise older data so raw 1m rows beyond 30 days are redundant.

@@ -46,6 +46,17 @@ async def get_decisions(
     return [_decision_to_dict(r) for r in rows]
 
 
+async def get_decision_by_id(
+    db: AsyncSession,
+    decision_id: str,
+) -> Optional[Dict[str, Any]]:
+    result = await db.execute(
+        select(AiDecision).where(AiDecision.decision_id == decision_id)
+    )
+    row = result.scalar_one_or_none()
+    return _decision_to_dict(row) if row else None
+
+
 async def get_recent_trade_outcomes(
     db: AsyncSession,
     symbol: str,

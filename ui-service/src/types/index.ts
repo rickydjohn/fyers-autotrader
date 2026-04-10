@@ -70,6 +70,7 @@ export interface Trade {
   option_type?: string   // CE or PE
   option_expiry?: string
   exit_reason?: string
+  trading_mode?: 'simulation' | 'live'
 }
 
 export interface Position {
@@ -125,6 +126,16 @@ export interface Decision {
     rsi: number
     sentiment_score: number
     macd_signal: string
+    vwap?: number
+    ema_9?: number
+    ema_21?: number
+    day_high?: number
+    day_low?: number
+    day_type?: string
+    cpr_width_pct?: number
+    range_breakout?: string
+    consolidation_pct?: number
+    pdh_pivot_confluence?: boolean
   }
   acted_upon: boolean
   option_symbol?: string
@@ -132,6 +143,38 @@ export interface Decision {
   option_type?: string
   option_expiry?: string
   option_price?: number
+}
+
+export interface OptionsChainStrike {
+  strike: number
+  ce_ltp?: number
+  ce_oi?: number
+  ce_oich?: number
+  ce_vol?: number
+  pe_ltp?: number
+  pe_oi?: number
+  pe_oich?: number
+  pe_vol?: number
+}
+
+export interface OptionsChain {
+  timestamp: string
+  expiry: string
+  spot: number
+  spot_change_pct: number
+  futures: number
+  basis: number
+  vix: number
+  vix_change_pct: number
+  pcr: number
+  total_ce_oi: number
+  total_pe_oi: number
+  call_wall: number
+  call_wall_oi: number
+  put_wall: number
+  put_wall_oi: number
+  max_pain: number
+  chain: OptionsChainStrike[]
 }
 
 export type Timeframe = '1m' | '5m' | '15m' | '1h' | 'daily'

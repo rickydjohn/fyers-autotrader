@@ -3,7 +3,59 @@ Prompt templates for Ollama LLM inference.
 Structured to produce deterministic JSON output.
 
 v2: Extended with multi-timeframe historical context block.
+v3: Added per-symbol options OI block (PCR, call/put wall, VIX, basis).
 """
+
+from typing import Any, Dict, Optional
+
+
+def format_options_oi_block(oi: Optional[Dict[str, Any]]) -> str:
+    """Format an options OI snapshot dict into a prompt-ready text block."""
+    if not oi:
+        return "  No options data available yet — skip this section."
+
+    spot     = oi.get("spot", 0) or 0
+    futures  = oi.get("futures", spot) or spot
+    basis    = oi.get("basis", 0) or 0
+    vix      = oi.get("vix", 0) or 0
+    pcr      = oi.get("pcr", 0) or 0
+    call_wall     = oi.get("call_wall", "N/A")
+    call_wall_oi  = oi.get("call_wall_oi") or 0
+    put_wall      = oi.get("put_wall", "N/A")
+    put_wall_oi   = oi.get("put_wall_oi") or 0
+    max_pain      = oi.get("max_pain", "N/A")
+    expiry        = oi.get("expiry", "N/A")
+
+    if basis > spot * 0.001:
+        basis_signal = "bullish (contango)"
+    elif basis < -(spot * 0.001):
+        basis_signal = "bearish (backwardation)"
+    else:
+        basis_signal = "neutral"
+
+    if vix > 20:
+        vix_signal = "HIGH — widen stops to 0.5-0.7%"
+    elif vix < 15:
+        vix_signal = "LOW — tight range, tighten stops to 0.2-0.3%"
+    else:
+        vix_signal = "MODERATE"
+
+    if pcr > 1.2:
+        pcr_signal = "BULLISH bias (contrarian — panic put buying)"
+    elif pcr < 0.8:
+        pcr_signal = "BEARISH bias (contrarian — retail call buying)"
+    else:
+        pcr_signal = "NEUTRAL"
+
+    return (
+        f"  Spot: ₹{spot:.2f}  Futures: ₹{futures:.2f}  Basis: {basis:+.2f} ({basis_signal})\n"
+        f"  India VIX: {vix:.2f} ({vix_signal})\n"
+        f"  PCR: {pcr:.3f} ({pcr_signal})\n"
+        f"  Call Wall: {call_wall} (OI: {call_wall_oi:,}) — resistance\n"
+        f"  Put Wall:  {put_wall} (OI: {put_wall_oi:,}) — support\n"
+        f"  Max Pain:  {max_pain}  |  Expiry: {expiry}"
+    )
+
 
 DECISION_PROMPT_TEMPLATE = """{historical_context_block}
 
@@ -18,6 +70,8 @@ CPR Width: {cpr_width_pct:.2f}% ({cpr_type})
 Price vs CPR: {cpr_signal}
 Previous Day: High=₹{prev_day_high:.2f} Low=₹{prev_day_low:.2f}
 Today's Range: High=₹{day_high:.2f} Low=₹{day_low:.2f}
+PDH Breakout: {pdh_breakout_status}
+PDL Breakdown: {pdl_breakdown_status}
 Consolidation: {consolidation_pct:.2f}% range over last 8 candles ({consolidation_status})
 Range Breakout: {range_breakout}
 Nearest Resistance: ₹{nearest_resistance:.2f} ({resistance_label})
@@ -34,6 +88,9 @@ Zones where price has historically reversed — derived from {years_of_data} of 
 
 ## Price Magnet Zones (unfilled gaps & unbreached CPRs)
 {magnet_zones_block}
+
+## Options Market Structure
+{options_oi_block}
 
 ## News Sentiment (last 2 hours)
 {news_summary}
@@ -117,6 +174,19 @@ Zones are classified BULLISH or BEARISH magnets based on which direction price n
 - Multiple aligned magnets (same direction): stack adjustments up to a cap of +0.12 total
 - If no magnet zones listed above: skip this section entirely
 
+### OPTIONS OI SIGNALS
+Use the Options Market Structure block above to adjust confidence — do not change the decision direction, only conviction.
+- Call Wall within 0.3% above price: BUY confidence -0.05 (strong ceiling ahead — calls are being written there)
+- Put Wall within 0.3% below price: SELL confidence -0.05 (strong floor below — puts are being written there)
+- PCR < 0.80: retail is aggressively buying calls → market makers are net short calls above; reduce BUY confidence -0.03
+- PCR > 1.20: panic put buying → market makers defending below; reduce SELL confidence -0.03
+- PCR 0.80–1.20: neutral — no adjustment
+- VIX > 20: elevated volatility; widen stop_loss to 0.5–0.7% of entry regardless of day type
+- VIX < 15: low volatility; tighten stop_loss to 0.2–0.3% of entry
+- Basis positive (futures > spot by > 0.1%): bullish institutional positioning → +0.02 for BUY signals
+- Basis negative (futures < spot by > 0.1%): bearish institutional positioning → +0.02 for SELL signals
+- If no options data listed above: skip this section entirely
+
 ### ALL DAYS
 - Set stop_loss 0.3-0.5% from entry (below entry for BUY, above entry for SELL)
 - Target must give minimum 1.5:1 risk/reward ratio
@@ -127,7 +197,7 @@ Respond ONLY with a valid JSON object, no explanation outside the JSON:
 {{
   "decision": "BUY",
   "confidence": 0.80,
-  "reasoning": "Single sentence citing day type, RSI, CPR position, VWAP, and PDH/PDL context.",
+  "reasoning": "Single sentence citing day type, PDH breakout status, RSI, CPR position, VWAP, MACD, and any key OI factor (call wall / put wall / PCR) that influenced the decision.",
   "stop_loss": 0.00,
   "target": 0.00,
   "risk_reward": 0.00
@@ -167,6 +237,7 @@ def build_decision_prompt(
     day_type: str = "",
     pdh_pivot_confluence: bool = False,
     magnet_zones_block: str = "",
+    options_oi_block: str = "",
 ) -> str:
     if day_type == "NARROW":
         cpr_type = "NARROW (trending day)"
@@ -178,6 +249,21 @@ def build_decision_prompt(
         # Fallback: absolute threshold
         cpr_type = "NARROW (trending day)" if cpr_width_pct < 0.25 else "WIDE (rangebound day)"
     consolidation_status = "SIDEWAYS" if consolidation_pct < 0.40 else "ACTIVE"
+
+    # Pre-compute PDH/PDL breakout status so LLM doesn't need to do arithmetic
+    if prev_day_high > 0 and day_high > prev_day_high:
+        pdh_breakout_status = f"CONFIRMED (today high ₹{day_high:.2f} > PDH ₹{prev_day_high:.2f})"
+    elif prev_day_high > 0:
+        pdh_breakout_status = f"NOT YET (today high ₹{day_high:.2f} < PDH ₹{prev_day_high:.2f})"
+    else:
+        pdh_breakout_status = "UNKNOWN (no previous day data)"
+
+    if prev_day_low > 0 and day_low < prev_day_low:
+        pdl_breakdown_status = f"CONFIRMED (today low ₹{day_low:.2f} < PDL ₹{prev_day_low:.2f})"
+    elif prev_day_low > 0:
+        pdl_breakdown_status = f"NOT YET (today low ₹{day_low:.2f} > PDL ₹{prev_day_low:.2f})"
+    else:
+        pdl_breakdown_status = "UNKNOWN (no previous day data)"
     if not historical_context_block:
         historical_context_block = (
             "## Historical Context\n"
@@ -187,6 +273,8 @@ def build_decision_prompt(
         sr_levels_block = "  No historical S/R data available yet — will populate after first bootstrap."
     if not magnet_zones_block:
         magnet_zones_block = "  No magnet zones identified — skip this section."
+    if not options_oi_block:
+        options_oi_block = "  No options data available yet — skip this section."
     return DECISION_PROMPT_TEMPLATE.format(
         historical_context_block=historical_context_block,
         symbol=symbol,
@@ -221,4 +309,7 @@ def build_decision_prompt(
         years_of_data=years_of_data,
         pdh_pivot_confluence="YES — PDH is near daily Pivot (strong zone)" if pdh_pivot_confluence else "no",
         magnet_zones_block=magnet_zones_block,
+        options_oi_block=options_oi_block,
+        pdh_breakout_status=pdh_breakout_status,
+        pdl_breakdown_status=pdl_breakdown_status,
     )

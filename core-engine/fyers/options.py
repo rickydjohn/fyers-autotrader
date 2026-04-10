@@ -173,20 +173,24 @@ def get_affordable_option(
         option_symbol = opt["symbol"]
         strike = int(opt["strike_price"])
         premium = _get_premium(opt, option_symbol)
+        otm_label = "ATM" if i == 0 else f"OTM+{i}"
 
         if premium <= 0:
-            logger.debug(f"No premium data for strike {strike}, skipping")
+            logger.warning(
+                f"[OPTION] {underlying} ({decision}) {otm_label} strike {strike} "
+                f"({option_symbol}): no premium data (ltp=0, ask=0, quote failed) — skipping"
+            )
             continue
 
         total_cost = premium * lot_size
-        otm_label = "ATM" if i == 0 else f"OTM+{i}"
+        budget_str = f"₹{max_spend:.0f}" if max_spend is not None else "unlimited"
 
         if max_spend is None or total_cost <= max_spend:
             if i > 0:
                 logger.info(
                     f"[BUDGET] {underlying} ({decision}) ATM unaffordable — "
                     f"selected {otm_label} strike {strike} @ ₹{premium:.2f} "
-                    f"(cost ₹{total_cost:.0f} ≤ budget ₹{max_spend:.0f})"
+                    f"(cost ₹{total_cost:.0f} ≤ budget {budget_str})"
                 )
             else:
                 logger.info(
@@ -194,6 +198,11 @@ def get_affordable_option(
                     f"strike={strike} expiry={expiry_iso} lot_size={lot_size}"
                 )
             return option_symbol, strike, target_type, expiry_iso, lot_size
+        else:
+            logger.info(
+                f"[BUDGET] {underlying} ({decision}) {otm_label} strike {strike} "
+                f"@ ₹{premium:.2f} costs ₹{total_cost:.0f} > budget {budget_str} — trying next"
+            )
 
     # No affordable strike found within the OTM walk limit
     atm_premium = _get_premium(candidates[0], candidates[0]["symbol"])

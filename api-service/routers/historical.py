@@ -143,6 +143,32 @@ async def daily_indicators(
         raise HTTPException(status_code=503, detail=f"data-service unavailable: {e}")
 
 
+@router.get("/decisions/{decision_id}")
+async def get_decision_proxy(
+    decision_id: str,
+    client: httpx.AsyncClient = Depends(_get_http_client),
+):
+    try:
+        r = await client.get(f"/api/v1/decisions/{decision_id}")
+        return JSONResponse(content=r.json(), status_code=r.status_code)
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=503, detail=f"data-service unavailable: {e}")
+
+
+@router.get("/options-chain")
+async def options_chain_proxy(
+    symbol: str = Query("NSE:NIFTY50-INDEX"),
+    request: Request = None,
+):
+    """Proxy the latest options chain OI snapshot from core-engine Redis."""
+    try:
+        core = request.app.state.http_core_client
+        r = await core.get("/options/chain/latest", params={"symbol": symbol})
+        return JSONResponse(content=r.json(), status_code=r.status_code)
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=503, detail=f"core-engine unavailable: {e}")
+
+
 @router.post("/historical-backfill")
 async def historical_backfill(
     request: Request,
