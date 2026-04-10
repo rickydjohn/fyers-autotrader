@@ -88,7 +88,7 @@ class Trade(Base):
     exit_price:    Mapped[Optional[float]] = mapped_column(Numeric(12, 2), nullable=True)
     exit_time:     Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     pnl:           Mapped[Optional[float]] = mapped_column(Numeric(12, 2), nullable=True)
-    pnl_pct:       Mapped[Optional[float]] = mapped_column(Numeric(8, 4), nullable=True)
+    pnl_pct:       Mapped[Optional[float]] = mapped_column(Numeric(12, 4), nullable=True)
     commission:    Mapped[float]          = mapped_column(Numeric(10, 2), default=0)
     slippage:      Mapped[float]          = mapped_column(Numeric(10, 2), default=0)
     status:        Mapped[str]            = mapped_column(String(16), default="OPEN")
@@ -125,6 +125,21 @@ class DailyOhlcv(Base):
     low:    Mapped[float] = mapped_column(Numeric(12, 2))
     close:  Mapped[float] = mapped_column(Numeric(12, 2))
     volume: Mapped[int]   = mapped_column(BigInteger, default=0)
+
+
+class OptionsOiSnapshot(Base):
+    """Intraday OI snapshot per strike — one row per (time, symbol, expiry, strike, option_type)."""
+    __tablename__ = "options_oi_snapshots"
+
+    time:        Mapped[datetime]        = mapped_column(TIMESTAMP(timezone=True), primary_key=True)
+    symbol:      Mapped[str]             = mapped_column(String(64), primary_key=True)
+    expiry:      Mapped[date]            = mapped_column(Date, primary_key=True)
+    strike:      Mapped[int]             = mapped_column(Integer, primary_key=True)
+    option_type: Mapped[str]             = mapped_column(String(4), primary_key=True)
+    ltp:         Mapped[Optional[float]] = mapped_column(Numeric(12, 2), nullable=True)
+    oi:          Mapped[Optional[int]]   = mapped_column(BigInteger, nullable=True)
+    oi_change:   Mapped[Optional[int]]   = mapped_column(BigInteger, nullable=True)
+    volume:      Mapped[Optional[int]]   = mapped_column(BigInteger, nullable=True)
 
 
 class HistoricalSRLevel(Base):

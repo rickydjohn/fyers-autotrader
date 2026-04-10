@@ -88,6 +88,9 @@ services:
     networks: [trading-net]
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: 1
+      net.ipv6.conf.default.disable_ipv6: 1
     volumes:
       - fyers-tokens:/app/tokens
     env_file: .env
@@ -96,6 +99,12 @@ services:
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
       - DATA_SERVICE_URL=http://data-service:8003
       - TZ=Asia/Kolkata
+      - HTTPS_PROXY=http://${PROXY_USER}:${PROXY_PASSWORD}@${PROXY_IP}:${PROXY_PORT}
+      - HTTP_PROXY=http://${PROXY_USER}:${PROXY_PASSWORD}@${PROXY_IP}:${PROXY_PORT}
+      - https_proxy=http://${PROXY_USER}:${PROXY_PASSWORD}@${PROXY_IP}:${PROXY_PORT}
+      - http_proxy=http://${PROXY_USER}:${PROXY_PASSWORD}@${PROXY_IP}:${PROXY_PORT}
+      - NO_PROXY=data-service,api-service,simulation-engine,redis,timescaledb,host.docker.internal,localhost,127.0.0.1,hooks.slack.com,moneycontrol.com,indiatimes.com
+      - no_proxy=data-service,api-service,simulation-engine,redis,timescaledb,host.docker.internal,localhost,127.0.0.1,hooks.slack.com,moneycontrol.com,indiatimes.com
     depends_on:
       redis:
         condition: service_healthy

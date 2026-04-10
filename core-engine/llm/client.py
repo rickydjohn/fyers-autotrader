@@ -25,7 +25,7 @@ async def query_ollama(prompt: str) -> Optional[str]:
         "options": {
             "temperature": 0.1,   # low temperature for deterministic JSON output
             "top_p": 0.9,
-            "num_predict": 2048,
+            "num_predict": 4096,  # thinking models consume CoT tokens before JSON; needs headroom
         },
     }
     try:

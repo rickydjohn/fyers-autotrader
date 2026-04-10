@@ -124,9 +124,9 @@ async def open_position(
         logger.info(f"[GATE] SL cooldown active for {symbol} ({ttl}s remaining) — skipping")
         return None
 
-    existing = await redis_client.hget("positions:open", symbol)
-    if existing:
-        logger.info(f"Live position already open for {symbol}, skipping")
+    pending_key = f"pending:order:{symbol}"
+    if await redis_client.exists(pending_key) or await redis_client.hget("positions:open", symbol):
+        logger.info(f"Live position already open (or order pending) for {symbol}, skipping")
         return None
 
     available = await _get_available_funds()
@@ -135,26 +135,42 @@ async def open_position(
         logger.warning(f"Insufficient funds (₹{available:.0f}) or invalid price for {symbol}")
         return None
 
-    if option_symbol and option_price:
-        lot_size = option_lot_size or 1
-        total_option_cost = option_price * lot_size
-        if total_option_cost > available:
-            logger.warning(
-                f"[GATE] Option {option_symbol} costs ₹{total_option_cost:.0f} "
-                f"(₹{option_price:.2f} × {lot_size} lots) exceeds available funds "
-                f"₹{available:.0f} — skipping trade"
-            )
-            return None
-        trade_price = option_price
-        trade_symbol = option_symbol
-        quantity = lot_size
-    else:
-        trade_price = price
-        trade_symbol = symbol
-        quantity = max(1, int(max_value / price))
+    # Gate: live mode only trades options contracts — never place orders on the raw index.
+    # If option selection returned None (chain fetch failed, budget exhausted, etc.) abort here.
+    if option_symbol is None:
+        logger.warning(
+            f"[GATE] No option symbol resolved for {symbol} ({side}) — "
+            f"skipping trade to avoid invalid index order"
+        )
+        return None
 
+    if option_price is None or option_price <= 0:
+        logger.warning(
+            f"[GATE] Option {option_symbol} has no valid price — skipping trade"
+        )
+        return None
+
+    lot_size = option_lot_size or 1
+    total_option_cost = option_price * lot_size
+    # Reserve 5% buffer for brokerage, STT, exchange charges and premium slippage
+    # between quote-time and order-fill. Without this, Fyers rejects with
+    # margin shortfall even when the quoted premium appears affordable.
+    spendable = available * 0.95
+    if total_option_cost > spendable:
+        logger.warning(
+            f"[GATE] Option {option_symbol} costs ₹{total_option_cost:.0f} "
+            f"(₹{option_price:.2f} × {lot_size} lots) exceeds spendable funds "
+            f"₹{spendable:.0f} (95% of ₹{available:.0f}) — skipping trade"
+        )
+        return None
+    trade_price = option_price
+    trade_symbol = option_symbol
+    quantity = lot_size
+
+    await redis_client.set(pending_key, "1", ex=30)
     order_result = await _place_fyers_order(trade_symbol, side, quantity)
     if order_result is None:
+        await redis_client.delete(pending_key)
         return None
 
     broker_order_id = order_result.get("order_id")
@@ -164,6 +180,7 @@ async def open_position(
     if fill is None:
         # Fyers rejected or cancelled the order — abort
         logger.error(f"Entry order {broker_order_id} was not filled — aborting position for {trade_symbol}")
+        await redis_client.delete(pending_key)
         return None
 
     # Use actual fill price if available; fall back to decision price on timeout
@@ -227,6 +244,7 @@ async def open_position(
     )
 
     await redis_client.hset("positions:open", symbol, position.model_dump_json())
+    await redis_client.delete(pending_key)  # position is now in Redis; pending flag no longer needed
     await redis_client.hset("trades:all", trade_id, trade.model_dump_json())
     await redis_client.hset("trades:open_id", symbol, trade_id)
     await redis_client.zadd("trades:history", {trade.model_dump_json(): now.timestamp()})

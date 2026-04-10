@@ -16,8 +16,8 @@ import { fetchDecisions } from './api/decisionLog'
 import { fetchTrades } from './api/trades'
 import { fetchPositions } from './api/positions'
 import { fetchSymbols } from './api/marketData'
-import { fetchHistoricalData, fetchAggregatedView, fetchContextSnapshot, fetchDecisionHistory } from './api/historical'
-import type { Timeframe, HistoricalCandle, ContextSnapshot, Decision } from './types'
+import { fetchHistoricalData, fetchAggregatedView, fetchContextSnapshot, fetchDecisionHistory, fetchOptionsChain } from './api/historical'
+import type { Timeframe, HistoricalCandle, ContextSnapshot, OptionsChain, Decision } from './types'
 import { parseDate } from './utils/date'
 
 const SYMBOLS = ['NSE:NIFTY50-INDEX', 'NSE:NIFTYBANK-INDEX']
@@ -67,6 +67,7 @@ export default function App() {
   const [historicalCandles, setHistoricalCandles] = useState<HistoricalCandle[]>([])
   const [context, setContext] = useState<ContextSnapshot | null>(null)
   const [contextLoading, setContextLoading] = useState(false)
+  const [optionsChain, setOptionsChain] = useState<OptionsChain | null>(null)
   const [decisionHistory, setDecisionHistory] = useState<Decision[]>([])
   const [showHistory, setShowHistory] = useState(false)
   const [now, setNow] = useState(() => new Date())
@@ -117,6 +118,17 @@ export default function App() {
       .catch(() => { /* keep previous context rather than clearing */ })
       .finally(() => { if (!cancelled) setContextLoading(false) })
     return () => { cancelled = true }
+  }, [selectedSymbol])
+
+  // Load options chain on symbol change and refresh every 5 minutes
+  useEffect(() => {
+    let cancelled = false
+    const load = () => {
+      fetchOptionsChain(selectedSymbol).then((data) => { if (!cancelled) setOptionsChain(data) })
+    }
+    load()
+    const id = setInterval(load, 5 * 60 * 1000)
+    return () => { cancelled = true; clearInterval(id) }
   }, [selectedSymbol])
 
   // Load decision history from DB when panel is opened
@@ -285,7 +297,7 @@ export default function App() {
           )}
 
           {/* P&L graph */}
-          {pnl && <PnLGraph pnl={pnl} />}
+          {pnl && <PnLGraph pnl={pnl} trades={todayTrades} />}
 
           {/* Positions */}
           <PositionTable
@@ -298,7 +310,7 @@ export default function App() {
         {/* Right column — 1/3 width */}
         <div className="col-span-1 space-y-4">
           {/* Historical Context Panel */}
-          <ContextPanel context={context} loading={contextLoading} />
+          <ContextPanel context={context} loading={contextLoading} optionsChain={optionsChain} />
 
           {/* Live Decision Feed */}
           <DecisionFeed decisions={decisions} sseConnected={sseConnected} />

@@ -19,7 +19,7 @@ from pydantic import BaseModel
 from analytics.pnl import compute_pnl_summary, get_all_trades, get_open_positions
 from config import settings
 from execution import mock_broker, live_broker
-from execution.exit_rules import check_exit
+from execution.exit_rules import check_exit, PREMIUM_SL_PCT, FIRST_MILESTONE_PCT
 from models.schemas import Position
 from portfolio.budget import initialize_budget, load_budget, reconcile_invested
 import data_client
@@ -64,11 +64,32 @@ async def _reconcile_fyers_positions() -> None:
     for symbol, pos_data in positions_raw.items():
         try:
             pos = Position(**json.loads(pos_data))
-            if symbol not in fyers_symbols:
-                ltp_raw = (
-                    await redis_client.get(f"ltp:{symbol}")
-                    or await redis_client.get(f"market:{symbol}")
-                )
+
+            # Skip positions opened less than 120 seconds ago.
+            # Fyers positions API can lag a new order by several seconds; reconciling
+            # too soon causes a false external-close (USER_EXIT_FYERS) race condition.
+            pos_age_s = (datetime.now(IST) - pos.entry_time.astimezone(IST)).total_seconds()
+            if pos_age_s < 120:
+                logger.debug(f"Reconcile: skipping {symbol} (age {pos_age_s:.0f}s < 120s)")
+                continue
+
+            # For option positions, match against the option symbol on Fyers,
+            # not the underlying symbol used as the Redis key.
+            fyers_lookup = pos.option_symbol if pos.option_symbol else symbol
+            if fyers_lookup not in fyers_symbols:
+                # For option positions, use the option LTP not the underlying spot price
+                opt_sym = pos.option_symbol if hasattr(pos, "option_symbol") and pos.option_symbol else None
+                ltp_raw = None
+                if opt_sym:
+                    ltp_raw = (
+                        await redis_client.get(f"ltp:{opt_sym}")
+                        or await redis_client.get(f"market:{opt_sym}")
+                    )
+                if not ltp_raw:
+                    ltp_raw = (
+                        await redis_client.get(f"ltp:{symbol}")
+                        or await redis_client.get(f"market:{symbol}")
+                    )
                 exit_price = float(json.loads(ltp_raw).get("ltp", 0)) if ltp_raw else 0.0
                 await live_broker.record_external_close(
                     redis_client, symbol, exit_price, exit_reason="USER_EXIT_FYERS"
@@ -76,6 +97,131 @@ async def _reconcile_fyers_positions() -> None:
                 logger.info(f"Reconcile: external close detected for {symbol} @ ₹{exit_price:.2f}")
         except Exception as e:
             logger.exception(f"Reconcile error for {symbol}: {e}")
+
+
+async def _startup_fyers_reconcile() -> None:
+    """
+    On startup, check if Fyers has any open positions that Redis doesn't know about.
+    This only matters if Redis was wiped while a position was still open — a rare edge case,
+    since Redis persists across normal container restarts.
+
+    Flow:
+      1. Skip if Redis already has tracked positions (nothing to recover).
+      2. Fetch Fyers positions once (single API call).
+      3. For each Fyers position, try to reconstruct the Position from data-service trade history.
+      4. Write recovered positions back to Redis so dedup and exit-rules work correctly.
+    """
+    mode = await redis_client.get("trading:mode") or "simulation"
+    if mode != "live":
+        return
+
+    if await redis_client.hlen("positions:open") > 0:
+        logger.info("Startup reconcile: Redis has open positions, skipping Fyers sync")
+        return
+
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.get(f"{settings.core_engine_url}/fyers/positions")
+            if r.status_code != 200:
+                logger.warning(
+                    f"Startup reconcile: core-engine returned {r.status_code} — "
+                    f"will retry after authentication"
+                )
+                await redis_client.set("reconcile:pending", "1")
+                return
+            fyers_positions = r.json().get("positions", [])
+    except Exception as e:
+        logger.warning(
+            f"Startup reconcile: Fyers fetch failed ({e}) — will retry after authentication"
+        )
+        await redis_client.set("reconcile:pending", "1")
+        return
+
+    # Successful fetch — clear any pending flag regardless of whether positions were found
+    await redis_client.delete("reconcile:pending")
+
+    if not fyers_positions:
+        logger.info("Startup reconcile: no open positions on Fyers")
+        return
+
+    logger.warning(
+        f"Startup reconcile: {len(fyers_positions)} Fyers position(s) found with empty Redis — "
+        f"attempting reconstruction"
+    )
+
+    # Fetch recent open trades from data-service for accurate reconstruction
+    open_trades_by_option: dict = {}
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r2 = await client.get(f"{settings.data_service_url}/api/v1/trades")
+            if r2.status_code == 200:
+                for t in r2.json().get("data", {}).get("trades", []):
+                    if t.get("status") == "OPEN" and t.get("option_symbol"):
+                        open_trades_by_option[t["option_symbol"]] = t
+    except Exception as e:
+        logger.warning(f"Startup reconcile: data-service lookup failed: {e}")
+
+    for fp in fyers_positions:
+        option_sym = fp.get("symbol", "")
+        if not option_sym:
+            continue
+
+        # Derive the underlying Redis key from the option symbol
+        if "NIFTYBANK" in option_sym:
+            underlying = "NSE:NIFTYBANK-INDEX"
+        elif "NIFTY" in option_sym:
+            underlying = "NSE:NIFTY50-INDEX"
+        else:
+            logger.warning(f"Startup reconcile: cannot derive underlying for {option_sym}, skipping")
+            continue
+
+        buy_avg = float(fp.get("buyAvg") or 0)
+        net_qty = abs(int(fp.get("netQty") or 0))
+        if buy_avg <= 0 or net_qty <= 0:
+            logger.warning(f"Startup reconcile: invalid Fyers data for {option_sym}, skipping")
+            continue
+
+        trade = open_trades_by_option.get(option_sym)
+        if trade:
+            entry_price = float(trade.get("entry_price", buy_avg))
+            entry_time = datetime.fromisoformat(trade["entry_time"])
+            decision_id = trade.get("decision_id", "RECOVERED")
+            option_strike = trade.get("option_strike")
+            option_type = trade.get("option_type", "CE")
+            option_expiry = trade.get("option_expiry")
+            day_type = "TRENDING"
+        else:
+            # No data-service record — use Fyers data as best approximation
+            entry_price = buy_avg
+            entry_time = datetime.now(IST)
+            decision_id = "RECOVERED"
+            option_strike = None
+            option_type = "CE"
+            option_expiry = None
+            day_type = "TRENDING"
+
+        position = Position(
+            symbol=underlying,
+            side="BUY",
+            quantity=net_qty,
+            avg_price=entry_price,
+            entry_time=entry_time,
+            stop_loss=round(entry_price * (1.0 - PREMIUM_SL_PCT), 2),
+            target=round(entry_price * (1.0 + FIRST_MILESTONE_PCT), 2),
+            decision_id=decision_id,
+            option_symbol=option_sym,
+            option_strike=option_strike,
+            option_type=option_type,
+            option_expiry=option_expiry,
+            entry_option_price=entry_price,
+            day_type=day_type,
+        )
+        await redis_client.hset("positions:open", underlying, position.model_dump_json())
+        logger.warning(
+            f"Startup reconcile: Recovered {underlying} → {option_sym} "
+            f"@ ₹{entry_price:.2f} × {net_qty} lots "
+            f"({'from data-service' if trade else 'from Fyers data only'})"
+        )
 
 
 async def _consume_decisions() -> None:
@@ -294,7 +440,8 @@ async def _check_stop_targets() -> None:
         except Exception as e:
             logger.exception(f"Error checking stop/target for {symbol}: {e}")
 
-    # Detect externally-closed Fyers positions (live mode only, every 30s)
+    # Detect externally-closed Fyers positions (live mode only, every 30s).
+    # Also retries startup reconciliation if the initial attempt failed (e.g. expired token).
     global _last_fyers_reconcile
     if mode == "live":
         now_ts = now.timestamp()
@@ -305,6 +452,14 @@ async def _check_stop_targets() -> None:
             except Exception as e:
                 logger.warning(f"Fyers reconcile failed: {e}")
 
+            # Retry startup reconcile if it previously failed (token was expired at boot)
+            if await redis_client.exists("reconcile:pending"):
+                logger.info("Startup reconcile: retrying after previous failure...")
+                try:
+                    await _startup_fyers_reconcile()
+                except Exception as e:
+                    logger.warning(f"Startup reconcile retry failed: {e}")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -312,6 +467,7 @@ async def lifespan(app: FastAPI):
     redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
     await initialize_budget(redis_client)
     await reconcile_invested(redis_client)
+    await _startup_fyers_reconcile()
     _consumer_task = asyncio.create_task(_consume_decisions())
     logger.info("Simulation engine started")
     yield

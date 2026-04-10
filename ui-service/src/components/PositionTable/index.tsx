@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import { Badge } from '../shared/Badge'
-import type { Position, Trade } from '../../types'
+import type { Decision, Position, Trade } from '../../types'
 import { parseDate } from '../../utils/date'
 import { closePosition } from '../../api/positions'
+import { fetchDecisionById } from '../../api/decisionLog'
 
 interface Props {
   positions: Position[]
@@ -195,12 +196,26 @@ function PositionsView({
 }
 
 function TradesView({ trades }: { trades: Trade[] }) {
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [decisionCache, setDecisionCache] = useState<Record<string, Decision | null>>({})
+  const [loading, setLoading] = useState<string | null>(null)
+
+  async function handleRowClick(trade: Trade) {
+    const id = trade.trade_id
+    if (expandedId === id) {
+      setExpandedId(null)
+      return
+    }
+    setExpandedId(id)
+    if (id in decisionCache || !trade.decision_id) return
+    setLoading(id)
+    const decision = await fetchDecisionById(trade.decision_id)
+    setDecisionCache((prev) => ({ ...prev, [id]: decision }))
+    setLoading(null)
+  }
+
   if (!trades.length) {
-    return (
-      <div className="p-6 text-center text-gray-600 text-sm">
-        No trades today
-      </div>
-    )
+    return <div className="p-6 text-center text-gray-600 text-sm">No trades today</div>
   }
 
   const totalPnl = trades.reduce((sum, t) => sum + (t.pnl ?? 0), 0)
@@ -239,25 +254,28 @@ function TradesView({ trades }: { trades: Trade[] }) {
               const isOpen = trade.status === 'OPEN'
               const pnl = trade.pnl ?? 0
               const isProfit = pnl > 0
-              const rowColor = isOpen
-                ? 'hover:bg-gray-800/40'
+              const isExpanded = expandedId === trade.trade_id
+              const isLoadingThis = loading === trade.trade_id
+              const rowBase = isOpen
+                ? ''
                 : isProfit
-                  ? 'bg-emerald-950/30 hover:bg-emerald-950/50'
-                  : 'bg-red-950/30 hover:bg-red-950/50'
-              const pnlColor = isOpen
-                ? 'text-gray-400'
-                : isProfit
-                  ? 'text-emerald-400'
-                  : 'text-red-400'
+                  ? 'bg-emerald-950/20'
+                  : 'bg-red-950/20'
+              const pnlColor = isOpen ? 'text-gray-400' : isProfit ? 'text-emerald-400' : 'text-red-400'
               const symbol = (trade.option_symbol ?? trade.symbol).replace('NSE:', '')
               const entryTime = parseDate(trade.entry_time).toLocaleTimeString('en-IN', {
                 hour: '2-digit', minute: '2-digit', hour12: false,
               })
 
-              return (
-                <tr key={trade.trade_id} className={`${rowColor} transition-colors`}>
+              return [
+                <tr
+                  key={trade.trade_id}
+                  onClick={() => handleRowClick(trade)}
+                  className={`${rowBase} hover:bg-gray-800/50 transition-colors cursor-pointer select-none`}
+                >
                   <td className="px-4 py-2.5">
                     <div className="flex items-center gap-2">
+                      <span className={`text-gray-600 text-xs transition-transform ${isExpanded ? 'rotate-90' : ''}`}>▶</span>
                       <Badge label={trade.side} variant={trade.side === 'BUY' ? 'buy' : 'sell'} />
                       <span className="font-mono text-xs text-gray-200">{symbol}</span>
                     </div>
@@ -275,9 +293,7 @@ function TradesView({ trades }: { trades: Trade[] }) {
                     {isOpen ? '—' : `${isProfit ? '+' : ''}₹${pnl.toFixed(2)}`}
                   </td>
                   <td className={`px-4 py-2.5 text-right font-mono text-xs font-semibold ${pnlColor}`}>
-                    {isOpen || trade.pnl_pct == null
-                      ? '—'
-                      : `${isProfit ? '+' : ''}${trade.pnl_pct.toFixed(2)}%`}
+                    {isOpen || trade.pnl_pct == null ? '—' : `${isProfit ? '+' : ''}${trade.pnl_pct.toFixed(2)}%`}
                   </td>
                   <td className="px-4 py-2.5">
                     <StatusBadge status={trade.status} exitReason={trade.exit_reason} />
@@ -285,13 +301,103 @@ function TradesView({ trades }: { trades: Trade[] }) {
                   <td className="px-4 py-2.5 text-right font-mono text-xs text-gray-500">
                     {entryTime}
                   </td>
-                </tr>
-              )
+                </tr>,
+
+                isExpanded && (
+                  <tr key={`${trade.trade_id}-detail`} className="bg-gray-900/80">
+                    <td colSpan={8} className="px-4 pb-3 pt-0">
+                      {isLoadingThis ? (
+                        <div className="text-xs text-gray-600 py-2 animate-pulse">Loading decision context…</div>
+                      ) : (
+                        <TradeDetailPanel trade={trade} decision={decisionCache[trade.trade_id] ?? null} />
+                      )}
+                    </td>
+                  </tr>
+                ),
+              ]
             })}
           </tbody>
         </table>
       </div>
     </>
+  )
+}
+
+function TradeDetailPanel({ trade, decision }: { trade: Trade; decision: Decision | null }) {
+  const ind = decision?.indicators_snapshot
+  const entryDt = parseDate(trade.entry_time)
+  const exitDt = trade.exit_time ? parseDate(trade.exit_time) : null
+  const durationMs = exitDt ? exitDt.getTime() - entryDt.getTime() : null
+  const durationMin = durationMs ? Math.round(durationMs / 60000) : null
+
+  const fmt = (v: number | undefined, decimals = 2) =>
+    v != null ? v.toFixed(decimals) : '—'
+  const fmtPrice = (v: number | undefined) =>
+    v != null ? `₹${Number(v).toLocaleString('en-IN', { minimumFractionDigits: 2 })}` : '—'
+
+  return (
+    <div className="mt-1 rounded-lg border border-gray-700/60 bg-gray-800/60 p-3 space-y-3 text-xs">
+
+      {/* Timing row */}
+      <div className="flex flex-wrap gap-4 text-gray-400 font-mono">
+        <span>Entry <span className="text-gray-200">{entryDt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })}</span></span>
+        {exitDt && <span>Exit <span className="text-gray-200">{exitDt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })}</span></span>}
+        {durationMin != null && <span>Duration <span className="text-gray-200">{durationMin}m</span></span>}
+        {decision && <span>Confidence <span className="text-blue-400 font-semibold">{(decision.confidence * 100).toFixed(0)}%</span></span>}
+        {decision && <span>R:R <span className="text-gray-200">{decision.risk_reward?.toFixed(2)}</span></span>}
+      </div>
+
+      {/* Decision SL / Target vs actual exit */}
+      {decision && (
+        <div className="flex flex-wrap gap-4 font-mono">
+          <span className="text-gray-500">
+            Underlying SL{' '}
+            <span className="text-red-400">{fmtPrice(decision.stop_loss)}</span>
+            <span className="text-gray-600 ml-1 font-sans text-[10px]">(LLM thesis boundary)</span>
+          </span>
+          <span className="text-gray-500">
+            Underlying Target{' '}
+            <span className="text-emerald-400">{fmtPrice(decision.target)}</span>
+            <span className="text-gray-600 ml-1 font-sans text-[10px]">(LLM thesis boundary)</span>
+          </span>
+          {trade.exit_price != null && (
+            <span className="text-gray-500">Option exit <span className={trade.pnl != null && trade.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}>{fmtPrice(trade.exit_price)}</span></span>
+          )}
+        </div>
+      )}
+
+      {/* Indicators grid */}
+      {ind && (
+        <div className="grid grid-cols-4 gap-x-4 gap-y-1 font-mono text-gray-400">
+          <span>Price <span className="text-gray-200">{fmtPrice(ind.price)}</span></span>
+          <span>RSI <span className={ind.rsi > 70 ? 'text-red-400' : ind.rsi < 30 ? 'text-emerald-400' : 'text-gray-200'}>{fmt(ind.rsi, 1)}</span></span>
+          <span>VWAP <span className="text-gray-200">{fmtPrice(ind.vwap)}</span></span>
+          <span>MACD <span className={ind.macd_signal === 'BULLISH' ? 'text-emerald-400' : ind.macd_signal === 'BEARISH' ? 'text-red-400' : 'text-gray-400'}>{ind.macd_signal ?? '—'}</span></span>
+          <span>EMA9 <span className="text-gray-200">{fmtPrice(ind.ema_9)}</span></span>
+          <span>EMA21 <span className="text-gray-200">{fmtPrice(ind.ema_21)}</span></span>
+          <span>CPR <span className={ind.cpr_signal === 'ABOVE_CPR' ? 'text-emerald-400' : ind.cpr_signal === 'BELOW_CPR' ? 'text-red-400' : 'text-yellow-400'}>{ind.cpr_signal?.replace('_CPR', '') ?? '—'}</span></span>
+          <span>Day <span className="text-gray-200">{ind.day_type ?? '—'}</span></span>
+          <span>D-High <span className="text-emerald-400/80">{fmtPrice(ind.day_high)}</span></span>
+          <span>D-Low <span className="text-red-400/80">{fmtPrice(ind.day_low)}</span></span>
+          <span>Breakout <span className={ind.range_breakout !== 'NONE' ? 'text-yellow-400' : 'text-gray-500'}>{ind.range_breakout ?? '—'}</span></span>
+          <span>Sentiment <span className="text-gray-200">{fmt(ind.sentiment_score)}</span></span>
+        </div>
+      )}
+
+      {/* Reasoning */}
+      {(trade.reasoning || decision?.reasoning) && (
+        <div className="border-t border-gray-700/50 pt-2">
+          <div className="text-gray-500 mb-0.5">Reasoning</div>
+          <div className="text-gray-300 leading-relaxed">
+            {trade.reasoning || decision?.reasoning}
+          </div>
+        </div>
+      )}
+
+      {!decision && !trade.reasoning && (
+        <div className="text-gray-600">No decision context available for this trade.</div>
+      )}
+    </div>
   )
 }
 

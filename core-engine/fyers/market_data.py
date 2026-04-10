@@ -110,7 +110,7 @@ def get_historical_candles_daterange(
     """
     Fetch OHLCV candles for an explicit date range (YYYY-MM-DD strings).
     Used for bootstrapping historical context on startup.
-    Fyers limits: 1m=30d, 5m/15m=90d, 1h=180d, daily=365d per request.
+    Fyers limits: 1m=30d, 5m/15m=90d, 1h=100d, daily=365d per request.
     """
     fyers = get_fyers_client()
     resolution = RESOLUTION_MAP.get(interval, "5")

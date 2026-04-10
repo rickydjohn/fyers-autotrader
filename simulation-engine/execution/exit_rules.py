@@ -11,7 +11,7 @@ Rule priority:
   3. DELTA_ERODED   — |delta| < 0.20 (option far OTM, premium bleeding pointlessly)
   4. IV_CRUSH       — IV fell >20% from entry (vega working against us)
   5. TRAIL_FLOOR    — option LTP ≤ peak − (entry × 5%), active after trail engaged
-  6. MILESTONE      — TRENDING day: at +20% and every +10% of entry thereafter:
+  6. MILESTONE      — TRENDING day: at +15% and every +10% of entry thereafter:
                          indicators confirmed  → trail continues (no exit)
                          indicators not confirmed → lock in gains at milestone (exit)
                        RANGING day: at +10%, always exit immediately (no trail)
@@ -44,7 +44,7 @@ SESSION_CLOSE_HOUR: int    = settings.session_close_hour
 SESSION_CLOSE_MINUTE: int  = settings.session_close_minute
 
 PREMIUM_SL_PCT: float         = 0.10   # hard stop: exit if option loses ≥10% of entry premium
-FIRST_MILESTONE_PCT: float    = 0.20   # TRENDING: trail activates at +20% gain from entry
+FIRST_MILESTONE_PCT: float    = 0.15   # TRENDING: trail activates at +15% gain from entry
 RANGING_MILESTONE_PCT: float  = 0.10   # RANGING: exit immediately at +10% gain from entry
 MILESTONE_STEP_PCT: float     = 0.10   # subsequent milestones every +10% of entry
 TRAIL_OFFSET_PCT: float       = 0.05   # trail floor = peak_price × (1 − 5%)

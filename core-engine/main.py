@@ -5,6 +5,14 @@ Handles Fyers OAuth, market data ingestion, indicators, LLM decisions.
 v2: Bootstraps historical context from data-service at startup.
 """
 
+# Force IPv4 for all outbound connections so Fyers API traffic routes through
+# the IPv4 proxy rather than bypassing it via the container's IPv6 address.
+import socket as _socket
+_orig_getaddrinfo = _socket.getaddrinfo
+def _ipv4_only_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+    return _orig_getaddrinfo(host, port, _socket.AF_INET, type, proto, flags)
+_socket.getaddrinfo = _ipv4_only_getaddrinfo
+
 import logging
 import sys
 from contextlib import asynccontextmanager
@@ -16,6 +24,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
 from config import settings
+from fyers.proxy import configure_fyers_proxy
 from fyers.auth import exchange_auth_code, get_auth_url, get_valid_token
 from fyers.orders import get_funds, get_fyers_positions, get_order_fill, place_market_order
 from llm.client import check_ollama_health
@@ -32,6 +41,9 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# Apply proxy patch before any Fyers SDK calls are made
+configure_fyers_proxy()
 
 redis_client: aioredis.Redis = None
 scheduler = None
@@ -272,6 +284,16 @@ async def historical_backfill(symbols: Optional[str] = Query(None)):
         except Exception as e:
             logger.warning(f"Context refresh after backfill failed for {sym}: {e}")
     return {"status": "ok", "results": results}
+
+
+@app.get("/options/chain/latest")
+async def get_options_chain_latest(symbol: str = "NSE:NIFTY50-INDEX"):
+    """Return the most recent options chain OI snapshot from Redis."""
+    data = await redis_client.get(f"options:chain:{symbol}")
+    if not data:
+        raise HTTPException(status_code=404, detail="No options chain snapshot yet — wait for next 5-min interval")
+    import json as _json
+    return {"status": "ok", "data": _json.loads(data)}
 
 
 @app.get("/market/{symbol:path}")

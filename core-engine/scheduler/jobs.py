@@ -18,6 +18,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from config import settings
 from fyers.market_data import get_historical_candles, get_historical_candles_daterange, get_previous_day_ohlc, get_quote
+from fyers.auth import get_fyers_client
 from fyers.greeks import get_option_quote_with_greeks
 from models.schemas import OHLCBar
 from indicators.cpr import calculate_cpr, get_cpr_signal
@@ -261,6 +262,15 @@ async def _process_symbol(symbol: str, redis_client: aioredis.Redis) -> None:
     sr_levels = _sr_cache.get(symbol, [])
     magnet_zones = _magnets_cache.get(symbol)
 
+    # Read the latest options OI snapshot for this symbol from Redis
+    options_oi: Optional[dict] = None
+    try:
+        oi_raw = await redis_client.get(f"options:chain:{symbol}")
+        if oi_raw:
+            options_oi = json.loads(oi_raw)
+    except Exception as e:
+        logger.debug(f"Could not load options OI for {symbol}: {e}")
+
     # Layer 2 cross-symbol gate: build peer_signal from NIFTY's last decision
     peer_signal: Optional[dict] = None
     if symbol != _CROSS_SYMBOL_LEAD:
@@ -276,6 +286,7 @@ async def _process_symbol(symbol: str, redis_client: aioredis.Redis) -> None:
         sr_levels=sr_levels,
         magnet_zones=magnet_zones,
         peer_signal=peer_signal,
+        options_oi=options_oi,
     )
 
     # Store final (gated) decision for downstream symbols to use as peer signal
@@ -561,7 +572,7 @@ async def bootstrap_historical_data(
         ("1m",  60, 28),   # ~60d of 1m; chunk < 30d limit
         ("5m",  90, 90),
         ("15m", 90, 90),
-        ("1h",  180, 180),
+        ("1h",  180, 99),
         ("1d",  365, 365),
     ]
 
@@ -594,6 +605,145 @@ async def bootstrap_historical_data(
 
     logger.info(f"Historical bootstrap complete for {symbol}: {total} total candles")
     return {"symbol": symbol, "intervals": per_interval, "total_candles": total}
+
+
+async def _fetch_options_oi_for_symbol(symbol: str, redis_client: aioredis.Redis) -> None:
+    """
+    Fetch options chain OI snapshot for one symbol.
+    Stores full summary → Redis (10-min TTL).
+    Stores per-row OI data → TimescaleDB via data-service (90-day retention).
+    """
+    from collections import defaultdict
+    fyers = get_fyers_client()
+
+    # Spot quote
+    q = fyers.quotes(data={"symbols": symbol})
+    if q.get("s") != "ok":
+        logger.warning(f"Options OI [{symbol}]: quote fetch failed")
+        return
+    v = q["d"][0]["v"]
+    spot = v["lp"]
+
+    # Options chain (10 strikes each side)
+    resp = fyers.optionchain(data={"symbol": symbol, "strikecount": 10, "timestamp": ""})
+    if resp.get("s") != "ok" or "data" not in resp:
+        logger.warning(f"Options OI [{symbol}]: chain fetch failed: {resp.get('message')}")
+        return
+
+    data       = resp["data"]
+    now        = datetime.now(IST)
+    vix        = data["indiavixData"]
+    expiry_str = data["expiryData"][0]["date"]   # "13-04-2026"
+
+    # Index row carries futures price
+    index_row = next((r for r in data["optionsChain"] if r["strike_price"] == -1), {})
+    fut = index_row.get("fp", spot)
+
+    # Pair strikes
+    strikes: dict = defaultdict(dict)
+    for row in data["optionsChain"]:
+        if row["strike_price"] == -1:
+            continue
+        strikes[row["strike_price"]][row["option_type"]] = row
+
+    total_ce_oi = data["callOi"]
+    total_pe_oi = data["putOi"]
+    pcr = round(total_pe_oi / total_ce_oi, 3) if total_ce_oi else 0
+
+    call_wall = max(
+        (sp for sp in strikes if "CE" in strikes[sp]),
+        key=lambda sp: strikes[sp]["CE"].get("oi", 0),
+    )
+    put_wall = max(
+        (sp for sp in strikes if "PE" in strikes[sp]),
+        key=lambda sp: strikes[sp]["PE"].get("oi", 0),
+    )
+    max_pain = max(
+        strikes,
+        key=lambda sp: (
+            strikes[sp].get("CE", {}).get("oi", 0)
+            + strikes[sp].get("PE", {}).get("oi", 0)
+        ),
+    )
+
+    # Build chain list
+    chain = [
+        {
+            "strike":  sp,
+            "ce_ltp":  strikes[sp].get("CE", {}).get("ltp"),
+            "ce_oi":   strikes[sp].get("CE", {}).get("oi"),
+            "ce_oich": strikes[sp].get("CE", {}).get("oich"),
+            "ce_vol":  strikes[sp].get("CE", {}).get("volume"),
+            "pe_ltp":  strikes[sp].get("PE", {}).get("ltp"),
+            "pe_oi":   strikes[sp].get("PE", {}).get("oi"),
+            "pe_oich": strikes[sp].get("PE", {}).get("oich"),
+            "pe_vol":  strikes[sp].get("PE", {}).get("volume"),
+        }
+        for sp in sorted(strikes)
+    ]
+
+    # Store summary in Redis (keyed by symbol)
+    await redis_client.setex(
+        f"options:chain:{symbol}",
+        600,
+        json.dumps({
+            "timestamp":       now.isoformat(),
+            "expiry":          expiry_str,
+            "spot":            spot,
+            "spot_change_pct": v["chp"],
+            "futures":         fut,
+            "basis":           round(fut - spot, 2),
+            "vix":             vix["ltp"],
+            "vix_change_pct":  vix["ltpchp"],
+            "pcr":             pcr,
+            "total_ce_oi":     total_ce_oi,
+            "total_pe_oi":     total_pe_oi,
+            "call_wall":       call_wall,
+            "call_wall_oi":    strikes[call_wall]["CE"].get("oi"),
+            "put_wall":        put_wall,
+            "put_wall_oi":     strikes[put_wall]["PE"].get("oi"),
+            "max_pain":        max_pain,
+            "chain":           chain,
+        }),
+    )
+
+    # Persist per-row OI to TimescaleDB
+    expiry_iso = datetime.strptime(expiry_str, "%d-%m-%Y").date().isoformat()
+    rows = [
+        {
+            "time":        now.isoformat(),
+            "symbol":      symbol,
+            "expiry":      expiry_iso,
+            "strike":      sp,
+            "option_type": opt_type,
+            "ltp":         row.get("ltp"),
+            "oi":          row.get("oi"),
+            "oi_change":   row.get("oich"),
+            "volume":      row.get("volume"),
+        }
+        for sp in strikes
+        for opt_type, row in strikes[sp].items()
+    ]
+    await data_client.persist_options_oi_batch(rows)
+
+    logger.info(
+        "Options OI [%s] — VIX:%.2f  PCR:%.3f  CallWall:%s  PutWall:%s  MaxPain:%s",
+        symbol, vix["ltp"], pcr, call_wall, put_wall, max_pain,
+    )
+
+
+async def _fetch_options_oi(redis_client: aioredis.Redis) -> None:
+    """
+    Fetch options chain OI snapshot for all configured symbols every 5 minutes.
+    Delegates per-symbol work to _fetch_options_oi_for_symbol.
+    """
+    if not _is_market_open():
+        return
+    for symbol in settings.symbols:
+        try:
+            await _fetch_options_oi_for_symbol(symbol, redis_client)
+        except Exception as e:
+            logger.warning(f"Options OI fetch failed for {symbol}: {e}")
 
 
 async def _refresh_context_all(redis_client: aioredis.Redis) -> None:
@@ -639,6 +789,14 @@ def create_scheduler(redis_client: aioredis.Redis) -> AsyncIOScheduler:
         minutes=5,
         args=[redis_client],
         id="context_refresh",
+    )
+
+    scheduler.add_job(
+        _fetch_options_oi,
+        "interval",
+        minutes=5,
+        args=[redis_client],
+        id="options_oi_snapshot",
     )
 
     # Recompute historical S/R levels every Sunday at 08:00 IST (pre-market week prep)

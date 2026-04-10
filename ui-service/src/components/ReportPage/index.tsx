@@ -7,6 +7,8 @@ import type { Trade } from '../../types'
 import { Badge } from '../shared/Badge'
 import { parseDate } from '../../utils/date'
 
+type ReportMode = 'all' | 'simulation' | 'live'
+
 const REASON_COLORS: Record<string, string> = {
   TRAIL_STOP:    '#10b981', // emerald
   CLOSED:        '#3b82f6', // blue
@@ -25,34 +27,60 @@ export function ReportPage() {
   const now = new Date()
   const defaultMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
 
-  const [month, setMonth]       = useState(defaultMonth)
-  const [report, setReport]     = useState<MonthReport | null>(null)
-  const [loading, setLoading]   = useState(false)
-  const [error, setError]       = useState<string | null>(null)
+  const [month, setMonth]           = useState(defaultMonth)
+  const [modeFilter, setModeFilter] = useState<ReportMode>('all')
+  const [report, setReport]         = useState<MonthReport | null>(null)
+  const [loading, setLoading]       = useState(false)
+  const [error, setError]           = useState<string | null>(null)
 
   useEffect(() => {
     setLoading(true)
     setError(null)
-    fetchMonthReport(month)
+    fetchMonthReport(month, modeFilter === 'all' ? undefined : modeFilter)
       .then(setReport)
       .catch((e) => setError(e.message ?? 'Failed to load report'))
       .finally(() => setLoading(false))
-  }, [month])
+  }, [month, modeFilter])
 
   return (
     <div className="min-h-screen bg-gray-950 text-gray-100 p-6 space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-4">
         <div>
           <h1 className="text-xl font-bold text-white">Trade Report</h1>
           <p className="text-sm text-gray-500 mt-0.5">Monthly P&L analysis with trade reasoning</p>
         </div>
-        <input
-          type="month"
-          value={month}
-          onChange={(e) => setMonth(e.target.value)}
-          className="bg-gray-800 border border-gray-700 rounded-md px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-blue-500"
-        />
+
+        <div className="flex items-center gap-3">
+          {/* Mode filter */}
+          <div className="flex bg-gray-800 rounded-md p-0.5 gap-0.5">
+            {(['all', 'simulation', 'live'] as ReportMode[]).map((m) => (
+              <button
+                key={m}
+                onClick={() => setModeFilter(m)}
+                className={`px-3 py-1.5 text-xs rounded font-mono transition-colors ${
+                  modeFilter === m
+                    ? m === 'live'
+                      ? 'bg-amber-600 text-white'
+                      : m === 'simulation'
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-gray-600 text-white'
+                    : 'text-gray-400 hover:text-gray-200'
+                }`}
+              >
+                {m === 'all' ? 'Cumulative' : m === 'simulation' ? 'Simulation' : 'Live'}
+              </button>
+            ))}
+          </div>
+
+          {/* Month picker */}
+          <input
+            type="month"
+            value={month}
+            onChange={(e) => setMonth(e.target.value)}
+            className="bg-gray-800 border border-gray-700 rounded-md px-3 py-1.5 text-sm text-gray-200 focus:outline-none focus:border-blue-500"
+          />
+        </div>
       </div>
 
       {loading && (
@@ -86,7 +114,7 @@ export function ReportPage() {
           </div>
 
           {/* Trade table */}
-          <TradeTable trades={report.trades} />
+          <TradeTable trades={report.trades} showMode={modeFilter === 'all'} />
         </>
       )}
     </div>
@@ -193,7 +221,7 @@ function CountPieChart({ breakdown }: { breakdown: Record<string, { count: numbe
 
 const PAGE_SIZE = 25
 
-function TradeTable({ trades }: { trades: Trade[] }) {
+function TradeTable({ trades, showMode }: { trades: Trade[]; showMode: boolean }) {
   const closed = trades.filter((t) => t.status !== 'OPEN').reverse()
   const [page, setPage] = useState(1)
   const totalPages = Math.ceil(closed.length / PAGE_SIZE)
@@ -230,6 +258,7 @@ function TradeTable({ trades }: { trades: Trade[] }) {
               <th className="px-4 py-2 text-right">P&L</th>
               <th className="px-4 py-2 text-right">%</th>
               <th className="px-4 py-2 text-left">Exit Reason</th>
+              {showMode && <th className="px-4 py-2 text-left">Mode</th>}
               <th className="px-4 py-2 text-left w-80">Why this trade was made</th>
             </tr>
           </thead>
@@ -272,6 +301,11 @@ function TradeTable({ trades }: { trades: Trade[] }) {
                   <td className="px-4 py-2.5">
                     <ReasonBadge reason={t.exit_reason ?? t.status} />
                   </td>
+                  {showMode && (
+                    <td className="px-4 py-2.5">
+                      <ModeBadge mode={t.trading_mode} />
+                    </td>
+                  )}
                   <td className="px-4 py-2.5 text-gray-400 leading-relaxed max-w-xs">
                     {t.reasoning ?? '—'}
                   </td>
@@ -319,6 +353,21 @@ function ReasonBadge({ reason }: { reason: string }) {
       style={style}
     >
       {reason}
+    </span>
+  )
+}
+
+function ModeBadge({ mode }: { mode?: string }) {
+  if (mode === 'live') {
+    return (
+      <span className="inline-block px-1.5 py-0.5 rounded text-xs font-mono font-medium border bg-amber-500/10 text-amber-400 border-amber-500/30">
+        LIVE
+      </span>
+    )
+  }
+  return (
+    <span className="inline-block px-1.5 py-0.5 rounded text-xs font-mono font-medium border bg-blue-500/10 text-blue-400 border-blue-500/30">
+      SIM
     </span>
   )
 }

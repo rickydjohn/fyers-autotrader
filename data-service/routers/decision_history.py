@@ -10,10 +10,22 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.connection import get_db
-from repositories.decisions import get_decisions
+from fastapi import HTTPException
+from repositories.decisions import get_decisions, get_decision_by_id
 from repositories.trades import get_trades, get_pnl_summary
 
 router = APIRouter(tags=["Decision History"])
+
+
+@router.get("/decisions/{decision_id}")
+async def get_decision_endpoint(
+    decision_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    decision = await get_decision_by_id(db, decision_id)
+    if decision is None:
+        raise HTTPException(status_code=404, detail="Decision not found")
+    return {"status": "ok", "decision": decision}
 
 
 @router.get("/decision-history")

@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Editor swap files
+*.swp
+*.swo
+
+# Environment
+.env
+
+# Node
+node_modules/
+dist/
+
+# Claude Code
+.claude/
