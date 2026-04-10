@@ -18,7 +18,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from config import settings
 from fyers.market_data import get_historical_candles, get_historical_candles_daterange, get_previous_day_ohlc, get_quote
-from fyers.auth import get_fyers_client, totp_login
+from fyers.auth import get_fyers_client
 from fyers.greeks import get_option_quote_with_greeks
 from models.schemas import OHLCBar
 from indicators.cpr import calculate_cpr, get_cpr_signal
@@ -755,22 +755,6 @@ async def _refresh_context_all(redis_client: aioredis.Redis) -> None:
             logger.warning(f"Context refresh failed for {symbol}: {e}")
 
 
-def _refresh_fyers_token() -> None:
-    """
-    Daily job (07:30 IST): re-authenticate with Fyers via TOTP so the access
-    token is always fresh before market open.  Skips silently if TOTP credentials
-    are not configured (manual-auth mode).
-    """
-    if not all([settings.fyers_user_id, settings.fyers_pin, settings.fyers_totp_key]):
-        logger.debug("Token refresh skipped — TOTP credentials not configured")
-        return
-    try:
-        totp_login()
-        logger.info("Fyers token refreshed via daily TOTP job")
-    except Exception as e:
-        logger.error(f"Daily Fyers token refresh failed: {e}")
-
-
 def create_scheduler(redis_client: aioredis.Redis) -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler(timezone=IST)
 
@@ -824,16 +808,6 @@ def create_scheduler(redis_client: aioredis.Redis) -> AsyncIOScheduler:
         minute=0,
         args=[redis_client],
         id="sr_levels_weekly",
-    )
-
-    # Refresh Fyers access token daily at 07:30 IST — before market open.
-    # Tokens expire after ~24h; this keeps the system authenticated without manual intervention.
-    scheduler.add_job(
-        _refresh_fyers_token,
-        "cron",
-        hour=7,
-        minute=30,
-        id="fyers_token_refresh",
     )
 
     return scheduler

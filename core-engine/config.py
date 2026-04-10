@@ -31,11 +31,6 @@ class Settings(BaseSettings):
         "NSE:NIFTYBANK-INDEX",
     ]
 
-    # Fyers TOTP auth (optional — all three must be set to enable automated login)
-    fyers_user_id: Optional[str] = Field(None, env="FYERS_USER_ID")
-    fyers_pin: Optional[str] = Field(None, env="FYERS_PIN")
-    fyers_totp_key: Optional[str] = Field(None, env="FYERS_TOTP_KEY")
-
     # Proxy (optional — routes fyers.in traffic through proxy when all four are set)
     proxy_ip: Optional[str] = Field(None, env="PROXY_IP")
     proxy_user: Optional[str] = Field(None, env="PROXY_USER")
