@@ -25,7 +25,7 @@ from fastapi.responses import RedirectResponse
 
 from config import settings
 from fyers.proxy import configure_fyers_proxy
-from fyers.auth import exchange_auth_code, get_auth_url, get_valid_token
+from fyers.auth import exchange_auth_code, get_auth_url, get_valid_token, totp_login
 from fyers.orders import get_funds, get_fyers_positions, get_order_fill, place_market_order
 from llm.client import check_ollama_health
 from scheduler.jobs import (
@@ -54,6 +54,21 @@ async def lifespan(app: FastAPI):
     global redis_client, scheduler
     redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
     logger.info("Redis connected")
+
+    # Automated TOTP login — runs if all three credentials are configured.
+    # Falls back gracefully so manual /fyers/auth still works if TOTP is not set up.
+    if all([settings.fyers_user_id, settings.fyers_pin, settings.fyers_totp_key]):
+        import asyncio
+        try:
+            await asyncio.get_event_loop().run_in_executor(None, totp_login)
+            logger.info("Fyers authenticated via TOTP")
+        except Exception as e:
+            logger.error(f"TOTP login failed at startup: {e} — visit /fyers/auth to authenticate manually")
+    else:
+        logger.warning(
+            "FYERS_USER_ID / FYERS_PIN / FYERS_TOTP_KEY not set — "
+            "automated TOTP login disabled. Visit /fyers/auth to authenticate manually."
+        )
 
     scheduler = create_scheduler(redis_client)
     scheduler.start()
