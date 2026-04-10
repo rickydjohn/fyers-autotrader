@@ -572,7 +572,7 @@ async def bootstrap_historical_data(
         ("1m",  60, 28),   # ~60d of 1m; chunk < 30d limit
         ("5m",  90, 90),
         ("15m", 90, 90),
-        ("1h",  180, 180),
+        ("1h",  180, 99),
         ("1d",  365, 365),
     ]
 

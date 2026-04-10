@@ -93,6 +93,7 @@ class TradeIn(BaseModel):
     option_type: Optional[str] = None
     option_expiry: Optional[str] = None
     exit_reason: Optional[str] = None
+    broker_order_id: Optional[str] = None
 
 
 class NewsItemIn(BaseModel):
