@@ -139,10 +139,15 @@ async def build_context_snapshot(
     trend_1h    = _compute_trend(candles_1h)
     trend_daily = _compute_trend(candles_daily)
 
-    # Most recent intraday values from 15m candles
-    recent_15m = candles_15m[-1] if candles_15m else {}
-    intraday_high = max((c["high"] for c in candles_15m), default=0)
-    intraday_low  = min((c["low"]  for c in candles_15m), default=0)
+    # Most recent intraday values — today's 15m candles only
+    today_str = date.today().isoformat()
+    today_15m = [
+        c for c in candles_15m
+        if str(c.get("time", ""))[:10] == today_str
+    ]
+    recent_15m = today_15m[-1] if today_15m else (candles_15m[-1] if candles_15m else {})
+    intraday_high = max((c["high"] for c in today_15m), default=0)
+    intraday_low  = min((c["low"]  for c in today_15m), default=0)
 
     # ── Volatility ────────────────────────────────────────────────────────────
     volatility_15m  = _compute_volatility(candles_15m)
