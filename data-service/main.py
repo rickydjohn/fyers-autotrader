@@ -3,6 +3,7 @@ Data Service — persistent storage, historical queries, context builder.
 Port 8003.
 """
 
+import asyncio
 import json
 import logging
 import sys
@@ -28,8 +29,29 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+async def _wait_for_db(max_wait: int = 60, interval: float = 3.0) -> None:
+    """Retry DB connection until it accepts queries or max_wait seconds elapse."""
+    deadline = asyncio.get_event_loop().time() + max_wait
+    while True:
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text("SELECT 1"))
+            return
+        except Exception as exc:
+            remaining = deadline - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                raise RuntimeError(f"DB not available after {max_wait}s") from exc
+            logger.warning(
+                "DB not ready (%s: %s) — retrying in %.0fs (%.0fs left)",
+                type(exc).__name__, exc, interval, remaining,
+            )
+            await asyncio.sleep(min(interval, remaining))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await _wait_for_db()
+
     # Lightweight schema guard for existing DB volumes.
     async with engine.begin() as conn:
         await conn.execute(text(
