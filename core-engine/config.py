@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     # Fyers
     fyers_client_id: str = Field(..., env="FYERS_CLIENT_ID")
     fyers_secret_key: str = Field(..., env="FYERS_SECRET_KEY")
-    fyers_redirect_uri: str = Field("http://localhost:8001/fyers/callback", env="FYERS_REDIRECT_URI")
+    fyers_redirect_uri: str = Field("http://100.78.91.15:8001/fyers/callback", env="FYERS_REDIRECT_URI")
     token_path: str = "/app/tokens/access_token.json"
 
     # Ollama

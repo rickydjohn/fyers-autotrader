@@ -84,7 +84,7 @@ def get_valid_token() -> str:
     if token:
         return token
     raise RuntimeError(
-        "No valid Fyers token. Visit http://localhost:8001/fyers/auth to authenticate."
+        "No valid Fyers token. Visit http://100.78.91.15:8001/fyers/auth to authenticate."
     )
 
 
