@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 import pytz
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repositories.market_data import get_candles, get_recent_daily_indicators, get_monthly_ohlc
+from repositories.market_data import get_candles, get_recent_daily_indicators, get_monthly_ohlc, get_prev_day_ohlc
 from repositories.decisions import get_recent_trade_outcomes
 from repositories.news import get_news_sentiment_summary
 
@@ -77,19 +77,14 @@ async def build_context_snapshot(
     - Recent trade outcomes (feedback loop)
     """
     now_ist = datetime.now(IST)
-    yesterday = date.today() - timedelta(days=1)
 
     # ── Daily indicators (CPR / pivots for recent days) ──────────────────────
     daily_rows = await get_recent_daily_indicators(db, symbol, days=lookback_days)
     today_ind: Optional[Dict] = next(
         (r for r in daily_rows if r["date"] == date.today()), None
     )
-    yesterday_ind: Optional[Dict] = next(
-        (r for r in daily_rows if r["date"] == yesterday), None
-    )
 
     cpr_context: Dict[str, Any] = {}
-    prev_day: Dict[str, Any] = {}
     if today_ind:
         cpr_context = {
             "pivot": float(today_ind["pivot"]),
@@ -100,12 +95,19 @@ async def build_context_snapshot(
             "cpr_width_pct": float(today_ind["cpr_width_pct"]),
             "cpr_type": "NARROW (trending day)" if today_ind["cpr_width_pct"] < 0.25 else "WIDE (rangebound day)",
         }
-    if yesterday_ind:
+
+    # Source prev_day OHLC from daily_ohlcv (the actual candle) — NOT from
+    # daily_indicators.prev_high/low/close which stores D-2's values (D-1's OHLC
+    # is used to compute CPR for day D, so daily_indicators for yesterday holds
+    # the day-before-yesterday's OHLC).
+    prev_ohlc = await get_prev_day_ohlc(db, symbol)
+    prev_day: Dict[str, Any] = {}
+    if prev_ohlc:
         prev_day = {
-            "high":  float(yesterday_ind["prev_high"]),
-            "low":   float(yesterday_ind["prev_low"]),
-            "close": float(yesterday_ind["prev_close"]),
-            "date":  str(yesterday),
+            "high":  prev_ohlc["high"],
+            "low":   prev_ohlc["low"],
+            "close": prev_ohlc["close"],
+            "date":  prev_ohlc["date"],
         }
 
     # ── Monthly CPR/Pivot levels (from previous calendar month's OHLC) ────────

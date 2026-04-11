@@ -365,6 +365,36 @@ async def get_unfilled_cprs(
         return []
 
 
+async def get_prev_day_ohlc(
+    db: AsyncSession,
+    symbol: str,
+    for_date: Optional[date] = None,
+) -> Optional[Dict[str, Any]]:
+    """Return the most recent trading day's OHLC from daily_ohlcv before for_date."""
+    target = for_date or date.today()
+    sql = text("""
+        SELECT date, open, high, low, close
+        FROM daily_ohlcv
+        WHERE symbol = :symbol AND date < :target
+        ORDER BY date DESC
+        LIMIT 1
+    """)
+    try:
+        result = await db.execute(sql, {"symbol": symbol, "target": target})
+        row = result.mappings().first()
+        if row:
+            return {
+                "date":  str(row["date"]),
+                "open":  float(row["open"]),
+                "high":  float(row["high"]),
+                "low":   float(row["low"]),
+                "close": float(row["close"]),
+            }
+    except Exception:
+        pass
+    return None
+
+
 async def get_monthly_ohlc(
     db: AsyncSession,
     symbol: str,
