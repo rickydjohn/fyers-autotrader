@@ -27,6 +27,7 @@ from config import settings
 from fyers.proxy import configure_fyers_proxy
 from fyers.auth import exchange_auth_code, get_auth_url, get_valid_token
 from fyers.orders import get_funds, get_fyers_positions, get_order_fill, place_market_order
+from fyers.market_data import get_quote
 from llm.client import check_ollama_health
 from scheduler.jobs import (
     create_scheduler, _refresh_news, run_market_scan,
@@ -203,6 +204,18 @@ async def fyers_funds():
         if funds is None:
             raise HTTPException(status_code=503, detail="Could not fetch funds — is Fyers authenticated?")
         return {"status": "ok", "funds": funds}
+    except RuntimeError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+
+
+@app.get("/fyers/quote/{symbol:path}")
+async def fyers_quote(symbol: str):
+    """Fetch a live real-time quote for a symbol directly from Fyers (bypasses Redis cache)."""
+    try:
+        quote = get_quote(symbol)
+        if quote is None:
+            raise HTTPException(status_code=503, detail=f"Could not fetch quote for {symbol}")
+        return {"status": "ok", "symbol": symbol, "ltp": quote.get("ltp"), "quote": quote}
     except RuntimeError as e:
         raise HTTPException(status_code=401, detail=str(e))
 

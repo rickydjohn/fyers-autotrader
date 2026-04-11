@@ -352,6 +352,28 @@ async def _handle_decision(data: dict) -> None:
         pass
 
 
+async def _fetch_live_ltp(symbol: str) -> float | None:
+    """
+    Fetch a real-time LTP directly from Fyers via core-engine.
+    Used as a fallback when Redis price keys have expired.
+    Also writes the result back to ltp:{symbol} (30s TTL) so subsequent
+    ticks don't need another round-trip.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.get(f"{settings.core_engine_url}/fyers/quote/{symbol}")
+            if r.status_code != 200:
+                logger.warning(f"Live LTP fetch failed for {symbol}: HTTP {r.status_code}")
+                return None
+            ltp = r.json().get("ltp")
+            if ltp:
+                await redis_client.setex(f"ltp:{symbol}", 30, json.dumps({"ltp": ltp}))
+            return float(ltp) if ltp else None
+    except Exception as e:
+        logger.warning(f"Live LTP fetch error for {symbol}: {e}")
+        return None
+
+
 async def _check_stop_targets() -> None:
     """
     Evaluate exit conditions for all open positions.
@@ -374,11 +396,19 @@ async def _check_stop_targets() -> None:
             # which is refreshed every POSITION_WATCHER_INTERVAL_SECONDS; fall back
             # to the full market snapshot written by the slower scan job.
             ltp_raw = await redis_client.get(f"ltp:{symbol}") or await redis_client.get(f"market:{symbol}")
-            if not ltp_raw:
-                continue
-            underlying_ltp = json.loads(ltp_raw).get("ltp", 0)
+            if ltp_raw:
+                underlying_ltp = json.loads(ltp_raw).get("ltp", 0)
+            else:
+                underlying_ltp = 0
+
             if not underlying_ltp:
-                continue
+                # Redis keys expired while position is still open — this is unexpected.
+                # Fetch live from Fyers rather than skipping exit evaluation.
+                logger.warning(f"[SL-CHECK] No cached LTP for {symbol} with open position — fetching live from Fyers")
+                underlying_ltp = await _fetch_live_ltp(symbol)
+                if not underlying_ltp:
+                    logger.error(f"[SL-CHECK] Could not obtain LTP for {symbol} — skipping tick")
+                    continue
 
             # Option LTP and Greeks (populated by fast_position_watcher)
             option_ltp: float | None = None
@@ -390,6 +420,9 @@ async def _check_stop_targets() -> None:
                 greeks_raw = await redis_client.get(f"greeks:{pos.option_symbol}")
                 if greeks_raw:
                     greeks = json.loads(greeks_raw)
+                if not option_ltp:
+                    logger.warning(f"[SL-CHECK] No cached LTP for option {pos.option_symbol} — fetching live from Fyers")
+                    option_ltp = await _fetch_live_ltp(pos.option_symbol)
 
             # Index indicators for milestone confirmation (from full market snapshot)
             indicators: dict = {}
