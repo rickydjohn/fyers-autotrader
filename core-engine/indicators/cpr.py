@@ -47,8 +47,10 @@ def calculate_cpr(high: float, low: float, close: float, daily_atr_pct: float = 
 
 
 def get_cpr_signal(price: float, cpr: CPRResult) -> str:
-    if price > cpr.tc:
+    cpr_upper = max(cpr.tc, cpr.bc)
+    cpr_lower = min(cpr.tc, cpr.bc)
+    if price > cpr_upper:
         return "ABOVE_CPR"
-    elif price < cpr.bc:
+    elif price < cpr_lower:
         return "BELOW_CPR"
     return "INSIDE_CPR"
