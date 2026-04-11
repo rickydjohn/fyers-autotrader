@@ -49,7 +49,27 @@ export function CandlestickChart({ candles, trades = [], height = 400, cprLevels
             minute: '2-digit',
           }),
       },
-      timeScale: { borderColor: '#30363d', timeVisible: true },
+      timeScale: {
+        borderColor: '#30363d',
+        timeVisible: true,
+        tickMarkFormatter: (time: number, tickMarkType: number) => {
+          const date = new Date(time * 1000)
+          // TickMarkType: Year=0, Month=1, DayOfMonth=2, Time=3, TimeWithSeconds=4
+          if (tickMarkType >= 3) {
+            return date.toLocaleTimeString('en-IN', {
+              timeZone: 'Asia/Kolkata',
+              hour: '2-digit',
+              minute: '2-digit',
+              hour12: false,
+            })
+          }
+          return date.toLocaleDateString('en-IN', {
+            timeZone: 'Asia/Kolkata',
+            day: '2-digit',
+            month: 'short',
+          })
+        },
+      },
       width: containerRef.current.clientWidth,
       height,
     })
