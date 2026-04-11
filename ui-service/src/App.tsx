@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { ReportPage } from './components/ReportPage'
+import { HealthPage } from './components/HealthPage'
 import { CandlestickChart } from './components/CandlestickChart'
 import { PnLGraph } from './components/PnLGraph'
 import { DecisionFeed } from './components/DecisionFeed'
@@ -46,7 +47,7 @@ function isWithinMarketWindow(now: Date): boolean {
 }
 
 export default function App() {
-  const [page, setPage] = useState<'dashboard' | 'report'>('dashboard')
+  const [page, setPage] = useState<'dashboard' | 'report' | 'health'>('dashboard')
 
   const {
     selectedSymbol, setSelectedSymbol,
@@ -178,15 +179,16 @@ export default function App() {
     }))
   }, [timeframe, liveCandles, historicalCandles])
 
-  if (page === 'report') {
+  if (page === 'report' || page === 'health') {
     return (
       <div className="min-h-screen bg-gray-950 text-gray-100">
         <nav className="flex items-center gap-1 px-6 py-3 border-b border-gray-800 bg-gray-900">
           <span className="text-sm font-bold text-white mr-4">Trading Intelligence</span>
-          <NavTab label="Dashboard" active={false} onClick={() => setPage('dashboard')} />
-          <NavTab label="Reports"   active={true}  onClick={() => setPage('report')} />
+          <NavTab label="Dashboard" active={false}              onClick={() => setPage('dashboard')} />
+          <NavTab label="Reports"   active={page === 'report'}  onClick={() => setPage('report')} />
+          <NavTab label="Health"    active={page === 'health'}  onClick={() => setPage('health')} />
         </nav>
-        <ReportPage />
+        {page === 'report' ? <ReportPage /> : <HealthPage />}
       </div>
     )
   }
@@ -201,6 +203,7 @@ export default function App() {
           <div className="flex items-center bg-gray-800 rounded-md p-0.5 gap-0.5">
             <NavTab label="Dashboard" active={true}  onClick={() => setPage('dashboard')} />
             <NavTab label="Reports"   active={false} onClick={() => setPage('report')} />
+            <NavTab label="Health"    active={false} onClick={() => setPage('health')} />
           </div>
           <TradingModeToggle />
           <span className={`text-xs px-2 py-0.5 rounded border font-mono ${

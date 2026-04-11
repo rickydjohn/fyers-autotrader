@@ -19,6 +19,7 @@ from routers import decision_log, market_data, pnl, positions, trades
 from routers.historical import router as historical_router
 from routers.trading_mode import router as trading_mode_router
 from routers.report import router as report_router
+from routers.health import router as health_router
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -76,6 +77,7 @@ app.include_router(decision_log.router, prefix=PREFIX)
 app.include_router(historical_router,   prefix=PREFIX)
 app.include_router(trading_mode_router, prefix=PREFIX)
 app.include_router(report_router,       prefix=PREFIX)
+app.include_router(health_router,       prefix=PREFIX)
 
 
 @app.get("/healthz")
