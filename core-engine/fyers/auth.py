@@ -8,6 +8,7 @@ Flow:
   4. APScheduler refreshes the token every 23 hours
 """
 
+import base64
 import json
 import logging
 import os
@@ -38,14 +39,23 @@ def _load_cached_token() -> Optional[str]:
     return None
 
 
+def _jwt_exp_utc(token: str) -> datetime:
+    """Decode the JWT exp claim and return it as a naive UTC datetime."""
+    payload = token.split(".")[1]
+    payload += "=" * (4 - len(payload) % 4)
+    exp = json.loads(base64.b64decode(payload))["exp"]
+    return datetime.utcfromtimestamp(exp)
+
+
 def _save_token(access_token: str) -> None:
     TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+    expires_at = _jwt_exp_utc(access_token)
     data = {
         "access_token": access_token,
-        "expires_at": (datetime.utcnow() + timedelta(hours=23)).isoformat(),
+        "expires_at": expires_at.isoformat(),
     }
     TOKEN_FILE.write_text(json.dumps(data))
-    logger.info("Fyers access token saved")
+    logger.info(f"Fyers access token saved (expires {expires_at.isoformat()} UTC)")
 
 
 def get_auth_url() -> str:
