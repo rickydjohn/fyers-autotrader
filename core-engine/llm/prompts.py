@@ -64,6 +64,9 @@ Symbol: {symbol}
 Current Price: ₹{price:.2f}
 Time: {timestamp} IST
 
+## Recent Price Action (last 12 × 5m candles)
+{candle_block}
+
 ## Intraday Technical Indicators
 CPR: BC=₹{bc:.2f}, TC=₹{tc:.2f}, Pivot=₹{pivot:.2f}
 CPR Width: {cpr_width_pct:.2f}% ({cpr_type})
@@ -98,6 +101,8 @@ Overall Sentiment: {sentiment_label} (score: {sentiment_score:.2f})
 
 ## Decision Rules
 You are a disciplined intraday equity trader analyzing NSE Indian markets.
+Before applying any rule below, read the ## Recent Price Action candle block above.
+Note the last 3–5 candles: are bodies growing or shrinking? Are buying/selling tails forming near CPR, PDH/PDL, VWAP, or the nearest S/R level? Is momentum accelerating or exhausting? Capture this in candle_summary before deciding — the candle context can confirm or invalidate what the indicator labels alone suggest.
 The CPR Width label above tells you the day type — use the matching ruleset.
 
 ### BREAKOUT OVERRIDE (applies on ANY day type — check this FIRST)
@@ -107,6 +112,7 @@ A confirmed PDH/PDL breakout overrides the CPR day-type classification entirely.
 - BUY  if: price > PDH * 1.005 AND ABOVE_CPR AND price above VWAP AND RSI between 45 and 84 + MACD not BEARISH — RSI cap extends further to 84 ONLY when all three (>0.5% above PDH + ABOVE_CPR + above VWAP) are confirmed simultaneously; assign confidence >= 0.82
 - Once price has closed above PDH in any scan, treat the breakout as confirmed for the rest of the session — do not revert to HOLD on subsequent scans unless RSI exceeds the applicable cap or price falls back below PDH
 - SELL if: price < PDL + price below VWAP + RSI between 20 and 55 (inclusive) + MACD not BULLISH — assign confidence >= 0.80; valid even on a WIDE CPR day
+- SELL only if PDL Breakdown status is CONFIRMED (price still below PDL now) — if status is FAILED (price recovered above PDL), treat as a bullish trap and output HOLD or BUY instead
 - HOLD — hard stop — if RSI > 84: output HOLD regardless of breakout; if RSI > 78 and breakout is NOT confirmed (price < PDH * 1.005 OR INSIDE/BELOW_CPR OR below VWAP): also output HOLD; RSI < 20: always HOLD
 - HOLD if: price is at PDH but has NOT closed above it (rejection)
 
@@ -195,9 +201,10 @@ Use the Options Market Structure block above to adjust confidence — do not cha
 
 Respond ONLY with a valid JSON object, no explanation outside the JSON:
 {{
+  "candle_summary": "One sentence on what the recent candles show — momentum direction, body/wick structure, and whether price action confirms or diverges from the trend.",
   "decision": "BUY",
   "confidence": 0.80,
-  "reasoning": "Single sentence citing day type, PDH breakout status, RSI, CPR position, VWAP, MACD, and any key OI factor (call wall / put wall / PCR) that influenced the decision.",
+  "reasoning": "Single sentence citing day type, PDH breakout status, RSI, CPR position, VWAP, MACD, candle momentum from your candle_summary, and any key OI factor (call wall / put wall / PCR) that influenced the decision.",
   "stop_loss": 0.00,
   "target": 0.00,
   "risk_reward": 0.00
@@ -238,6 +245,7 @@ def build_decision_prompt(
     pdh_pivot_confluence: bool = False,
     magnet_zones_block: str = "",
     options_oi_block: str = "",
+    candle_block: str = "",
 ) -> str:
     if day_type == "NARROW":
         cpr_type = "NARROW (trending day)"
@@ -259,7 +267,17 @@ def build_decision_prompt(
         pdh_breakout_status = "UNKNOWN (no previous day data)"
 
     if prev_day_low > 0 and day_low < prev_day_low:
-        pdl_breakdown_status = f"CONFIRMED (today low ₹{day_low:.2f} < PDL ₹{prev_day_low:.2f})"
+        if price > prev_day_low:
+            pdl_breakdown_status = (
+                f"FAILED — price dipped to ₹{day_low:.2f} below PDL ₹{prev_day_low:.2f} "
+                f"but has since recovered to ₹{price:.2f} (current price is ABOVE PDL). "
+                f"This is a bearish trap / bullish reversal — do NOT use this as a SELL signal."
+            )
+        else:
+            pdl_breakdown_status = (
+                f"CONFIRMED — today low ₹{day_low:.2f} < PDL ₹{prev_day_low:.2f} "
+                f"and current price ₹{price:.2f} is still below PDL."
+            )
     elif prev_day_low > 0:
         pdl_breakdown_status = f"NOT YET (today low ₹{day_low:.2f} > PDL ₹{prev_day_low:.2f})"
     else:
@@ -275,6 +293,8 @@ def build_decision_prompt(
         magnet_zones_block = "  No magnet zones identified — skip this section."
     if not options_oi_block:
         options_oi_block = "  No options data available yet — skip this section."
+    if not candle_block:
+        candle_block = "  No candle data available yet."
     return DECISION_PROMPT_TEMPLATE.format(
         historical_context_block=historical_context_block,
         symbol=symbol,
@@ -310,6 +330,7 @@ def build_decision_prompt(
         pdh_pivot_confluence="YES — PDH is near daily Pivot (strong zone)" if pdh_pivot_confluence else "no",
         magnet_zones_block=magnet_zones_block,
         options_oi_block=options_oi_block,
+        candle_block=candle_block,
         pdh_breakout_status=pdh_breakout_status,
         pdl_breakdown_status=pdl_breakdown_status,
     )
