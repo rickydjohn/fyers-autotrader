@@ -168,7 +168,9 @@ async def open_position(
     quantity = lot_size
 
     await redis_client.set(pending_key, "1", ex=30)
-    order_result = await _place_fyers_order(trade_symbol, side, quantity)
+    # We are always option buyers — the Fyers entry order is always BUY.
+    # The `side` field records directional intent (BUY=CE, SELL=PE) for position tracking.
+    order_result = await _place_fyers_order(trade_symbol, "BUY", quantity)
     if order_result is None:
         await redis_client.delete(pending_key)
         return None
@@ -305,8 +307,8 @@ async def close_position(
         return None
 
     pos = Position(**json.loads(pos_data))
-    close_side = "SELL" if pos.side == "BUY" else "BUY"
-    exit_order_result = await _place_fyers_order(pos.option_symbol or symbol, close_side, pos.quantity)
+    # We always bought to open, so we always sell to close.
+    exit_order_result = await _place_fyers_order(pos.option_symbol or symbol, "SELL", pos.quantity)
 
     # Poll for actual exit fill price from Fyers
     actual_exit_price = exit_price  # fallback: price from exit_rules (e.g. last LTP)
