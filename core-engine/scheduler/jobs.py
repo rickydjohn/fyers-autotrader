@@ -30,6 +30,7 @@ from indicators.technicals import (
     calculate_macd,
     calculate_rsi,
     calculate_vwap,
+    format_candles_for_prompt,
 )
 from indicators.historical_sr import compute_sr_levels, format_sr_for_prompt
 from llm.decision import make_decision
@@ -162,6 +163,7 @@ async def _process_symbol(symbol: str, redis_client: aioredis.Redis) -> None:
     ema_9 = calculate_ema(candles, 9)
     ema_21 = calculate_ema(candles, 21)
     vwap = calculate_vwap(candles)
+    candle_block = format_candles_for_prompt(candles, lookback=12)
     cpr_signal = get_cpr_signal(quote["ltp"], cpr)
 
     # Intraday range breakout detection
@@ -287,6 +289,7 @@ async def _process_symbol(symbol: str, redis_client: aioredis.Redis) -> None:
         magnet_zones=magnet_zones,
         peer_signal=peer_signal,
         options_oi=options_oi,
+        candle_block=candle_block,
     )
 
     # Store final (gated) decision for downstream symbols to use as peer signal

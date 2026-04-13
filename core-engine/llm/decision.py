@@ -206,6 +206,7 @@ async def make_decision(
     magnet_zones: Optional[dict] = None,
     peer_signal: Optional[dict] = None,
     options_oi: Optional[dict] = None,
+    candle_block: str = "",
 ) -> Optional[LLMDecision]:
     """Build prompt (with historical context), call LLM, parse, publish to Redis and DB."""
     ind: TechnicalIndicators = snapshot.indicators
@@ -267,6 +268,7 @@ async def make_decision(
         pdh_pivot_confluence=ind.pdh_pivot_confluence,
         magnet_zones_block=magnet_block,
         options_oi_block=oi_block,
+        candle_block=candle_block,
     )
 
     logger.info(f"Querying Ollama for {snapshot.symbol}...")
