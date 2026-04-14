@@ -260,6 +260,14 @@ async def _process_symbol(symbol: str, redis_client: aioredis.Redis) -> None:
     logger.info(f"[SCAN OK] {symbol}: snapshot written to Redis (ltp={quote['ltp']})")
 
     # ── Fetch historical context and make LLM decision ────────────────────────
+    # Skip LLM after session close — candle/indicator data above is still
+    # persisted so the chart has a complete view of the trading day.
+    _now = datetime.now(IST)
+    _close_minutes = settings.session_close_hour * 60 + settings.session_close_minute
+    if _now.hour * 60 + _now.minute >= _close_minutes:
+        logger.debug(f"[SCAN SKIP LLM] {symbol}: past session close, skipping LLM decision")
+        return
+
     historical_context = _context_cache.get(symbol)
     sr_levels = _sr_cache.get(symbol, [])
     magnet_zones = _magnets_cache.get(symbol)
