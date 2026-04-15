@@ -139,21 +139,29 @@ async def refresh_context_cache(symbol: str) -> None:
 
 def _get_candles_cached(symbol: str, limit: int = 100) -> List[OHLCBar]:
     """
-    Return 5m candles for symbol, fetching from Fyers only when a new bar has closed.
-    5m bars close on :00/:05/:10/... boundaries — within a 5m window the data is
-    identical, so we return the cached copy and skip the blocking HTTP call.
+    Return candles for symbol at settings.candle_interval, fetching from Fyers only
+    when a new bar has closed. The bar boundary is derived from the interval so that
+    within a single bar window the cached copy is returned and the blocking HTTP call
+    is skipped.
     """
     global _candle_cache
+    interval = settings.candle_interval
     now = datetime.now(IST)
-    # Floor to the current 5m bar open timestamp
-    bar_ts = now.replace(second=0, microsecond=0)
-    bar_ts = bar_ts - timedelta(minutes=bar_ts.minute % 5)
+    base = now.replace(second=0, microsecond=0)
+
+    # Derive bar width in minutes for boundary alignment
+    _interval_minutes = {
+        "1": 1, "2": 2, "3": 3, "5": 5, "10": 10, "15": 15, "30": 30, "60": 60,
+        "1m": 1, "2m": 2, "3m": 3, "5m": 5, "10m": 10, "15m": 15, "30m": 30,
+    }
+    bar_width = _interval_minutes.get(interval, 1)
+    bar_ts = base - timedelta(minutes=base.minute % bar_width)
 
     cached = _candle_cache.get(symbol)
     if cached and cached["bar_ts"] == bar_ts:
         return cached["candles"]
 
-    candles = get_historical_candles(symbol, interval="5m", limit=limit)
+    candles = get_historical_candles(symbol, interval=interval, limit=limit)
     _candle_cache[symbol] = {"candles": candles, "bar_ts": bar_ts}
     return candles
 
