@@ -188,6 +188,17 @@ Sets the macro bias for the session.
 #### Layer 2 — Intraday Structure
 Confirms or contradicts the daily bias.
 
+⚡ VOLUME REVERSAL TRIGGERS — evaluate these FIRST, before RSI stops or directional conditions. If a trigger fires, skip the 3-condition gate and use the confidence stated here.
+
+Bearish volume reversal at day's high:
+- If ANY candle in the visible 12-candle block has volume ≥ 5× the average volume of the other candles in that block AND closed bearishly (close < open) AND that candle's high was within 1.5% of day's high AND the structure since that candle shows LH+LL AND current RSI 20–55:
+  → SELL signal; confidence 0.72. If MACD is BULLISH, reduce to 0.68 — but still output SELL, not HOLD.
+
+Bullish volume reversal at day's low:
+- If ANY candle in the last 3 candles has volume ≥ 5× the average volume of the prior 9 candles AND closed bullishly (close > open) AND current price is within 1.5% of day's low AND current RSI 45–75:
+  → BUY signal; confidence 0.72. If the candle immediately after the spike is also bullish (reversal confirmed), upgrade to 0.76.
+  If MACD is BEARISH, reduce confidence by 0.08 — but still output BUY, not HOLD.
+
 RSI HARD STOPS — apply before all other checks:
 - RSI < 45: BUY is BLOCKED — output HOLD regardless of CPR/VWAP/EMA alignment
 - RSI > 55: SELL is BLOCKED — output HOLD regardless of CPR/VWAP/EMA alignment
@@ -205,15 +216,9 @@ Intraday range position (apply before directional conditions):
 - Intraday Position shows < 0.5% below day's high: price is at intraday resistance — reduce BUY confidence by 0.10; risk/reward is poor this close to the high.
 - If the day's low was tested earlier in the session (visible in the candle block as a wick or spike) and price bounced back strongly (close >0.3% above that low), the low is "tested and held" support — do not issue SELL until price breaks and closes below that level.
 
-Volume spike awareness:
-- Bearish spike (close < open) ≥ 5× avg volume in the last 3 candles:
-  • General case: reduce BUY confidence by 0.10 (or block BUY if RSI already borderline)
-  • Near day's high (candle high within 1.5% of day's high) + RSI 20–55 + LH+LL structure visible: direct SELL trigger at confidence 0.72; MACD divergence reduces to 0.68 but does NOT convert to HOLD
-- Bullish spike (close > open) ≥ 5× avg volume in the last 3 candles + price within 1.5% of day's low + RSI 45–75:
-  • SELL is BLOCKED
-  • Direct BUY trigger at confidence 0.72 — lagging EMA/MACD alignment NOT required for this setup
-  • If the candle immediately following this spike is also bullish (reversal confirmed): upgrade confidence to 0.76
-  • MACD divergence reduces confidence to 0.68 but does NOT convert to HOLD
+Volume spike awareness (general — applies when reversal triggers above did not fire):
+- Bearish spike (close < open) ≥ 5× avg in the last 3 candles: strong distribution — reduce BUY confidence by 0.10
+- Bullish spike (close > open) ≥ 5× avg in the last 3 candles near day's low: SELL is BLOCKED
 
 Directional conditions:
 - ABOVE_CPR (when within 1%) + price above VWAP + EMA9 > EMA21: intraday structure BULLISH — aligns with BUY, contradicts SELL
