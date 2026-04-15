@@ -186,27 +186,44 @@ Sets the macro bias for the session.
 
 #### Layer 2 — Intraday Structure
 Confirms or contradicts the daily bias.
-- ABOVE_CPR + price above VWAP + EMA9 > EMA21: intraday structure BULLISH — aligns with BUY, contradicts SELL
-- BELOW_CPR + price below VWAP + EMA9 < EMA21: intraday structure BEARISH — aligns with SELL, contradicts BUY
+
+RSI HARD STOPS — apply before all other checks:
+- RSI < 45: BUY is BLOCKED — output HOLD regardless of CPR/VWAP/EMA alignment
+- RSI > 55: SELL is BLOCKED — output HOLD regardless of CPR/VWAP/EMA alignment
+- RSI > 78 or RSI < 20: HOLD regardless of all signals
+- Valid BUY range: RSI 45–75 (must be satisfied; not just "nice to have")
+- Valid SELL range: RSI 20–55 (must be satisfied; not just "nice to have")
+
+CPR relevance qualifier (apply before using ABOVE/BELOW_CPR as a confirmation):
+- ABOVE_CPR only counts as a Layer 2 BUY confirmation when price is within 1.0% of CPR TC. If price is more than 1% above TC, the market has been above CPR for hours — it carries no fresh intraday information and must NOT be counted as a confirmation signal.
+- BELOW_CPR only counts as a Layer 2 SELL confirmation when price is within 1.0% of CPR BC.
+- When CPR is irrelevant (price too far away), replace it with: is price above or below VWAP by >0.5%? That becomes the structural anchor instead.
+
+Volume spike awareness:
+- If any candle in the last 3 candles has volume ≥ 5× the average volume of the prior 9 candles AND closed bearishly (close < open): strong distribution — reduce BUY confidence by 0.10 (or block BUY if RSI already borderline)
+- If such a candle closed bullishly: strong accumulation — reduce SELL confidence by 0.10
+
+Directional conditions:
+- ABOVE_CPR (when within 1%) + price above VWAP + EMA9 > EMA21: intraday structure BULLISH — aligns with BUY, contradicts SELL
+- BELOW_CPR (when within 1%) + price below VWAP + EMA9 < EMA21: intraday structure BEARISH — aligns with SELL, contradicts BUY
 - INSIDE_CPR: no directional edge — HOLD unless Layer 1 and Layer 3 both strongly agree on direction
-- RSI 45–75: valid BUY zone; RSI 20–55: valid SELL zone; RSI > 78 or RSI < 20: HOLD regardless of other signals
-- MACD BULLISH + SELL signal: override to HOLD — momentum contradiction; MACD BEARISH + BUY signal: override to HOLD
+- MACD BULLISH + SELL signal: override to HOLD; MACD BEARISH + BUY signal: override to HOLD
 - Range Breakout = BREAKOUT_HIGH (consolidation_pct < 0.40%): high-probability BUY if above VWAP + RSI 45-75 + MACD not BEARISH; confidence 0.75-0.85
 - Range Breakout = BREAKOUT_LOW: high-probability SELL if below VWAP + RSI 20-55 + MACD not BULLISH; confidence 0.75-0.85
-- Range Breakout = NONE: no breakout setup — apply standard intraday conditions
+- Range Breakout = NONE: no breakout setup — apply standard conditions above
 
 #### Layer 3 — Price Action (from candle_summary)
 Final confirmation or veto.
 - HH+HL structure + large bodies + clean closes: +0.05 to BUY confidence
-- LH+LL structure + large bodies + clean closes: +0.05 to SELL confidence
+- LH+LL structure: BEARISH — this is a hard veto on BUY if RSI is also below 55; otherwise reduce BUY confidence by 0.08
 - Rejection wicks at resistance (upper wicks > body at resistance): HOLD regardless of Layer 1/2 BUY signal
 - Rejection wicks at support (lower wicks > body at support): HOLD regardless of Layer 1/2 SELL signal
 - Candle pattern at key level: apply CANDLE PATTERN SIGNALS adjustments above
 
 #### Minimum Conditions for BUY/SELL
-- BUY: Layer 1 neutral/bullish + at least 3 of (ABOVE_CPR, above VWAP, EMA9>EMA21, RSI 45-75, MACD not BEARISH) + Layer 3 no rejection; confidence 0.70-0.85
-- SELL: Layer 1 neutral/bearish + at least 3 of (BELOW_CPR, below VWAP, EMA9<EMA21, RSI 20-55, MACD not BULLISH) + Layer 3 no rejection; confidence 0.70-0.85
-- HOLD: fewer than 3 Layer 2 conditions align, or Layer 3 shows rejection/exhaustion, or Layer 1 directly contradicts the signal
+- BUY: RSI 45–75 (hard requirement) + Layer 1 neutral/bullish + at least 3 of (ABOVE_CPR within 1%, above VWAP, EMA9>EMA21, MACD not BEARISH) + Layer 3 no rejection; confidence 0.70-0.85
+- SELL: RSI 20–55 (hard requirement) + Layer 1 neutral/bearish + at least 3 of (BELOW_CPR within 1%, below VWAP, EMA9<EMA21, MACD not BULLISH) + Layer 3 no rejection; confidence 0.70-0.85
+- HOLD: RSI outside valid range, or fewer than 3 Layer 2 conditions align, or Layer 3 shows rejection/exhaustion, or Layer 1 directly contradicts
 - Confidence 0.55–0.69 when exactly 2 conditions align; always output HOLD when fewer than 2 align
 
 ### HISTORICAL S/R CONFLUENCE (multi-year daily zones)
