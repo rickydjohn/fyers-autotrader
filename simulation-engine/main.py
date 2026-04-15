@@ -426,6 +426,7 @@ async def _check_stop_targets() -> None:
 
             # Index indicators for milestone confirmation (from full market snapshot)
             indicators: dict = {}
+            market_context: dict = {}
             market_full_raw = await redis_client.get(f"market:{symbol}")
             if market_full_raw:
                 mfull = json.loads(market_full_raw)
@@ -437,6 +438,16 @@ async def _check_stop_targets() -> None:
                     "macd":        ind.get("macd"),
                     "macd_signal": ind.get("macd_signal"),
                 }
+                market_context = {
+                    "day_high":                  ind.get("day_high", 0),
+                    "day_low":                   ind.get("day_low", 0),
+                    "prev_day_high":             ind.get("prev_day_high", 0),
+                    "prev_day_low":              ind.get("prev_day_low", 0),
+                    "nearest_resistance":        ind.get("nearest_resistance", 0),
+                    "nearest_resistance_label":  ind.get("nearest_resistance_label", ""),
+                    "nearest_support":           ind.get("nearest_support", 0),
+                    "nearest_support_label":     ind.get("nearest_support_label", ""),
+                }
 
             # Track peak option price (update pos in memory; write-back deferred below)
             peak_updated = False
@@ -445,7 +456,7 @@ async def _check_stop_targets() -> None:
                 peak_updated = True
 
             should_exit, reason, exit_price, new_milestone = check_exit(
-                pos, underlying_ltp, option_ltp, greeks, indicators, now
+                pos, underlying_ltp, option_ltp, greeks, indicators, now, market_context
             )
 
             if should_exit:

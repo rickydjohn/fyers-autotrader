@@ -8,17 +8,20 @@ trigger exits directly.
 Rule priority:
   1. SESSION_CLOSE  — 15:00 IST force close (always applies)
   2. STOP_LOSS      — option LTP ≤ entry × 0.90  (−10% hard stop)
-  3. DELTA_ERODED   — |delta| < 0.20 (option far OTM, premium bleeding pointlessly)
-  4. IV_CRUSH       — IV fell >20% from entry (vega working against us)
-  5. TRAIL_FLOOR    — option LTP ≤ peak − (entry × 5%), active after trail engaged
-  6. MILESTONE      — TRENDING day: at +15% and every +10% of entry thereafter:
+  3. PA_RESISTANCE  — CE: underlying within 0.20% of nearest resistance/day_high/PDH
+     PA_SUPPORT     — PE: underlying within 0.20% of nearest support/day_low/PDL
+                      Only fires when position is currently in profit (locks in gains)
+  4. DELTA_ERODED   — |delta| < 0.20 (option far OTM, premium bleeding pointlessly)
+  5. IV_CRUSH       — IV fell >20% from entry (vega working against us)
+  6. TRAIL_FLOOR    — option LTP ≤ peak − (entry × 5%), active after trail engaged
+  7. MILESTONE      — TRENDING day: at +15% and every +10% of entry thereafter:
                          indicators confirmed  → trail continues (no exit)
                          indicators not confirmed → lock in gains at milestone (exit)
                        RANGING day: at +10%, always exit immediately (no trail)
 
 For non-option trades (underlying/equity directly):
-  7. STOPPED        — underlying LTP crossed stop_loss
-  8. CLOSED         — underlying LTP crossed target
+  8. STOPPED        — underlying LTP crossed stop_loss
+  9. CLOSED         — underlying LTP crossed target
 
 Rationale for premium-first:
   Index levels are wrong for options because theta decay, IV collapse, and
@@ -51,6 +54,10 @@ TRAIL_OFFSET_PCT: float       = 0.05   # trail floor = peak_price × (1 − 5%)
 
 DELTA_EROSION_MIN: float   = 0.20   # exit if |delta| drops below this
 IV_CRUSH_THRESHOLD: float  = 0.80   # exit if iv < entry_iv × this
+
+# Price action exit thresholds
+PA_RESISTANCE_PROXIMITY: float = 0.0020  # exit CE if underlying within 0.20% of resistance
+PA_SUPPORT_PROXIMITY: float    = 0.0020  # exit PE if underlying within 0.20% of support
 
 
 def _indicators_confirm(side: str, indicators: dict) -> bool:
@@ -94,6 +101,7 @@ def check_exit(
     greeks: Optional[dict],
     indicators: Optional[dict] = None,
     now: Optional[datetime] = None,
+    market_context: Optional[dict] = None,
 ) -> Tuple[bool, str, float, int]:
     """
     Evaluate all exit conditions for an open position.
@@ -107,6 +115,10 @@ def check_exit(
         indicators:     Index indicators for milestone confirmation
                         (keys: rsi, vwap, ltp, macd, macd_signal).
         now:            Current IST datetime (defaults to datetime.now(IST)).
+        market_context: Current structural price levels from market snapshot
+                        (day_high, day_low, prev_day_high, prev_day_low,
+                         nearest_resistance, nearest_resistance_label,
+                         nearest_support, nearest_support_label).
 
     Returns:
         (should_exit, exit_reason, exit_price, new_milestone_count)
@@ -117,6 +129,8 @@ def check_exit(
         now = datetime.now(IST)
     if indicators is None:
         indicators = {}
+    if market_context is None:
+        market_context = {}
 
     is_option_position = bool(pos.option_symbol and pos.entry_option_price > 0)
     milestone          = pos.milestone_count
@@ -163,8 +177,48 @@ def check_exit(
             )
             return True, "STOP_LOSS", sl_floor, milestone
 
+        # ── Rule 3: Price action — resistance/support level reached ──────────
+        if market_context and option_ltp and option_ltp > pos.entry_option_price:
+            # Only fire when the position is currently in profit — no point
+            # locking in a loss at a level; let the premium stop handle that.
+            is_ce = pos.side == "BUY"
+
+            # Levels to check: nearest S/R first, then day extremes, then PDH/PDL
+            if is_ce:
+                resistance_levels = [
+                    (market_context.get("nearest_resistance", 0),
+                     market_context.get("nearest_resistance_label", "resistance")),
+                    (market_context.get("day_high", 0),     "day_high"),
+                    (market_context.get("prev_day_high", 0), "PDH"),
+                ]
+                for level, label in resistance_levels:
+                    if level > 0 and underlying_ltp >= level * (1 - PA_RESISTANCE_PROXIMITY):
+                        logger.info(
+                            f"[EXIT] PA_RESISTANCE — {pos.symbol}: "
+                            f"underlying ₹{underlying_ltp:.2f} at {label} ₹{level:.2f} "
+                            f"(within {PA_RESISTANCE_PROXIMITY*100:.2f}%), "
+                            f"option ₹{option_ltp:.2f} > entry ₹{pos.entry_option_price:.2f}, locking in profit"
+                        )
+                        return True, "PA_RESISTANCE", option_ltp, milestone
+            else:
+                support_levels = [
+                    (market_context.get("nearest_support", 0),
+                     market_context.get("nearest_support_label", "support")),
+                    (market_context.get("day_low", 0),     "day_low"),
+                    (market_context.get("prev_day_low", 0), "PDL"),
+                ]
+                for level, label in support_levels:
+                    if level > 0 and underlying_ltp <= level * (1 + PA_SUPPORT_PROXIMITY):
+                        logger.info(
+                            f"[EXIT] PA_SUPPORT — {pos.symbol}: "
+                            f"underlying ₹{underlying_ltp:.2f} at {label} ₹{level:.2f} "
+                            f"(within {PA_SUPPORT_PROXIMITY*100:.2f}%), "
+                            f"option ₹{option_ltp:.2f} > entry ₹{pos.entry_option_price:.2f}, locking in profit"
+                        )
+                        return True, "PA_SUPPORT", option_ltp, milestone
+
         if greeks:
-            # ── Rule 3: Delta erosion ─────────────────────────────────────────
+            # ── Rule 4: Delta erosion ─────────────────────────────────────────
             delta = abs(float(greeks.get("delta", 1.0) or 1.0))
             # delta == 1.0 default means "data missing — don't trigger"
             if 0 < delta < DELTA_EROSION_MIN:
@@ -174,7 +228,7 @@ def check_exit(
                 )
                 return True, "DELTA_ERODED", option_ltp, milestone
 
-            # ── Rule 4: IV crush ──────────────────────────────────────────────
+            # ── Rule 5: IV crush ──────────────────────────────────────────────
             iv = float(greeks.get("iv", 0) or 0)
             if iv > 0 and pos.entry_iv > 0 and iv < pos.entry_iv * IV_CRUSH_THRESHOLD:
                 logger.info(
