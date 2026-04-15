@@ -56,6 +56,11 @@ _last_decisions: dict = {}  # symbol -> {"decision": str, "confidence": float, "
 _CROSS_SYMBOL_LEAD = "NSE:NIFTY50-INDEX"
 # Maximum age (seconds) for a peer decision to be considered valid for gating
 _PEER_SIGNAL_MAX_AGE_S = 900  # 15 minutes
+# Per-symbol 5m candle cache — only re-fetches when a new 5m bar has closed.
+# 5m bars close at :00/:05/:10/... so 4 out of 5 scans would otherwise fetch
+# identical data. Caching cuts get_historical_candles calls by 80% and
+# reduces event-loop blocking proportionally.
+_candle_cache: dict = {}  # symbol -> {"candles": List[OHLCBar], "bar_ts": datetime}
 
 
 def _is_market_open() -> bool:
@@ -132,6 +137,27 @@ async def refresh_context_cache(symbol: str) -> None:
         logger.debug(f"No historical context available for {symbol} yet")
 
 
+def _get_candles_cached(symbol: str, limit: int = 100) -> List[OHLCBar]:
+    """
+    Return 5m candles for symbol, fetching from Fyers only when a new bar has closed.
+    5m bars close on :00/:05/:10/... boundaries — within a 5m window the data is
+    identical, so we return the cached copy and skip the blocking HTTP call.
+    """
+    global _candle_cache
+    now = datetime.now(IST)
+    # Floor to the current 5m bar open timestamp
+    bar_ts = now.replace(second=0, microsecond=0)
+    bar_ts = bar_ts - timedelta(minutes=bar_ts.minute % 5)
+
+    cached = _candle_cache.get(symbol)
+    if cached and cached["bar_ts"] == bar_ts:
+        return cached["candles"]
+
+    candles = get_historical_candles(symbol, interval="5m", limit=limit)
+    _candle_cache[symbol] = {"candles": candles, "bar_ts": bar_ts}
+    return candles
+
+
 async def _process_symbol(symbol: str, redis_client: aioredis.Redis) -> None:
     """Fetch data, compute indicators, get LLM decision for one symbol."""
     logger.info(f"Processing {symbol}...")
@@ -141,7 +167,7 @@ async def _process_symbol(symbol: str, redis_client: aioredis.Redis) -> None:
         logger.error(f"[SCAN SKIP] {symbol}: get_quote returned None — Fyers auth issue or symbol unsupported")
         return
 
-    candles = get_historical_candles(symbol, interval="5m", limit=100)
+    candles = _get_candles_cached(symbol, limit=100)
     if len(candles) < 30:
         logger.error(f"[SCAN SKIP] {symbol}: only {len(candles)} candles returned (need 30) — insufficient Fyers history")
         return
