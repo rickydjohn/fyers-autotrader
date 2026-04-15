@@ -15,9 +15,11 @@ interface Props {
   height?: number
   cprLevels?: { bc: number; tc: number; pivot: number }
   pivots?: { r1: number; r2: number; s1: number; s2: number }
+  nearestResistance?: { price: number; label: string }
+  nearestSupport?: { price: number; label: string }
 }
 
-export function CandlestickChart({ candles, trades = [], height = 400, cprLevels, pivots }: Props) {
+export function CandlestickChart({ candles, trades = [], height = 400, cprLevels, pivots, nearestResistance, nearestSupport }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
@@ -150,6 +152,32 @@ export function CandlestickChart({ candles, trades = [], height = 400, cprLevels
       )
     }
 
+    if (nearestResistance?.price && candleSeriesRef.current) {
+      priceLineRefsRef.current.push(
+        candleSeriesRef.current.createPriceLine({
+          price: nearestResistance.price,
+          color: '#ff6b6b',
+          lineWidth: 2,
+          lineStyle: 0,
+          title: `R: ${nearestResistance.label}`,
+          axisLabelVisible: true,
+        }),
+      )
+    }
+
+    if (nearestSupport?.price && candleSeriesRef.current) {
+      priceLineRefsRef.current.push(
+        candleSeriesRef.current.createPriceLine({
+          price: nearestSupport.price,
+          color: '#51cf66',
+          lineWidth: 2,
+          lineStyle: 0,
+          title: `S: ${nearestSupport.label}`,
+          axisLabelVisible: true,
+        }),
+      )
+    }
+
     // Trade markers
     if (trades.length) {
       const markers = trades
@@ -164,7 +192,7 @@ export function CandlestickChart({ candles, trades = [], height = 400, cprLevels
         }))
       candleSeriesRef.current.setMarkers(markers)
     }
-  }, [candles, trades, cprLevels, pivots])
+  }, [candles, trades, cprLevels, pivots, nearestResistance, nearestSupport])
 
   return <div ref={containerRef} className="w-full rounded-lg overflow-hidden" style={{ height }} />
 }

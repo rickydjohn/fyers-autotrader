@@ -286,6 +286,14 @@ export default function App() {
               height={380}
               cprLevels={currentData?.indicators?.cpr}
               pivots={currentData?.indicators?.pivots}
+              nearestResistance={currentData?.indicators?.nearest_resistance ? {
+                price: currentData.indicators.nearest_resistance,
+                label: currentData.indicators.nearest_resistance_label ?? 'R',
+              } : undefined}
+              nearestSupport={currentData?.indicators?.nearest_support ? {
+                price: currentData.indicators.nearest_support,
+                label: currentData.indicators.nearest_support_label ?? 'S',
+              } : undefined}
             />
           </div>
 
