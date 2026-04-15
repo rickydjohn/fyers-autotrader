@@ -307,8 +307,21 @@ async def close_position(
         return None
 
     pos = Position(**json.loads(pos_data))
+    exit_symbol = pos.option_symbol or symbol
+
     # We always bought to open, so we always sell to close.
-    exit_order_result = await _place_fyers_order(pos.option_symbol or symbol, "SELL", pos.quantity)
+    exit_order_result = await _place_fyers_order(exit_symbol, "SELL", pos.quantity)
+
+    # If the SELL order failed, do NOT clear the position from Redis.
+    # The exit watcher runs every 5s and will re-trigger close_position on the
+    # next cycle, giving the order another attempt (proxy hiccup, transient error).
+    # Fyers auto-squares intraday positions at EOD so the risk is bounded.
+    if exit_order_result is None:
+        logger.error(
+            f"[EXIT FAILED] SELL order for {exit_symbol} rejected by Fyers — "
+            f"position kept open in Redis, will retry on next watcher cycle."
+        )
+        return None
 
     # Poll for actual exit fill price from Fyers
     actual_exit_price = exit_price  # fallback: price from exit_rules (e.g. last LTP)
