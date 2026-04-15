@@ -58,6 +58,122 @@ def format_options_oi_block(oi: Optional[Dict[str, Any]]) -> str:
     )
 
 
+def compute_trading_gates(
+    rsi: float,
+    price: float,
+    day_low: float,
+    day_high: float,
+    macd_signal: str,
+    recent_candles: List[Dict[str, Any]],
+) -> Dict[str, str]:
+    """Pre-compute BUY gate, SELL gate, and volume reversal signal for the prompt.
+
+    Returns a dict with keys: buy_gate, sell_gate, volume_signal.
+    Values are human-readable strings injected directly into the prompt template.
+    """
+    buy_gate_parts: List[str] = []
+    sell_gate_parts: List[str] = []
+
+    # RSI hard stops
+    if rsi < 45:
+        buy_gate_parts.append(f"BLOCKED — RSI {rsi:.1f} < 45")
+    if rsi > 55:
+        sell_gate_parts.append(f"BLOCKED — RSI {rsi:.1f} > 55")
+    if rsi > 78 or rsi < 20:
+        buy_gate_parts.append(f"BLOCKED — RSI {rsi:.1f} extreme")
+        sell_gate_parts.append(f"BLOCKED — RSI {rsi:.1f} extreme")
+
+    # Day's low proximity (< 0.5% → SELL blocked)
+    day_low_dist_pct = ((price - day_low) / day_low * 100) if day_low > 0 else 99.0
+    if day_low_dist_pct < 0.5:
+        sell_gate_parts.append(
+            f"BLOCKED — price {day_low_dist_pct:.2f}% above day's low (support floor)"
+        )
+
+    buy_gate  = "; ".join(buy_gate_parts)  if buy_gate_parts  else "OPEN"
+    sell_gate = "; ".join(sell_gate_parts) if sell_gate_parts else "OPEN"
+
+    # Volume reversal signal
+    volume_signal = "NONE"
+    if len(recent_candles) >= 4:
+        candles12 = recent_candles[-12:]
+
+        # --- Bearish reversal near day's high: check full visible window ---
+        if "BLOCKED" not in sell_gate:
+            vols = [float(c.get("volume", 0) or 0) for c in candles12]
+            for idx, c in enumerate(candles12):
+                c_vol  = float(c.get("volume", 0) or 0)
+                c_open = float(c.get("open",   0) or 0)
+                c_close= float(c.get("close",  0) or 0)
+                c_high = float(c.get("high",   0) or 0)
+                other_vols = [v for i, v in enumerate(vols) if i != idx]
+                avg_vol = sum(other_vols) / len(other_vols) if other_vols else 0
+                if (avg_vol > 0 and c_vol >= 5 * avg_vol
+                        and c_close < c_open
+                        and day_high > 0 and (day_high - c_high) / day_high * 100 <= 1.5
+                        and 20 <= rsi <= 55):
+                    # Check LH+LL structure after this candle
+                    after = candles12[idx + 1:] if idx + 1 < len(candles12) else []
+                    lhll = len(after) == 0 or all(
+                        after[i].get("high", 0) <= candles12[idx + i].get("high", 0)
+                        for i in range(len(after))
+                    )
+                    multiplier = c_vol / avg_vol
+                    time_str = str(c.get("time", ""))
+                    h, m = 0, 0
+                    if "T" in time_str:
+                        t = time_str.split("T")[1][:5].split(":")
+                        h, m = int(t[0]) + 5, int(t[1]) + 30
+                        if m >= 60:
+                            h += 1; m -= 60
+                    label = f"{h:02d}:{m:02d}" if h else "??"
+                    base_conf = 0.68 if macd_signal == "BULLISH" else 0.72
+                    volume_signal = (
+                        f"BEARISH_AT_HIGH — {label} candle {multiplier:.1f}× avg vol, "
+                        f"bearish, near day's high; SELL confidence {base_conf:.2f}"
+                    )
+                    break  # first qualifying candle wins
+
+        # --- Bullish reversal near day's low: check last 3 candles ---
+        if volume_signal == "NONE" and "BLOCKED" not in buy_gate:
+            last3  = recent_candles[-3:]
+            prior9 = recent_candles[-12:-3] if len(recent_candles) >= 12 else recent_candles[:-3]
+            avg9   = (sum(float(c.get("volume", 0) or 0) for c in prior9) / len(prior9)) if prior9 else 0
+            for i, c in enumerate(last3):
+                c_vol   = float(c.get("volume", 0) or 0)
+                c_open  = float(c.get("open",   0) or 0)
+                c_close = float(c.get("close",  0) or 0)
+                if (avg9 > 0 and c_vol >= 5 * avg9
+                        and c_close > c_open
+                        and day_low > 0 and day_low_dist_pct <= 1.5
+                        and 45 <= rsi <= 75):
+                    confirmed = (
+                        i + 1 < len(last3)
+                        and float(last3[i + 1].get("close", 0)) > float(last3[i + 1].get("open", 0))
+                    )
+                    multiplier = c_vol / avg9
+                    time_str = str(c.get("time", ""))
+                    h, m = 0, 0
+                    if "T" in time_str:
+                        t = time_str.split("T")[1][:5].split(":")
+                        h, m = int(t[0]) + 5, int(t[1]) + 30
+                        if m >= 60:
+                            h += 1; m -= 60
+                    label = f"{h:02d}:{m:02d}" if h else "??"
+                    base_conf = 0.76 if confirmed else 0.72
+                    if macd_signal == "BEARISH":
+                        base_conf -= 0.08
+                    volume_signal = (
+                        f"BULLISH_AT_LOW — {label} candle {multiplier:.1f}× avg vol, "
+                        f"bullish, near day's low"
+                        + (" + next candle confirmed" if confirmed else "")
+                        + f"; BUY confidence {base_conf:.2f}"
+                    )
+                    break
+
+    return {"buy_gate": buy_gate, "sell_gate": sell_gate, "volume_signal": volume_signal}
+
+
 def format_daily_candles_for_prompt(candles: List[Dict[str, Any]]) -> str:
     """Format a list of daily OHLCV dicts into a prompt-readable block.
 
@@ -125,6 +241,11 @@ EMA(9): ₹{ema_9:.2f} | EMA(21): ₹{ema_21:.2f}
 MACD Signal: {macd_signal}
 VWAP: ₹{vwap:.2f}
 
+## Pre-Computed Trading Gates (Python-derived — treat as facts, not hints)
+BUY Gate:  {buy_gate}
+SELL Gate: {sell_gate}
+Volume Signal: {volume_signal}
+
 ## Historical Support/Resistance (multi-year daily chart)
 Zones where price has historically reversed — derived from {years_of_data} of daily swing data.
 {sr_levels_block}
@@ -141,6 +262,13 @@ Overall Sentiment: {sentiment_label} (score: {sentiment_score:.2f})
 
 ## Decision Rules
 You are a disciplined intraday equity trader analyzing NSE Indian markets.
+
+### STEP 0 — TRADING GATES (mandatory — check before any other rule)
+Read the ## Pre-Computed Trading Gates block above. These are facts computed by Python, not suggestions.
+- If BUY Gate says BLOCKED: you MUST NOT output BUY regardless of any indicator alignment.
+- If SELL Gate says BLOCKED: you MUST NOT output SELL regardless of any indicator alignment.
+- If Volume Signal is not NONE: use that direction and confidence as your starting point. Adjust by ±0.08 max for Layer 1 or Layer 3 factors. Do not override to HOLD unless a hard RSI stop applies.
+- If all gates are OPEN and Volume Signal is NONE: proceed to Steps 1–2 and the three-layer framework.
 
 ### STEP 1 — PRICE ACTION READ (mandatory — complete before any rule)
 Read the ## Recent Price Action candle block and answer all four questions. Capture answers in candle_summary. Your decision MUST be consistent with candle_summary — if they contradict, candle_summary overrides indicators.
@@ -188,16 +316,10 @@ Sets the macro bias for the session.
 #### Layer 2 — Intraday Structure
 Confirms or contradicts the daily bias.
 
-⚡ VOLUME REVERSAL TRIGGERS — evaluate these FIRST, before RSI stops or directional conditions. If a trigger fires, skip the 3-condition gate and use the confidence stated here.
-
-Bearish volume reversal at day's high:
-- If ANY candle in the visible 12-candle block has volume ≥ 5× the average volume of the other candles in that block AND closed bearishly (close < open) AND that candle's high was within 1.5% of day's high AND the structure since that candle shows LH+LL AND current RSI 20–55:
-  → SELL signal; confidence 0.72. If MACD is BULLISH, reduce to 0.68 — but still output SELL, not HOLD.
-
-Bullish volume reversal at day's low:
-- If ANY candle in the last 3 candles has volume ≥ 5× the average volume of the prior 9 candles AND closed bullishly (close > open) AND current price is within 1.5% of day's low AND current RSI 45–75:
-  → BUY signal; confidence 0.72. If the candle immediately after the spike is also bullish (reversal confirmed), upgrade to 0.76.
-  If MACD is BEARISH, reduce confidence by 0.08 — but still output BUY, not HOLD.
+⚡ VOLUME REVERSAL TRIGGERS — already evaluated in STEP 0 via the Volume Signal gate. This section explains the logic behind that pre-computation.
+- BEARISH_AT_HIGH: a high-volume bearish candle occurred near the day's high with LH+LL follow-through → SELL.
+- BULLISH_AT_LOW: a high-volume bullish candle occurred near the day's low, reversal confirmed → BUY.
+- If Volume Signal is NONE, these triggers did not fire; continue with standard conditions below.
 
 RSI HARD STOPS — apply before all other checks:
 - RSI < 45: BUY is BLOCKED — output HOLD regardless of CPR/VWAP/EMA alignment
@@ -212,7 +334,7 @@ CPR relevance qualifier (apply before using ABOVE/BELOW_CPR as a confirmation):
 - When CPR is irrelevant (price too far away), replace it with: is price above or below VWAP by >0.5%? That becomes the structural anchor instead.
 
 Intraday range position (apply before directional conditions):
-- Intraday Position shows < 0.5% above day's low: price is at intraday support — SELL is BLOCKED; output HOLD. Do not sell into a tested floor.
+- SELL Gate already accounts for day's low proximity — if SELL Gate shows BLOCKED, do not output SELL.
 - Intraday Position shows < 0.5% below day's high: price is at intraday resistance — reduce BUY confidence by 0.10; risk/reward is poor this close to the high.
 - If the day's low was tested earlier in the session (visible in the candle block as a wick or spike) and price bounced back strongly (close >0.3% above that low), the low is "tested and held" support — do not issue SELL until price breaks and closes below that level.
 
@@ -345,6 +467,9 @@ def build_decision_prompt(
     options_oi_block: str = "",
     candle_block: str = "",
     daily_candle_block: str = "",
+    buy_gate: str = "OPEN",
+    sell_gate: str = "OPEN",
+    volume_signal: str = "NONE",
 ) -> str:
     if day_type == "NARROW":
         cpr_type = "NARROW (trending day)"
@@ -375,6 +500,14 @@ def build_decision_prompt(
         candle_block = "  No candle data available yet."
     if not daily_candle_block:
         daily_candle_block = "  No daily data available."
+
+    # Build gate strings (already validated by caller; defaults are safe fallbacks)
+    if not buy_gate:
+        buy_gate = "OPEN"
+    if not sell_gate:
+        sell_gate = "OPEN"
+    if not volume_signal:
+        volume_signal = "NONE"
 
     return DECISION_PROMPT_TEMPLATE.format(
         historical_context_block=historical_context_block,
@@ -414,4 +547,7 @@ def build_decision_prompt(
         magnet_zones_block=magnet_zones_block,
         options_oi_block=options_oi_block,
         candle_block=candle_block,
+        buy_gate=buy_gate,
+        sell_gate=sell_gate,
+        volume_signal=volume_signal,
     )

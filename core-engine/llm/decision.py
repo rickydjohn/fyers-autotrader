@@ -17,7 +17,7 @@ import redis.asyncio as aioredis
 
 from config import settings
 from llm.client import query_ollama
-from llm.prompts import build_decision_prompt, format_options_oi_block, format_daily_candles_for_prompt
+from llm.prompts import build_decision_prompt, format_options_oi_block, format_daily_candles_for_prompt, compute_trading_gates
 from models.schemas import LLMDecision, MarketSnapshot, TechnicalIndicators
 from news.sentiment import format_news_for_prompt
 from indicators.technicals import get_macd_signal_label
@@ -208,6 +208,7 @@ async def make_decision(
     peer_signal: Optional[dict] = None,
     options_oi: Optional[dict] = None,
     candle_block: str = "",
+    raw_candles: Optional[list] = None,
 ) -> Optional[LLMDecision]:
     """Build prompt (with historical context), call LLM, parse, publish to Redis and DB."""
     ind: TechnicalIndicators = snapshot.indicators
@@ -244,6 +245,16 @@ async def make_decision(
         logger.warning(f"Could not fetch daily candles for {snapshot.symbol}: {_e}")
         daily_block = ""
 
+    # Pre-compute trading gates so LLM reads facts, not derivations
+    gates = compute_trading_gates(
+        rsi=ind.rsi,
+        price=snapshot.ltp,
+        day_low=ind.day_low,
+        day_high=ind.day_high,
+        macd_signal=macd_label,
+        recent_candles=raw_candles or [],
+    )
+
     prompt = build_decision_prompt(
         symbol=snapshot.symbol,
         price=snapshot.ltp,
@@ -278,6 +289,9 @@ async def make_decision(
         options_oi_block=oi_block,
         candle_block=candle_block,
         daily_candle_block=daily_block,
+        buy_gate=gates["buy_gate"],
+        sell_gate=gates["sell_gate"],
+        volume_signal=gates["volume_signal"],
     )
 
     logger.info(f"Querying Ollama for {snapshot.symbol}...")
@@ -300,23 +314,6 @@ async def make_decision(
         return None
 
     validated = _validate_decision(parsed, snapshot.ltp)
-
-    # Hard MACD filter — LLM cannot override momentum direction.
-    # SELL+BULLISH or BUY+BEARISH is always contradictory — force HOLD unconditionally.
-    # Previously this was a confidence penalty (−0.15) with threshold at 0.5, but since
-    # LLM confidence for SELL averaged 0.78 the penalty never triggered — all contradictory
-    # SELL decisions survived and were published but never traded (PE option resolved to
-    # HOLD implicitly when the sim engine saw no valid option). Hard block prevents noise.
-    if validated["decision"] == "SELL" and macd_label == "BULLISH":
-        validated["decision"] = "HOLD"
-        validated["confidence"] = max(0.55, validated["confidence"] - 0.15)
-        validated["reasoning"] = f"[MACD override: BULLISH MACD contradicts SELL] {validated['reasoning']}"
-        logger.info(f"SELL overridden to HOLD for {snapshot.symbol} — MACD is BULLISH")
-    elif validated["decision"] == "BUY" and macd_label == "BEARISH":
-        validated["decision"] = "HOLD"
-        validated["confidence"] = max(0.55, validated["confidence"] - 0.15)
-        validated["reasoning"] = f"[MACD override: BEARISH MACD contradicts BUY] {validated['reasoning']}"
-        logger.info(f"BUY overridden to HOLD for {snapshot.symbol} — MACD is BEARISH")
 
     # Layer 2 cross-symbol confidence gate
     _apply_cross_symbol_gate(validated, peer_signal, symbol=snapshot.symbol)
