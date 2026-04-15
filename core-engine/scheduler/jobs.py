@@ -387,15 +387,28 @@ async def _fast_position_watcher(redis_client: aioredis.Redis) -> None:
 
 
 async def run_market_scan(redis_client: aioredis.Redis) -> None:
-    """Main job: scan all symbols if market is open."""
+    """Main job: scan all symbols in parallel if market is open.
+
+    asyncio.gather runs all symbols concurrently so each symbol's async LLM
+    call overlaps with the others. The blocking Fyers calls (get_quote etc.)
+    still execute one-at-a-time (they hold the GIL), but the dominant cost —
+    the ~20-45s Ollama inference — runs truly in parallel, keeping the total
+    scan time near max(symbol_times) instead of sum(symbol_times).
+
+    Note: BANKNIFTY's cross-symbol peer_signal will use the PREVIOUS scan's
+    NIFTY decision (not the current cycle's). That is fine — the gate has a
+    15-minute TTL so a 60s-old decision is perfectly valid.
+    """
     if not _is_market_open():
         logger.debug("Market closed, skipping scan")
         return
-    for symbol in settings.symbols:
-        try:
-            await _process_symbol(symbol, redis_client)
-        except Exception as e:
-            logger.exception(f"Error processing {symbol}: {e}")
+    results = await asyncio.gather(
+        *[_process_symbol(symbol, redis_client) for symbol in settings.symbols],
+        return_exceptions=True,
+    )
+    for symbol, result in zip(settings.symbols, results):
+        if isinstance(result, Exception):
+            logger.exception(f"Error processing {symbol}: {result}")
     await _refresh_open_option_prices(redis_client)
 
 

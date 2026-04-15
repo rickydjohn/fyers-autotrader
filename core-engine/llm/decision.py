@@ -4,6 +4,7 @@ Publishes decisions to Redis stream for simulation engine consumption.
 Also persists decisions to data-service.
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -272,7 +273,16 @@ async def make_decision(
     )
 
     logger.info(f"Querying Ollama for {snapshot.symbol}...")
-    raw_response = await query_ollama(prompt)
+    try:
+        raw_response = await asyncio.wait_for(
+            query_ollama(prompt),
+            timeout=settings.ollama_timeout,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            f"LLM hard timeout after {settings.ollama_timeout}s for {snapshot.symbol} — defaulting to HOLD"
+        )
+        raw_response = None
     if not raw_response:
         logger.warning(f"No LLM response for {snapshot.symbol}, defaulting to HOLD")
         raw_response = '{"decision":"HOLD","confidence":0.5,"reasoning":"LLM unavailable."}'
