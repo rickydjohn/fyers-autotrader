@@ -332,6 +332,7 @@ async def _process_symbol(symbol: str, redis_client: aioredis.Redis) -> None:
         peer_signal=peer_signal,
         options_oi=options_oi,
         candle_block=candle_block,
+        raw_candles=candles,
     )
 
     # Store final (gated) decision for downstream symbols to use as peer signal
