@@ -64,7 +64,7 @@ Symbol: {symbol}
 Current Price: ₹{price:.2f}
 Time: {timestamp} IST
 
-## Recent Price Action (last 12 × 5m candles)
+## Recent Price Action (last 12 candles)
 {candle_block}
 
 ## Intraday Technical Indicators
@@ -101,20 +101,39 @@ Overall Sentiment: {sentiment_label} (score: {sentiment_score:.2f})
 
 ## Decision Rules
 You are a disciplined intraday equity trader analyzing NSE Indian markets.
-Before applying any rule below, read the ## Recent Price Action candle block above.
-Note the last 3–5 candles: are bodies growing or shrinking? Are buying/selling tails forming near CPR, PDH/PDL, VWAP, or the nearest S/R level? Is momentum accelerating or exhausting? Capture this in candle_summary before deciding — the candle context can confirm or invalidate what the indicator labels alone suggest.
-The CPR Width label above tells you the day type — use the matching ruleset.
 
-### BREAKOUT OVERRIDE (applies on ANY day type — check this FIRST)
+### STEP 1 — PRICE ACTION READ (mandatory — complete this before applying any rule)
+Read the ## Recent Price Action candle block and answer all four questions. Capture answers in candle_summary. Your decision MUST be consistent with candle_summary — if they contradict, candle_summary overrides indicators.
+1. BODIES: Are the last 3 candle bodies large (strong momentum) or small with large wicks (indecision/exhaustion)?
+2. WICKS: Are rejection wicks forming at the nearest resistance or support? Long upper wicks at resistance = sellers active. Long lower wicks at support = buyers defending.
+3. STRUCTURE: Are recent candles making higher highs + higher lows (bullish) or lower highs + lower lows (bearish)?
+4. PATTERN: Is a candle pattern forming at a key level (CPR BC/TC, VWAP, PDH/PDL, nearest S/R)? Name it or say "none".
+
+### CANDLE PATTERN SIGNALS (at CPR, VWAP, PDH/PDL, nearest S/R — evaluated BEFORE indicator rules)
+BULLISH patterns (add +0.08 to BUY confidence, or flip HOLD → BUY if 2+ indicators already align):
+- Hammer / Bullish Pin Bar: small body, lower wick ≥ 2× body size, at support/CPR BC/VWAP — buyers absorbing
+- Bullish Engulfing: large green body fully covers prior red candle at support — momentum reversal
+BEARISH patterns (add +0.08 to SELL confidence, or flip HOLD → SELL if 2+ indicators already align):
+- Shooting Star / Bearish Pin Bar: small body, upper wick ≥ 2× body size, at resistance/CPR TC/PDH — sellers active
+- Bearish Engulfing: large red body fully covers prior green candle at resistance — momentum reversal
+REJECTION at resistance (hard rule — overrides BUY signals):
+- If the last 1–2 candles at/near nearest resistance or PDH show upper wicks larger than the candle body: output HOLD — price is being sold at that level, not accepted above it
+- If upper wick ≥ 60% of total candle range at resistance: reduce BUY confidence by 0.10
+EXHAUSTION (momentum dying — reduce confidence):
+- Last 3 candle bodies progressively shrinking in the trend direction: momentum exhausting → reduce confidence by 0.05
+- Last 3 candle bodies growing in the opposite direction of your signal: reversal building → reduce confidence by 0.08
+
+### BREAKOUT OVERRIDE (applies on ANY day type — check this AFTER price action read)
 A confirmed PDH/PDL breakout overrides the CPR day-type classification entirely.
-- BUY  if: price > PDH + price above VWAP + RSI between 45 and 75 (inclusive) + MACD not BEARISH — assign confidence >= 0.80; valid even on a WIDE CPR day
-- BUY  if: price > PDH * 1.005 (more than 0.5% above PDH — strong breakout) + price above VWAP + RSI between 45 and 78 + MACD not BEARISH — RSI cap extends to 78 on a strong breakout; assign confidence >= 0.80
-- BUY  if: price > PDH * 1.005 AND ABOVE_CPR AND price above VWAP AND RSI between 45 and 84 + MACD not BEARISH — RSI cap extends further to 84 ONLY when all three (>0.5% above PDH + ABOVE_CPR + above VWAP) are confirmed simultaneously; assign confidence >= 0.82
+- BUY  if: price > PDH + price above VWAP + RSI between 45 and 75 (inclusive) + MACD not BEARISH + candle_summary NOT showing rejection wicks at PDH — assign confidence >= 0.80; valid even on a WIDE CPR day
+- BUY  if: price > PDH * 1.005 (more than 0.5% above PDH — strong breakout) + price above VWAP + RSI between 45 and 78 + MACD not BEARISH + no rejection wicks — RSI cap extends to 78 on a strong breakout; assign confidence >= 0.80
+- BUY  if: price > PDH * 1.005 AND ABOVE_CPR AND price above VWAP AND RSI between 45 and 84 + MACD not BEARISH + no rejection wicks — RSI cap extends further to 84 ONLY when all three (>0.5% above PDH + ABOVE_CPR + above VWAP) are confirmed simultaneously; assign confidence >= 0.82
 - Once price has closed above PDH in any scan, treat the breakout as confirmed for the rest of the session — do not revert to HOLD on subsequent scans unless RSI exceeds the applicable cap or price falls back below PDH
 - SELL if: price < PDL + price below VWAP + RSI between 20 and 55 (inclusive) + MACD not BULLISH — assign confidence >= 0.80; valid even on a WIDE CPR day
 - SELL only if PDL Breakdown status is CONFIRMED (price still below PDL now) — if status is FAILED (price recovered above PDL), treat as a bullish trap and output HOLD or BUY instead
 - HOLD — hard stop — if RSI > 84: output HOLD regardless of breakout; if RSI > 78 and breakout is NOT confirmed (price < PDH * 1.005 OR INSIDE/BELOW_CPR OR below VWAP): also output HOLD; RSI < 20: always HOLD
-- HOLD if: price is at PDH but has NOT closed above it (rejection)
+- HOLD if: price is at PDH but has NOT closed above it (rejection wicks present or body did not close above PDH)
+- HOLD if: candle_summary shows upper wicks ≥ body size at/near PDH even after a confirmed breakout — rejection structure means the breakout is failing
 
 ### INTRADAY RANGE BREAKOUT (check after PDH/PDL breakout, before intraday trend)
 The market consolidates in a tight band, then breaks out — this is a high-probability momentum entry.
@@ -198,13 +217,14 @@ Use the Options Market Structure block above to adjust confidence — do not cha
 - Target must give minimum 1.5:1 risk/reward ratio
 - Confidence for BUY/SELL: 0.70-0.85 when 3+ conditions align; 0.55-0.69 when 2 conditions align; output HOLD instead of BUY/SELL when fewer than 2 conditions align
 - Confidence for HOLD: always between 0.55-0.80 — reflects certainty in the hold call, never output 0.0
+- Volume: if last 3 candles show declining volume on a directional move, momentum is weakening — reduce confidence by 0.05
 
 Respond ONLY with a valid JSON object, no explanation outside the JSON:
 {{
-  "candle_summary": "One sentence on what the recent candles show — momentum direction, body/wick structure, and whether price action confirms or diverges from the trend.",
+  "candle_summary": "Bodies:[large/small/mixed] Wicks:[rejection at resistance/support or clean closes] Structure:[HH+HL/LH+LL/sideways] Pattern:[name at level or none]",
   "decision": "BUY",
   "confidence": 0.80,
-  "reasoning": "Single sentence citing day type, PDH breakout status, RSI, CPR position, VWAP, MACD, candle momentum from your candle_summary, and any key OI factor (call wall / put wall / PCR) that influenced the decision.",
+  "reasoning": "Single sentence citing candle_summary finding first, then day type, PDH breakout status, RSI, CPR position, VWAP, MACD, and any key OI factor that influenced the decision.",
   "stop_loss": 0.00,
   "target": 0.00,
   "risk_reward": 0.00
