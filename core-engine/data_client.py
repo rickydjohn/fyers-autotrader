@@ -26,6 +26,14 @@ def get_client() -> httpx.AsyncClient:
     return _client
 
 
+def _get_batch_client() -> httpx.AsyncClient:
+    """Return a short-lived client with a generous timeout for large batch writes."""
+    return httpx.AsyncClient(
+        base_url=settings.data_service_url,
+        timeout=60.0,
+    )
+
+
 async def close_client() -> None:
     global _client
     if _client and not _client.is_closed:
@@ -53,7 +61,13 @@ async def persist_candle(candle: Dict[str, Any]) -> None:
 
 
 async def persist_candles_batch(candles: List[Dict[str, Any]]) -> None:
-    await _post("/api/v1/ingest/candles", candles)
+    # Bootstrap batches can be 10k+ rows; use a dedicated client with 60s timeout.
+    async with _get_batch_client() as client:
+        try:
+            resp = await client.post("/api/v1/ingest/candles", json=candles)
+            resp.raise_for_status()
+        except Exception as e:
+            logger.warning(f"data-service POST /api/v1/ingest/candles (batch={len(candles)}) failed: {e}")
 
 
 async def persist_daily_indicator(ind: Dict[str, Any]) -> None:
@@ -71,14 +85,26 @@ async def persist_news_batch(items: List[Dict[str, Any]]) -> None:
 
 async def persist_daily_ohlcv_batch(bars: List[Dict[str, Any]]) -> None:
     """Upsert a batch of daily OHLCV bars into the permanent daily_ohlcv table."""
-    if bars:
-        await _post("/api/v1/ingest/daily-ohlcv", bars)
+    if not bars:
+        return
+    async with _get_batch_client() as client:
+        try:
+            resp = await client.post("/api/v1/ingest/daily-ohlcv", json=bars)
+            resp.raise_for_status()
+        except Exception as e:
+            logger.warning(f"data-service POST /api/v1/ingest/daily-ohlcv (batch={len(bars)}) failed: {e}")
 
 
 async def persist_options_oi_batch(rows: List[Dict[str, Any]]) -> None:
     """Persist a batch of options OI snapshot rows to TimescaleDB."""
-    if rows:
-        await _post("/api/v1/ingest/options-oi", rows)
+    if not rows:
+        return
+    async with _get_batch_client() as client:
+        try:
+            resp = await client.post("/api/v1/ingest/options-oi", json=rows)
+            resp.raise_for_status()
+        except Exception as e:
+            logger.warning(f"data-service POST /api/v1/ingest/options-oi (batch={len(rows)}) failed: {e}")
 
 
 async def persist_sr_levels(symbol: str, levels: List[Dict[str, Any]]) -> None:
