@@ -17,7 +17,7 @@ import redis.asyncio as aioredis
 
 from config import settings
 from llm.client import query_ollama
-from llm.prompts import build_decision_prompt, format_options_oi_block
+from llm.prompts import build_decision_prompt, format_options_oi_block, format_daily_candles_for_prompt
 from models.schemas import LLMDecision, MarketSnapshot, TechnicalIndicators
 from news.sentiment import format_news_for_prompt
 from indicators.technicals import get_macd_signal_label
@@ -236,6 +236,14 @@ async def make_decision(
     # Format options OI block
     oi_block = format_options_oi_block(options_oi)
 
+    # Fetch and format daily candles for the 12-session context block
+    try:
+        daily_candles = await data_client.fetch_daily_candles(snapshot.symbol, limit=14)
+        daily_block = format_daily_candles_for_prompt(daily_candles)
+    except Exception as _e:
+        logger.warning(f"Could not fetch daily candles for {snapshot.symbol}: {_e}")
+        daily_block = ""
+
     prompt = build_decision_prompt(
         symbol=snapshot.symbol,
         price=snapshot.ltp,
@@ -266,10 +274,10 @@ async def make_decision(
         sentiment_score=snapshot.news.aggregate_score if snapshot.news else 0.0,
         historical_context_block=hist_block,
         day_type=ind.cpr.day_type,
-        pdh_pivot_confluence=ind.pdh_pivot_confluence,
         magnet_zones_block=magnet_block,
         options_oi_block=oi_block,
         candle_block=candle_block,
+        daily_candle_block=daily_block,
     )
 
     logger.info(f"Querying Ollama for {snapshot.symbol}...")

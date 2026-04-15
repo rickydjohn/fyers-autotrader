@@ -147,6 +147,21 @@ async def fetch_magnet_zones(symbol: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+async def fetch_daily_candles(symbol: str, limit: int = 14) -> List[Dict[str, Any]]:
+    """Fetch last N daily candles for a symbol from data-service."""
+    try:
+        resp = await get_client().get(
+            "/api/v1/historical-data",
+            params={"symbol": symbol, "interval": "daily", "limit": limit},
+            timeout=5.0,
+        )
+        resp.raise_for_status()
+        return resp.json().get("candles", [])
+    except Exception as e:
+        logger.warning(f"Could not fetch daily candles for {symbol}: {e}")
+        return []
+
+
 async def fetch_context_snapshot(symbol: str) -> Optional[Dict[str, Any]]:
     """Fetch the latest context snapshot for a symbol from data-service."""
     try:

@@ -4,9 +4,10 @@ Structured to produce deterministic JSON output.
 
 v2: Extended with multi-timeframe historical context block.
 v3: Added per-symbol options OI block (PCR, call/put wall, VIX, basis).
+v4: Replaced PDH/PDL breakout override with three-layer framework + 12-session daily candle block.
 """
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 
 def format_options_oi_block(oi: Optional[Dict[str, Any]]) -> str:
@@ -57,7 +58,48 @@ def format_options_oi_block(oi: Optional[Dict[str, Any]]) -> str:
     )
 
 
+def format_daily_candles_for_prompt(candles: List[Dict[str, Any]]) -> str:
+    """Format a list of daily OHLCV dicts into a prompt-readable block.
+
+    Each row: '  2026-04-14 | ▲ O:24050 H:24320 L:23980 C:24280 | +1.2% | Vol:1.8B'
+    Oldest first so the LLM reads left-to-right as a time series.
+    """
+    if not candles:
+        return "  No daily data available."
+
+    lines = []
+    for c in candles[-12:]:   # at most 12 sessions
+        date_str = str(c.get("time", c.get("timestamp", "???")))[:10]
+        o     = float(c.get("open",   0) or 0)
+        h     = float(c.get("high",   0) or 0)
+        lo    = float(c.get("low",    0) or 0)
+        close = float(c.get("close",  0) or 0)
+        vol   = int(c.get("volume",   0) or 0)
+
+        direction  = "▲" if close >= o else "▼"
+        change_pct = ((close - o) / o * 100) if o > 0 else 0.0
+
+        if vol >= 1_000_000_000:
+            vol_str = f"{vol / 1_000_000_000:.1f}B"
+        elif vol >= 1_000_000:
+            vol_str = f"{vol / 1_000_000:.0f}M"
+        elif vol >= 1_000:
+            vol_str = f"{vol / 1_000:.0f}K"
+        else:
+            vol_str = str(vol)
+
+        lines.append(
+            f"  {date_str} | {direction} O:{o:.0f} H:{h:.0f} L:{lo:.0f} C:{close:.0f}"
+            f" | {change_pct:+.1f}% | Vol:{vol_str}"
+        )
+    return "\n".join(lines)
+
+
 DECISION_PROMPT_TEMPLATE = """{historical_context_block}
+
+## Daily Chart Context (last 12 sessions)
+Each row: date | direction O:open H:high L:low C:close | day-change% | volume
+{daily_candle_block}
 
 ## Current Market Snapshot
 Symbol: {symbol}
@@ -73,13 +115,10 @@ CPR Width: {cpr_width_pct:.2f}% ({cpr_type})
 Price vs CPR: {cpr_signal}
 Previous Day: High=₹{prev_day_high:.2f} Low=₹{prev_day_low:.2f}
 Today's Range: High=₹{day_high:.2f} Low=₹{day_low:.2f}
-PDH Breakout: {pdh_breakout_status}
-PDL Breakdown: {pdl_breakdown_status}
 Consolidation: {consolidation_pct:.2f}% range over last 8 candles ({consolidation_status})
 Range Breakout: {range_breakout}
 Nearest Resistance: ₹{nearest_resistance:.2f} ({resistance_label})
 Nearest Support: ₹{nearest_support:.2f} ({support_label})
-PDH-Pivot Confluence: {pdh_pivot_confluence}
 RSI(14): {rsi:.1f}
 EMA(9): ₹{ema_9:.2f} | EMA(21): ₹{ema_21:.2f}
 MACD Signal: {macd_signal}
@@ -102,69 +141,73 @@ Overall Sentiment: {sentiment_label} (score: {sentiment_score:.2f})
 ## Decision Rules
 You are a disciplined intraday equity trader analyzing NSE Indian markets.
 
-### STEP 1 — PRICE ACTION READ (mandatory — complete this before applying any rule)
+### STEP 1 — PRICE ACTION READ (mandatory — complete before any rule)
 Read the ## Recent Price Action candle block and answer all four questions. Capture answers in candle_summary. Your decision MUST be consistent with candle_summary — if they contradict, candle_summary overrides indicators.
 1. BODIES: Are the last 3 candle bodies large (strong momentum) or small with large wicks (indecision/exhaustion)?
 2. WICKS: Are rejection wicks forming at the nearest resistance or support? Long upper wicks at resistance = sellers active. Long lower wicks at support = buyers defending.
 3. STRUCTURE: Are recent candles making higher highs + higher lows (bullish) or lower highs + lower lows (bearish)?
-4. PATTERN: Is a candle pattern forming at a key level (CPR BC/TC, VWAP, PDH/PDL, nearest S/R)? Name it or say "none".
+4. PATTERN: Is a candle pattern forming at a key level (CPR BC/TC, VWAP, a daily swing high/low, nearest S/R)? Name it or say "none".
 
-### CANDLE PATTERN SIGNALS (at CPR, VWAP, PDH/PDL, nearest S/R — evaluated BEFORE indicator rules)
+### STEP 2 — DAILY CONTEXT READ (mandatory — complete before any rule)
+Read the ## Daily Chart Context block and establish macro bias before applying any intraday rule.
+1. TREND: Is the daily trend rising (HH+HL over last 5-10 sessions), falling (LH+LL), or sideways (range-bound)?
+2. POSITION: Is today's price near the top, middle, or bottom of the 12-session range?
+3. KEY LEVELS: Which daily swing highs and lows in the last 12 sessions are acting as natural resistance or support today? These are the levels that actually matter — not just yesterday's single high/low.
+4. MOMENTUM: Are recent daily candle bodies growing (trend accelerating) or shrinking (exhaustion near a level)?
+
+Note: Previous Day High/Low are the two most recent reference points, not the only ones. Use all 12 sessions of structure — swing highs, swing lows, gap zones, and multi-day consolidation ranges — to assess where meaningful supply and demand exist.
+
+### CANDLE PATTERN SIGNALS (at CPR, VWAP, key daily levels, nearest S/R — evaluated BEFORE indicator rules)
 BULLISH patterns (add +0.08 to BUY confidence, or flip HOLD → BUY if 2+ indicators already align):
 - Hammer / Bullish Pin Bar: small body, lower wick ≥ 2× body size, at support/CPR BC/VWAP — buyers absorbing
 - Bullish Engulfing: large green body fully covers prior red candle at support — momentum reversal
 BEARISH patterns (add +0.08 to SELL confidence, or flip HOLD → SELL if 2+ indicators already align):
-- Shooting Star / Bearish Pin Bar: small body, upper wick ≥ 2× body size, at resistance/CPR TC/PDH — sellers active
+- Shooting Star / Bearish Pin Bar: small body, upper wick ≥ 2× body size, at resistance/CPR TC/key daily high — sellers active
 - Bearish Engulfing: large red body fully covers prior green candle at resistance — momentum reversal
 REJECTION at resistance (hard rule — overrides BUY signals):
-- If the last 1–2 candles at/near nearest resistance or PDH show upper wicks larger than the candle body: output HOLD — price is being sold at that level, not accepted above it
+- If the last 1–2 candles at/near nearest resistance or a key daily swing high show upper wicks larger than the candle body: output HOLD — price is being sold at that level, not accepted above it
 - If upper wick ≥ 60% of total candle range at resistance: reduce BUY confidence by 0.10
 EXHAUSTION (momentum dying — reduce confidence):
 - Last 3 candle bodies progressively shrinking in the trend direction: momentum exhausting → reduce confidence by 0.05
 - Last 3 candle bodies growing in the opposite direction of your signal: reversal building → reduce confidence by 0.08
 
-### BREAKOUT OVERRIDE (applies on ANY day type — check this AFTER price action read)
-A confirmed PDH/PDL breakout overrides the CPR day-type classification entirely.
-- BUY  if: price > PDH + price above VWAP + RSI between 45 and 75 (inclusive) + MACD not BEARISH + candle_summary NOT showing rejection wicks at PDH — assign confidence >= 0.80; valid even on a WIDE CPR day
-- BUY  if: price > PDH * 1.005 (more than 0.5% above PDH — strong breakout) + price above VWAP + RSI between 45 and 78 + MACD not BEARISH + no rejection wicks — RSI cap extends to 78 on a strong breakout; assign confidence >= 0.80
-- BUY  if: price > PDH * 1.005 AND ABOVE_CPR AND price above VWAP AND RSI between 45 and 84 + MACD not BEARISH + no rejection wicks — RSI cap extends further to 84 ONLY when all three (>0.5% above PDH + ABOVE_CPR + above VWAP) are confirmed simultaneously; assign confidence >= 0.82
-- Once price has closed above PDH in any scan, treat the breakout as confirmed for the rest of the session — do not revert to HOLD on subsequent scans unless RSI exceeds the applicable cap or price falls back below PDH
-- SELL if: price < PDL + price below VWAP + RSI between 20 and 55 (inclusive) + MACD not BULLISH — assign confidence >= 0.80; valid even on a WIDE CPR day
-- SELL only if PDL Breakdown status is CONFIRMED (price still below PDL now) — if status is FAILED (price recovered above PDL), treat as a bullish trap and output HOLD or BUY instead
-- HOLD — hard stop — if RSI > 84: output HOLD regardless of breakout; if RSI > 78 and breakout is NOT confirmed (price < PDH * 1.005 OR INSIDE/BELOW_CPR OR below VWAP): also output HOLD; RSI < 20: always HOLD
-- HOLD if: price is at PDH but has NOT closed above it (rejection wicks present or body did not close above PDH)
-- HOLD if: candle_summary shows upper wicks ≥ body size at/near PDH even after a confirmed breakout — rejection structure means the breakout is failing
+### THREE-LAYER DECISION FRAMEWORK
+Work through all three layers before assigning a decision. Each layer can confirm, weaken, or veto.
 
-### INTRADAY RANGE BREAKOUT (check after PDH/PDL breakout, before intraday trend)
-The market consolidates in a tight band, then breaks out — this is a high-probability momentum entry.
-Fires ONLY when Range Breakout field shows BREAKOUT_HIGH or BREAKOUT_LOW (consolidation_pct < 0.40%).
-- BUY  if: Range Breakout = BREAKOUT_HIGH + price above VWAP + RSI 45-75 + EMA9 > EMA21 + MACD not BEARISH → assign confidence 0.75-0.85; this is a CALL trade
-- SELL if: Range Breakout = BREAKOUT_LOW  + price below VWAP + RSI 20-55 + EMA9 < EMA21 + MACD not BULLISH → assign confidence 0.75-0.85; this is a PUT trade
-- HOLD if: Range Breakout = NONE (no consolidation detected — pattern not confirmed)
-- HOLD if: RSI > 78 or RSI < 20 (hard RSI stops apply here too)
-- HOLD if: fewer than 3 of the confirmation conditions align (VWAP position, EMA cross, MACD) — breakout alone is not enough
+#### Layer 1 — Daily Context (from ## Daily Chart Context)
+Sets the macro bias for the session.
+- Rising trend (HH+HL structure over 5-10 sessions): BULLISH bias — favor BUY setups; SELL needs strong intraday confirmation
+- Falling trend (LH+LL structure): BEARISH bias — favor SELL setups; BUY needs strong intraday confirmation
+- Sideways range: NEUTRAL — both directions valid; require intraday and price action confirmation
+- Price near the TOP of the 12-session range (within 0.3% of the 12-session high): reduce BUY confidence by 0.08; SELL setups more favorable
+- Price near the BOTTOM of the 12-session range (within 0.3% of the 12-session low): reduce SELL confidence by 0.08; BUY setups more favorable
+- Prior session was a large bearish candle (body > 1% range): BUY signal requires +1 additional intraday confirmation condition
+- Prior session was a large bullish candle (body > 1% range): SELL signal requires +1 additional intraday confirmation condition
 
-### INTRADAY TREND OVERRIDE (check after breakout, before day-type rules)
-When the intraday structure is unambiguously bullish or bearish, override a conflicting daily/1h trend bias.
-- BUY  if: EMA9 > EMA21 AND price ABOVE_CPR AND price above VWAP AND RSI 45-75 — intraday trend is BULLISH; daily bearish context is a caution, not a veto; assign confidence 0.65-0.75
-- SELL if: EMA9 < EMA21 AND price BELOW_CPR AND price below VWAP AND RSI 20-55 — intraday trend is BEARISH; daily bullish context is a caution, not a veto; assign confidence 0.65-0.75
-- This rule fires even on a WIDE CPR day when the above conditions are met
+#### Layer 2 — Intraday Structure
+Confirms or contradicts the daily bias.
+- ABOVE_CPR + price above VWAP + EMA9 > EMA21: intraday structure BULLISH — aligns with BUY, contradicts SELL
+- BELOW_CPR + price below VWAP + EMA9 < EMA21: intraday structure BEARISH — aligns with SELL, contradicts BUY
+- INSIDE_CPR: no directional edge — HOLD unless Layer 1 and Layer 3 both strongly agree on direction
+- RSI 45–75: valid BUY zone; RSI 20–55: valid SELL zone; RSI > 78 or RSI < 20: HOLD regardless of other signals
+- MACD BULLISH + SELL signal: override to HOLD — momentum contradiction; MACD BEARISH + BUY signal: override to HOLD
+- Range Breakout = BREAKOUT_HIGH (consolidation_pct < 0.40%): high-probability BUY if above VWAP + RSI 45-75 + MACD not BEARISH; confidence 0.75-0.85
+- Range Breakout = BREAKOUT_LOW: high-probability SELL if below VWAP + RSI 20-55 + MACD not BULLISH; confidence 0.75-0.85
+- Range Breakout = NONE: no breakout setup — apply standard intraday conditions
 
-### RANGEBOUND DAY (CPR is WIDE) — only apply if no PDH/PDL breakout and no intraday override
-- BUY  if: price ABOVE_CPR + RSI 45-65 + price above VWAP + sentiment not BEARISH + 1h/daily trend not BEARISH
-- SELL if: price BELOW_CPR + RSI 20-55 + price below VWAP + sentiment not BULLISH + 1h/daily trend not BULLISH
-- HOLD if: price INSIDE_CPR OR RSI > 65 OR RSI < 20 OR conflicting multi-timeframe signals
+#### Layer 3 — Price Action (from candle_summary)
+Final confirmation or veto.
+- HH+HL structure + large bodies + clean closes: +0.05 to BUY confidence
+- LH+LL structure + large bodies + clean closes: +0.05 to SELL confidence
+- Rejection wicks at resistance (upper wicks > body at resistance): HOLD regardless of Layer 1/2 BUY signal
+- Rejection wicks at support (lower wicks > body at support): HOLD regardless of Layer 1/2 SELL signal
+- Candle pattern at key level: apply CANDLE PATTERN SIGNALS adjustments above
 
-### MODERATE DAY (CPR is MODERATE) — only apply if no PDH/PDL breakout and no intraday override
-Mixed character — can trend but needs more confirmation than a pure NARROW day.
-- BUY  if: price ABOVE_CPR + RSI 45-72 + price above VWAP + MACD not BEARISH + EMA9 > EMA21 — all 4 must align; assign confidence 0.65-0.75
-- SELL if: price BELOW_CPR + RSI 20-55 + price below VWAP + MACD not BULLISH + EMA9 < EMA21 — all 4 must align; assign confidence 0.65-0.75
-- HOLD if: price INSIDE_CPR OR RSI > 72 OR RSI < 20 OR fewer than 4 conditions align
-
-### TRENDING DAY (CPR is NARROW) — only apply if no PDH/PDL breakout and no intraday override
-- BUY  if: price ABOVE_CPR + RSI 45-75 + price above VWAP + MACD not BEARISH
-- SELL if: price BELOW_CPR + RSI 20-55 + price below VWAP + MACD not BULLISH
-- HOLD if: price INSIDE_CPR OR RSI > 75 OR RSI < 20
+#### Minimum Conditions for BUY/SELL
+- BUY: Layer 1 neutral/bullish + at least 3 of (ABOVE_CPR, above VWAP, EMA9>EMA21, RSI 45-75, MACD not BEARISH) + Layer 3 no rejection; confidence 0.70-0.85
+- SELL: Layer 1 neutral/bearish + at least 3 of (BELOW_CPR, below VWAP, EMA9<EMA21, RSI 20-55, MACD not BULLISH) + Layer 3 no rejection; confidence 0.70-0.85
+- HOLD: fewer than 3 Layer 2 conditions align, or Layer 3 shows rejection/exhaustion, or Layer 1 directly contradicts the signal
+- Confidence 0.55–0.69 when exactly 2 conditions align; always output HOLD when fewer than 2 align
 
 ### HISTORICAL S/R CONFLUENCE (multi-year daily zones)
 Use the multi-year S/R zones to adjust confidence — do not change the decision direction, only the conviction level.
@@ -224,7 +267,7 @@ Respond ONLY with a valid JSON object, no explanation outside the JSON:
   "candle_summary": "Bodies:[large/small/mixed] Wicks:[rejection at resistance/support or clean closes] Structure:[HH+HL/LH+LL/sideways] Pattern:[name at level or none]",
   "decision": "BUY",
   "confidence": 0.80,
-  "reasoning": "Single sentence citing candle_summary finding first, then day type, PDH breakout status, RSI, CPR position, VWAP, MACD, and any key OI factor that influenced the decision.",
+  "reasoning": "Single sentence citing candle_summary first, then daily trend/position (from 12-session chart), then intraday structure (CPR position, VWAP, RSI, MACD), and any key OI or level factor that influenced the decision.",
   "stop_loss": 0.00,
   "target": 0.00,
   "risk_reward": 0.00
@@ -262,10 +305,10 @@ def build_decision_prompt(
     sr_levels_block: str = "",
     years_of_data: int = 5,
     day_type: str = "",
-    pdh_pivot_confluence: bool = False,
     magnet_zones_block: str = "",
     options_oi_block: str = "",
     candle_block: str = "",
+    daily_candle_block: str = "",
 ) -> str:
     if day_type == "NARROW":
         cpr_type = "NARROW (trending day)"
@@ -274,34 +317,9 @@ def build_decision_prompt(
     elif day_type == "WIDE":
         cpr_type = "WIDE (rangebound day)"
     else:
-        # Fallback: absolute threshold
         cpr_type = "NARROW (trending day)" if cpr_width_pct < 0.25 else "WIDE (rangebound day)"
     consolidation_status = "SIDEWAYS" if consolidation_pct < 0.40 else "ACTIVE"
 
-    # Pre-compute PDH/PDL breakout status so LLM doesn't need to do arithmetic
-    if prev_day_high > 0 and day_high > prev_day_high:
-        pdh_breakout_status = f"CONFIRMED (today high ₹{day_high:.2f} > PDH ₹{prev_day_high:.2f})"
-    elif prev_day_high > 0:
-        pdh_breakout_status = f"NOT YET (today high ₹{day_high:.2f} < PDH ₹{prev_day_high:.2f})"
-    else:
-        pdh_breakout_status = "UNKNOWN (no previous day data)"
-
-    if prev_day_low > 0 and day_low < prev_day_low:
-        if price > prev_day_low:
-            pdl_breakdown_status = (
-                f"FAILED — price dipped to ₹{day_low:.2f} below PDL ₹{prev_day_low:.2f} "
-                f"but has since recovered to ₹{price:.2f} (current price is ABOVE PDL). "
-                f"This is a bearish trap / bullish reversal — do NOT use this as a SELL signal."
-            )
-        else:
-            pdl_breakdown_status = (
-                f"CONFIRMED — today low ₹{day_low:.2f} < PDL ₹{prev_day_low:.2f} "
-                f"and current price ₹{price:.2f} is still below PDL."
-            )
-    elif prev_day_low > 0:
-        pdl_breakdown_status = f"NOT YET (today low ₹{day_low:.2f} > PDL ₹{prev_day_low:.2f})"
-    else:
-        pdl_breakdown_status = "UNKNOWN (no previous day data)"
     if not historical_context_block:
         historical_context_block = (
             "## Historical Context\n"
@@ -315,8 +333,12 @@ def build_decision_prompt(
         options_oi_block = "  No options data available yet — skip this section."
     if not candle_block:
         candle_block = "  No candle data available yet."
+    if not daily_candle_block:
+        daily_candle_block = "  No daily data available."
+
     return DECISION_PROMPT_TEMPLATE.format(
         historical_context_block=historical_context_block,
+        daily_candle_block=daily_candle_block,
         symbol=symbol,
         price=price,
         timestamp=timestamp,
@@ -347,10 +369,7 @@ def build_decision_prompt(
         sentiment_score=sentiment_score,
         sr_levels_block=sr_levels_block,
         years_of_data=years_of_data,
-        pdh_pivot_confluence="YES — PDH is near daily Pivot (strong zone)" if pdh_pivot_confluence else "no",
         magnet_zones_block=magnet_zones_block,
         options_oi_block=options_oi_block,
         candle_block=candle_block,
-        pdh_breakout_status=pdh_breakout_status,
-        pdl_breakdown_status=pdl_breakdown_status,
     )
