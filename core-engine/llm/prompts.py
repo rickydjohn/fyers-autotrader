@@ -115,6 +115,7 @@ CPR Width: {cpr_width_pct:.2f}% ({cpr_type})
 Price vs CPR: {cpr_signal}
 Previous Day: High=₹{prev_day_high:.2f} Low=₹{prev_day_low:.2f}
 Today's Range: High=₹{day_high:.2f} Low=₹{day_low:.2f}
+Intraday Position: {day_low_dist_pct:.2f}% above day's low | {day_high_dist_pct:.2f}% below day's high
 Consolidation: {consolidation_pct:.2f}% range over last 8 candles ({consolidation_status})
 Range Breakout: {range_breakout}
 Nearest Resistance: ₹{nearest_resistance:.2f} ({resistance_label})
@@ -199,9 +200,15 @@ CPR relevance qualifier (apply before using ABOVE/BELOW_CPR as a confirmation):
 - BELOW_CPR only counts as a Layer 2 SELL confirmation when price is within 1.0% of CPR BC.
 - When CPR is irrelevant (price too far away), replace it with: is price above or below VWAP by >0.5%? That becomes the structural anchor instead.
 
+Intraday range position (apply before directional conditions):
+- Intraday Position shows < 0.5% above day's low: price is at intraday support — SELL is BLOCKED; output HOLD. Do not sell into a tested floor.
+- Intraday Position shows < 0.5% below day's high: price is at intraday resistance — reduce BUY confidence by 0.10; risk/reward is poor this close to the high.
+- If the day's low was tested earlier in the session (visible in the candle block as a wick or spike) and price bounced back strongly (close >0.3% above that low), the low is "tested and held" support — do not issue SELL until price breaks and closes below that level.
+
 Volume spike awareness:
 - If any candle in the last 3 candles has volume ≥ 5× the average volume of the prior 9 candles AND closed bearishly (close < open): strong distribution — reduce BUY confidence by 0.10 (or block BUY if RSI already borderline)
-- If such a candle closed bullishly: strong accumulation — reduce SELL confidence by 0.10
+- If any candle in the last 3 candles has volume ≥ 5× average AND closed bullishly (close > open) AND price is within 1% of day's low: strong demand absorption at support — SELL is BLOCKED; add +0.08 to BUY confidence if RSI in valid range
+- If such a bullish spike closed above VWAP: intraday sentiment has shifted — treat as potential BUY trigger even if EMA/MACD are lagging
 
 Directional conditions:
 - ABOVE_CPR (when within 1%) + price above VWAP + EMA9 > EMA21: intraday structure BULLISH — aligns with BUY, contradicts SELL
@@ -337,6 +344,10 @@ def build_decision_prompt(
         cpr_type = "NARROW (trending day)" if cpr_width_pct < 0.25 else "WIDE (rangebound day)"
     consolidation_status = "SIDEWAYS" if consolidation_pct < 0.40 else "ACTIVE"
 
+    # Pre-compute intraday range position so LLM doesn't need to do the arithmetic
+    day_low_dist_pct  = ((price - day_low)  / day_low  * 100) if day_low  > 0 else 0.0
+    day_high_dist_pct = ((day_high - price) / day_high * 100) if day_high > 0 else 0.0
+
     if not historical_context_block:
         historical_context_block = (
             "## Historical Context\n"
@@ -369,6 +380,8 @@ def build_decision_prompt(
         prev_day_low=prev_day_low,
         day_high=day_high,
         day_low=day_low,
+        day_low_dist_pct=day_low_dist_pct,
+        day_high_dist_pct=day_high_dist_pct,
         consolidation_pct=consolidation_pct,
         consolidation_status=consolidation_status,
         range_breakout=range_breakout,
