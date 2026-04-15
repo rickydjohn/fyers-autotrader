@@ -206,15 +206,20 @@ Intraday range position (apply before directional conditions):
 - If the day's low was tested earlier in the session (visible in the candle block as a wick or spike) and price bounced back strongly (close >0.3% above that low), the low is "tested and held" support — do not issue SELL until price breaks and closes below that level.
 
 Volume spike awareness:
-- If any candle in the last 3 candles has volume ≥ 5× the average volume of the prior 9 candles AND closed bearishly (close < open): strong distribution — reduce BUY confidence by 0.10 (or block BUY if RSI already borderline)
-- If any candle in the last 3 candles has volume ≥ 5× average AND closed bullishly (close > open) AND price is within 1% of day's low: strong demand absorption at support — SELL is BLOCKED; add +0.08 to BUY confidence if RSI in valid range
-- If such a bullish spike closed above VWAP: intraday sentiment has shifted — treat as potential BUY trigger even if EMA/MACD are lagging
+- Bearish spike (close < open) ≥ 5× avg volume in the last 3 candles:
+  • General case: reduce BUY confidence by 0.10 (or block BUY if RSI already borderline)
+  • Near day's high (candle high within 1.5% of day's high) + RSI 20–55 + LH+LL structure visible: direct SELL trigger at confidence 0.72; MACD divergence reduces to 0.68 but does NOT convert to HOLD
+- Bullish spike (close > open) ≥ 5× avg volume in the last 3 candles + price within 1.5% of day's low + RSI 45–75:
+  • SELL is BLOCKED
+  • Direct BUY trigger at confidence 0.72 — lagging EMA/MACD alignment NOT required for this setup
+  • If the candle immediately following this spike is also bullish (reversal confirmed): upgrade confidence to 0.76
+  • MACD divergence reduces confidence to 0.68 but does NOT convert to HOLD
 
 Directional conditions:
 - ABOVE_CPR (when within 1%) + price above VWAP + EMA9 > EMA21: intraday structure BULLISH — aligns with BUY, contradicts SELL
 - BELOW_CPR (when within 1%) + price below VWAP + EMA9 < EMA21: intraday structure BEARISH — aligns with SELL, contradicts BUY
 - INSIDE_CPR: no directional edge — HOLD unless Layer 1 and Layer 3 both strongly agree on direction
-- MACD BULLISH + SELL signal: override to HOLD; MACD BEARISH + BUY signal: override to HOLD
+- MACD divergence: MACD BULLISH while signaling SELL → reduce SELL confidence by 0.08; MACD BEARISH while signaling BUY → reduce BUY confidence by 0.08. MACD lags price by 2–5 candles — do not let a lagging MACD override a fresh high-volume price signal; it is one of the 4 directional conditions, not a veto.
 - Range Breakout = BREAKOUT_HIGH (consolidation_pct < 0.40%): high-probability BUY if above VWAP + RSI 45-75 + MACD not BEARISH; confidence 0.75-0.85
 - Range Breakout = BREAKOUT_LOW: high-probability SELL if below VWAP + RSI 20-55 + MACD not BULLISH; confidence 0.75-0.85
 - Range Breakout = NONE: no breakout setup — apply standard conditions above
@@ -229,8 +234,10 @@ Final confirmation or veto.
 
 #### Minimum Conditions for BUY/SELL
 - BUY: RSI 45–75 (hard requirement) + Layer 1 neutral/bullish + at least 3 of (ABOVE_CPR within 1%, above VWAP, EMA9>EMA21, MACD not BEARISH) + Layer 3 no rejection; confidence 0.70-0.85
+  Volume reversal exception: if the bullish volume spike trigger above fires, the 3-condition gate is waived — confidence is set by that rule directly
 - SELL: RSI 20–55 (hard requirement) + Layer 1 neutral/bearish + at least 3 of (BELOW_CPR within 1%, below VWAP, EMA9<EMA21, MACD not BULLISH) + Layer 3 no rejection; confidence 0.70-0.85
-- HOLD: RSI outside valid range, or fewer than 3 Layer 2 conditions align, or Layer 3 shows rejection/exhaustion, or Layer 1 directly contradicts
+  Volume reversal exception: if the bearish volume spike near day's high trigger above fires, the 3-condition gate is waived — confidence is set by that rule directly
+- HOLD: RSI outside valid range, or fewer than 3 Layer 2 conditions align (unless a volume reversal exception applies), or Layer 3 shows rejection/exhaustion, or Layer 1 directly contradicts
 - Confidence 0.55–0.69 when exactly 2 conditions align; always output HOLD when fewer than 2 align
 
 ### HISTORICAL S/R CONFLUENCE (multi-year daily zones)
