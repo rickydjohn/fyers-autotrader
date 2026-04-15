@@ -60,6 +60,7 @@ def configure_fyers_proxy() -> None:
         return
 
     _original_init = requests.Session.__init__
+    _original_request = requests.Session.request
 
     def _patched_session_init(self, *args, **kwargs):
         _original_init(self, *args, **kwargs)
@@ -69,9 +70,16 @@ def configure_fyers_proxy() -> None:
         })
         self.trust_env = True
 
+    def _patched_session_request(self, method, url, **kwargs):
+        # Inject a default timeout so hung Fyers API calls never block the event loop
+        # indefinitely. Callers can still override by passing timeout= explicitly.
+        kwargs.setdefault("timeout", 10)
+        return _original_request(self, method, url, **kwargs)
+
     requests.Session.__init__ = _patched_session_init
+    requests.Session.request = _patched_session_request
     logger.info(
-        "requests.Session patched: all sessions routed via proxy %s:%s",
+        "requests.Session patched: all sessions routed via proxy %s:%s (timeout=10s)",
         settings.proxy_ip,
         settings.proxy_port,
     )
