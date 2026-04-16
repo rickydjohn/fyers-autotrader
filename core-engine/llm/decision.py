@@ -210,6 +210,7 @@ async def make_decision(
     candle_block: str = "",
     raw_candles: Optional[list] = None,
     forming_bar_block: str = "",
+    forming_bar_delta: float = 0.0,
 ) -> Optional[LLMDecision]:
     """Build prompt (with historical context), call LLM, parse, publish to Redis and DB."""
     ind: TechnicalIndicators = snapshot.indicators
@@ -320,6 +321,26 @@ async def make_decision(
         return None
 
     validated = _validate_decision(parsed, snapshot.ltp)
+
+    # Forming bar hard gate — apply confidence delta in Python regardless of
+    # whether the LLM correctly acted on the text instruction.
+    if forming_bar_delta != 0.0 and validated["decision"] in ("BUY", "SELL"):
+        old_conf = validated["confidence"]
+        new_conf = max(0.0, min(1.0, old_conf + forming_bar_delta))
+        validated["confidence"] = new_conf
+        tag = f"[Forming bar: delta {forming_bar_delta:+.3f}, conf {old_conf:.2f}→{new_conf:.2f}]"
+        if new_conf < 0.5:
+            validated["decision"] = "HOLD"
+            tag = (
+                f"[Forming bar gate: delta {forming_bar_delta:+.3f} dropped conf "
+                f"{old_conf:.2f}→{new_conf:.2f} below 0.50, overriding to HOLD]"
+            )
+        validated["reasoning"] = tag + " " + validated["reasoning"]
+        logger.info(
+            f"Forming bar delta applied for {snapshot.symbol}: "
+            f"{forming_bar_delta:+.3f} ({old_conf:.2f}→{new_conf:.2f}) "
+            f"→ {validated['decision']}"
+        )
 
     # Layer 2 cross-symbol confidence gate
     _apply_cross_symbol_gate(validated, peer_signal, symbol=snapshot.symbol)
