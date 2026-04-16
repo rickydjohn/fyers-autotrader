@@ -162,6 +162,27 @@ async def fetch_daily_candles(symbol: str, limit: int = 14) -> List[Dict[str, An
         return []
 
 
+async def update_volume_profile(symbol: str, session_date: str) -> None:
+    """Trigger an incremental volume profile update for one session date."""
+    await _post("/api/v1/volume-profile/update", {"symbol": symbol, "session_date": session_date})
+
+
+async def fetch_volume_profile(symbol: str) -> List[Dict[str, Any]]:
+    """Fetch historical average 5m volume per time slot for a symbol from data-service."""
+    try:
+        import urllib.parse
+        encoded = urllib.parse.quote(symbol, safe="")
+        resp = await get_client().get(
+            f"/api/v1/volume-profile/{encoded}",
+            timeout=8.0,
+        )
+        resp.raise_for_status()
+        return resp.json().get("slots", [])
+    except Exception as e:
+        logger.warning(f"Could not fetch volume profile for {symbol}: {e}")
+        return []
+
+
 async def fetch_context_snapshot(symbol: str) -> Optional[Dict[str, Any]]:
     """Fetch the latest context snapshot for a symbol from data-service."""
     try:

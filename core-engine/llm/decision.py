@@ -209,6 +209,7 @@ async def make_decision(
     options_oi: Optional[dict] = None,
     candle_block: str = "",
     raw_candles: Optional[list] = None,
+    forming_bar_block: str = "",
 ) -> Optional[LLMDecision]:
     """Build prompt (with historical context), call LLM, parse, publish to Redis and DB."""
     ind: TechnicalIndicators = snapshot.indicators
@@ -252,7 +253,11 @@ async def make_decision(
         day_low=ind.day_low,
         day_high=ind.day_high,
         macd_signal=macd_label,
-        recent_candles=raw_candles or [],
+        recent_candles=[
+            {"time": c.timestamp.isoformat(), "open": c.open, "high": c.high,
+             "low": c.low, "close": c.close, "volume": c.volume}
+            for c in (raw_candles or [])
+        ],
     )
 
     prompt = build_decision_prompt(
@@ -292,6 +297,7 @@ async def make_decision(
         buy_gate=gates["buy_gate"],
         sell_gate=gates["sell_gate"],
         volume_signal=gates["volume_signal"],
+        forming_bar_block=forming_bar_block,
     )
 
     logger.info(f"Querying Ollama for {snapshot.symbol}...")

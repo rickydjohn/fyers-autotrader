@@ -34,6 +34,7 @@ from indicators.technicals import (
 )
 from indicators.historical_sr import compute_sr_levels, format_sr_for_prompt
 from llm.decision import make_decision
+from llm.prompts import compute_forming_bar_signal
 from models.schemas import MarketSnapshot, NewsSentiment, TechnicalIndicators
 from news.scraper import get_all_news
 from news.sentiment import analyze_sentiment
@@ -56,6 +57,9 @@ _last_decisions: dict = {}  # symbol -> {"decision": str, "confidence": float, "
 _CROSS_SYMBOL_LEAD = "NSE:NIFTY50-INDEX"
 # Maximum age (seconds) for a peer decision to be considered valid for gating
 _PEER_SIGNAL_MAX_AGE_S = 900  # 15 minutes
+# Per-symbol volume profile cache — refreshed once per day at startup / session open.
+# Format: symbol -> {"slots": List[dict], "date": str}
+_volume_profile_cache: dict = {}
 # Per-symbol 5m candle cache — only re-fetches when a new 5m bar has closed.
 # 5m bars close at :00/:05/:10/... so 4 out of 5 scans would otherwise fetch
 # identical data. Caching cuts get_historical_candles calls by 80% and
@@ -164,6 +168,29 @@ def _get_candles_cached(symbol: str, limit: int = 100) -> List[OHLCBar]:
     candles = get_historical_candles(symbol, interval=interval, limit=limit)
     _candle_cache[symbol] = {"candles": candles, "bar_ts": bar_ts}
     return candles
+
+
+def _current_bar_position() -> int:
+    """Return which minute (0-4) we are in within the current 5m bar.
+    Session starts at 09:15 IST; bars align on 5-minute boundaries from there.
+    """
+    now = datetime.now(IST)
+    elapsed = (now.hour * 60 + now.minute) - (9 * 60 + 15)
+    if elapsed < 0:
+        return 0
+    return elapsed % 5
+
+
+async def _get_volume_profile(symbol: str) -> list:
+    """Return volume profile for symbol, fetching from data-service if not cached today."""
+    today = date.today().isoformat()
+    cached = _volume_profile_cache.get(symbol)
+    if cached and cached.get("date") == today and cached.get("slots"):
+        return cached["slots"]
+    slots = await data_client.fetch_volume_profile(symbol)
+    if slots:
+        _volume_profile_cache[symbol] = {"slots": slots, "date": today}
+    return slots
 
 
 async def _process_symbol(symbol: str, redis_client: aioredis.Redis) -> None:
@@ -302,6 +329,38 @@ async def _process_symbol(symbol: str, redis_client: aioredis.Redis) -> None:
         logger.debug(f"[SCAN SKIP LLM] {symbol}: past session close, skipping LLM decision")
         return
 
+    # Timing gate: skip LLM during the first 2 minutes of every 5m bar.
+    # Minutes 2-3 within a 5m bar show ~38% false directional signals;
+    # minute 1 only shows ~8%.  We wait until bar_position >= 2 (3rd minute+).
+    bar_position = _current_bar_position()
+    if bar_position < 2:
+        logger.debug(
+            f"[SCAN SKIP LLM] {symbol}: bar_position={bar_position} "
+            f"(waiting for 3rd minute of 5m bar)"
+        )
+        return
+
+    # Forming bar signal: analyse the current incomplete 5m bar
+    forming_bar_block = ""
+    try:
+        volume_profile = await _get_volume_profile(symbol)
+        session_start_min = 9 * 60 + 15
+        now_ist_min = _now.hour * 60 + _now.minute
+        elapsed = now_ist_min - session_start_min
+        current_bar_start_min = session_start_min + (elapsed // 5) * 5
+
+        forming_candles = [
+            {"time": c.timestamp.isoformat(), "open": c.open, "high": c.high,
+             "low": c.low, "close": c.close, "volume": c.volume}
+            for c in candles
+            if (c.timestamp.astimezone(IST).hour * 60 + c.timestamp.astimezone(IST).minute)
+               >= current_bar_start_min
+        ]
+        fb_signal = compute_forming_bar_signal(forming_candles, bar_position, volume_profile)
+        forming_bar_block = fb_signal.get("forming_bar_block", "")
+    except Exception as e:
+        logger.debug(f"Could not compute forming bar signal for {symbol}: {e}")
+
     historical_context = _context_cache.get(symbol)
     sr_levels = _sr_cache.get(symbol, [])
     magnet_zones = _magnets_cache.get(symbol)
@@ -333,6 +392,7 @@ async def _process_symbol(symbol: str, redis_client: aioredis.Redis) -> None:
         options_oi=options_oi,
         candle_block=candle_block,
         raw_candles=candles,
+        forming_bar_block=forming_bar_block,
     )
 
     # Store final (gated) decision for downstream symbols to use as peer signal
@@ -889,4 +949,27 @@ def create_scheduler(redis_client: aioredis.Redis) -> AsyncIOScheduler:
         id="sr_levels_weekly",
     )
 
+    # Update volume profile with today's session data at 15:35 IST (5 min after close)
+    scheduler.add_job(
+        _update_volume_profile_eod,
+        "cron",
+        day_of_week="mon-fri",
+        hour=15,
+        minute=35,
+        id="volume_profile_eod",
+    )
+
     return scheduler
+
+
+async def _update_volume_profile_eod() -> None:
+    """Push today's session candles into the volume profile running average."""
+    today = date.today().isoformat()
+    for symbol in settings.symbols:
+        try:
+            await data_client.update_volume_profile(symbol, today)
+            # Invalidate cache so tomorrow's first scan re-fetches updated profile
+            _volume_profile_cache.pop(symbol, None)
+            logger.info(f"Volume profile updated for {symbol} ({today})")
+        except Exception as e:
+            logger.warning(f"Volume profile EOD update failed for {symbol}: {e}")

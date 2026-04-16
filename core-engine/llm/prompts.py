@@ -58,6 +58,39 @@ def format_options_oi_block(oi: Optional[Dict[str, Any]]) -> str:
     )
 
 
+def _aggregate_to_5m(candles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Aggregate 1m candle dicts to 5m bars aligned to 09:15 IST (03:45 UTC)."""
+    SESSION_START_UTC_MIN = 3 * 60 + 45   # 03:45 UTC = 09:15 IST
+    bars: dict = {}
+    for c in candles:
+        ts = str(c.get("time", ""))
+        if len(ts) < 16 or "T" not in ts:
+            continue
+        h_utc = int(ts[11:13])
+        m_utc = int(ts[14:16])
+        total  = h_utc * 60 + m_utc
+        offset = total - SESSION_START_UTC_MIN
+        if offset < 0:
+            continue
+        bar_min = SESSION_START_UTC_MIN + (offset // 5) * 5
+        o  = float(c.get("open",   0) or 0)
+        h  = float(c.get("high",   0) or 0)
+        l  = float(c.get("low",    0) or 0)
+        cl = float(c.get("close",  0) or 0)
+        v  = float(c.get("volume", 0) or 0)
+        bh = bar_min // 60; bm = bar_min % 60
+        key = f"{ts[:10]}T{bh:02d}:{bm:02d}:00"
+        if key not in bars:
+            bars[key] = {"time": key, "open": o, "high": h, "low": l, "close": cl, "volume": v}
+        else:
+            b = bars[key]
+            b["high"]    = max(b["high"], h)
+            b["low"]     = min(b["low"],  l)
+            b["close"]   = cl
+            b["volume"] += v
+    return [bars[k] for k in sorted(bars.keys())]
+
+
 def compute_trading_gates(
     rsi: float,
     price: float,
@@ -90,10 +123,12 @@ def compute_trading_gates(
     # LLM reads candle structure to decide whether the low is defended (bounce) or breaking.
     day_low_dist_pct = ((price - day_low) / day_low * 100) if day_low > 0 else 99.0
 
-    # Volume reversal signal
+    # Volume reversal signal — use 5m aggregated candles to avoid mid-bar noise
+    # (minutes 2-3 of a 5m bar flip direction ~38% of the time)
+    candles_5m = _aggregate_to_5m(recent_candles) if len(recent_candles) > 10 else recent_candles
     volume_signal = "NONE"
-    if len(recent_candles) >= 4:
-        candles12 = recent_candles[-12:]
+    if len(candles_5m) >= 4:
+        candles12 = candles_5m[-12:]
 
         # --- Bearish reversal near day's high: check full visible window ---
         if "BLOCKED" not in sell_gate:
@@ -105,9 +140,11 @@ def compute_trading_gates(
                 c_high = float(c.get("high",   0) or 0)
                 other_vols = [v for i, v in enumerate(vols) if i != idx]
                 avg_vol = sum(other_vols) / len(other_vols) if other_vols else 0
+                day_midpoint = (day_high + day_low) / 2 if day_high and day_low else day_high
                 if (avg_vol > 0 and c_vol >= 5 * avg_vol
                         and c_close < c_open
                         and day_high > 0 and (day_high - c_high) / day_high * 100 <= 1.5
+                        and price >= day_midpoint
                         and 20 <= rsi <= 55):
                     # Check LH+LL structure after this candle
                     after = candles12[idx + 1:] if idx + 1 < len(candles12) else []
@@ -131,17 +168,20 @@ def compute_trading_gates(
                     )
                     break  # first qualifying candle wins
 
-        # --- Bullish reversal near day's low: check last 3 candles ---
+        # --- Bullish reversal near day's low: check last 3 5m bars ---
         if volume_signal == "NONE" and "BLOCKED" not in buy_gate:
-            last3  = recent_candles[-3:]
-            prior9 = recent_candles[-12:-3] if len(recent_candles) >= 12 else recent_candles[:-3]
+            last3  = candles_5m[-3:]
+            prior9 = candles_5m[-12:-3] if len(candles_5m) >= 12 else candles_5m[:-3]
             avg9   = (sum(float(c.get("volume", 0) or 0) for c in prior9) / len(prior9)) if prior9 else 0
             for i, c in enumerate(last3):
                 c_vol   = float(c.get("volume", 0) or 0)
                 c_open  = float(c.get("open",   0) or 0)
                 c_close = float(c.get("close",  0) or 0)
+                c_body    = c_close - c_open
+                c_wick_up = float(c.get("high", c_close) or c_close) - c_close
                 if (avg9 > 0 and c_vol >= 5 * avg9
                         and c_close > c_open
+                        and c_wick_up <= c_body          # reject shooting stars
                         and day_low > 0 and day_low_dist_pct <= 1.5
                         and 45 <= rsi <= 75):
                     confirmed = (
@@ -169,6 +209,154 @@ def compute_trading_gates(
                     break
 
     return {"buy_gate": buy_gate, "sell_gate": sell_gate, "volume_signal": volume_signal}
+
+
+def compute_forming_bar_signal(
+    forming_1m_candles: List[Dict[str, Any]],
+    bar_position: int,
+    volume_profile: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Analyse the current incomplete 5m bar and return a confidence delta + prompt block.
+
+    Args:
+        forming_1m_candles: 1m candles that belong to the current (unfinished) 5m bar.
+        bar_position: Which minute we are in — 0 = first minute, 4 = fifth/last minute.
+        volume_profile: List of {time_slot: "HH:MM:SS", avg_volume: int, sample_count: int}
+                        from the volume_profile table (one entry per 5m slot per symbol).
+
+    Returns:
+        {
+          "confidence_delta": float,   # -0.22 to +0.22
+          "forming_bar_block": str,    # ready-to-inject LLM text
+          "skip_llm": bool,            # True when bar_position < 2 (38% noise window)
+        }
+    """
+    skip_llm = bar_position < 2
+
+    if not forming_1m_candles:
+        return {"confidence_delta": 0.0, "forming_bar_block": "", "skip_llm": skip_llm}
+
+    # Aggregate the forming candles into one bar
+    o  = float(forming_1m_candles[0].get("open",  0) or 0)
+    hi = max(float(c.get("high",  0) or 0) for c in forming_1m_candles)
+    lo = min(float(c.get("low",   0) or 0) for c in forming_1m_candles)
+    cl = float(forming_1m_candles[-1].get("close", 0) or 0)
+    current_vol = sum(float(c.get("volume", 0) or 0) for c in forming_1m_candles)
+
+    body       = abs(cl - o)
+    candle_range = hi - lo
+    is_bull    = cl >= o
+    wick_up    = hi - max(o, cl)
+    wick_dn    = min(o, cl) - lo
+    body_ratio = body / candle_range if candle_range > 0 else 0.0
+
+    # Bar start time from first candle's timestamp
+    ts = str(forming_1m_candles[0].get("time", ""))
+    bar_time_label = "??"
+    bar_time_slot  = None
+    if "T" in ts:
+        t_part = ts.split("T")[1][:5].split(":")
+        try:
+            h_utc, m_utc = int(t_part[0]), int(t_part[1])
+            h_ist = (h_utc + 5) % 24
+            m_ist = m_utc + 30
+            if m_ist >= 60:
+                h_ist += 1; m_ist -= 60
+            bar_time_label = f"{h_ist:02d}:{m_ist:02d}"
+            bar_time_slot  = f"{h_ist:02d}:{m_ist:02d}:00"
+        except (ValueError, IndexError):
+            pass
+
+    # Volume context: pro-rate expected volume for minutes elapsed
+    vp_entry     = next((s for s in volume_profile if s.get("time_slot") == bar_time_slot), None)
+    expected_vol = 0.0
+    volume_ratio = 0.0
+    if vp_entry and vp_entry.get("avg_volume", 0) > 0:
+        minutes_elapsed = bar_position + 1  # 1 through 5
+        expected_vol    = vp_entry["avg_volume"] * minutes_elapsed / 5
+        volume_ratio    = current_vol / expected_vol if expected_vol > 0 else 0.0
+
+    # Volume note
+    if expected_vol == 0:
+        vol_note = "no historical norm available"
+    elif volume_ratio < 0.30:
+        vol_note = f"ultra-low volume ({volume_ratio:.1f}× norm) — no signal"
+    elif volume_ratio < 0.50:
+        vol_note = f"below-avg volume ({volume_ratio:.1f}× norm)"
+    elif volume_ratio > 2.5:
+        vol_note = f"surge volume ({volume_ratio:.1f}× norm)"
+    elif volume_ratio > 1.5:
+        vol_note = f"strong volume ({volume_ratio:.1f}× norm)"
+    else:
+        vol_note = f"avg volume ({volume_ratio:.1f}× norm)"
+
+    # Body classification
+    if body_ratio < 0.15:
+        body_label = "Doji (indecision)"
+    elif body_ratio < 0.40:
+        body_label = "Weak bullish" if is_bull else "Weak bearish"
+    elif body_ratio < 0.65:
+        body_label = "Bullish" if is_bull else "Bearish"
+    else:
+        body_label = "Strong bullish" if is_bull else "Strong bearish"
+
+    # Base confidence delta from body strength + volume
+    if body_ratio < 0.15:                              # doji
+        confidence_delta = -0.05
+        reason = "indecision (doji)"
+    elif body_ratio < 0.40:                            # weak
+        confidence_delta = +0.03 if volume_ratio >= 1.0 else -0.05
+        reason = "weak body with avg/low volume"
+    elif body_ratio < 0.65:                            # moderate
+        confidence_delta = +0.07 if volume_ratio >= 1.0 else +0.02
+        reason = "moderate body"
+    else:                                              # strong
+        confidence_delta = +0.10 if volume_ratio >= 1.0 else +0.05
+        reason = "strong body"
+
+    # Volume extremes adjust delta
+    if volume_ratio >= 2.5 and body_ratio >= 0.40:
+        confidence_delta += 0.06
+        reason += " + volume surge"
+    elif volume_ratio < 0.30 and expected_vol > 0:
+        confidence_delta = 0.0
+        reason = "ultra-low volume — signal suppressed"
+
+    # Late reversal penalty at minutes 4-5 (bar_position 3-4)
+    if bar_position >= 3 and len(forming_1m_candles) >= 2:
+        last_1m     = forming_1m_candles[-1]
+        last_1m_bull = float(last_1m.get("close", 0)) >= float(last_1m.get("open", 0))
+        if last_1m_bull != is_bull:
+            confidence_delta -= 0.15
+            reason += " | late reversal candle (-0.15)"
+
+    # Confirmation boost at minutes 4-5 if body + volume both confirm
+    elif bar_position >= 3 and volume_ratio >= 1.5 and body_ratio >= 0.40:
+        confidence_delta += 0.08
+        reason += " | late confirmation (+0.08)"
+
+    # Clamp
+    confidence_delta = max(-0.22, min(0.22, round(confidence_delta, 3)))
+
+    direction_arrow = "▲" if is_bull else "▼"
+    forming_bar_block = (
+        f"## Forming 5m Bar — {bar_time_label} IST ({bar_position + 1}/5 minutes elapsed)\n"
+        f"  {direction_arrow} O:{o:.0f} H:{hi:.0f} L:{lo:.0f} C:{cl:.0f}\n"
+        f"  Body: {body_label} ({body_ratio:.0%})  "
+        f"Upper wick: {wick_up:.0f} pt  Lower wick: {wick_dn:.0f} pt\n"
+        f"  Volume so far: {int(current_vol / 1000)}K"
+        + (f"  (expected ~{int(expected_vol / 1000)}K at this point — {vol_note})" if expected_vol > 0 else f"  ({vol_note})")
+        + f"\n  Confidence delta: {confidence_delta:+.3f} — {reason}\n\n"
+        "  Apply this delta to your base confidence before outputting. "
+        "This bar reflects the freshest price action — if it contradicts your Step 1 "
+        "candle analysis, weight the forming bar higher."
+    )
+
+    return {
+        "confidence_delta": confidence_delta,
+        "forming_bar_block": forming_bar_block,
+        "skip_llm": skip_llm,
+    }
 
 
 def format_daily_candles_for_prompt(candles: List[Dict[str, Any]]) -> str:
@@ -243,6 +431,8 @@ BUY Gate:  {buy_gate}
 SELL Gate: {sell_gate}
 Volume Signal: {volume_signal}
 
+{forming_bar_block}
+
 ## Historical Support/Resistance (multi-year daily chart)
 Zones where price has historically reversed — derived from {years_of_data} of daily swing data.
 {sr_levels_block}
@@ -266,6 +456,7 @@ Read the ## Pre-Computed Trading Gates block above. These are facts computed by 
 - If SELL Gate says BLOCKED: you MUST NOT output SELL regardless of any indicator alignment.
 - If Volume Signal is not NONE: use that direction and confidence as your starting point. Adjust by ±0.08 max for Layer 1 or Layer 3 factors. Do not override to HOLD unless a hard RSI stop applies.
 - If all gates are OPEN and Volume Signal is NONE: proceed to Steps 1–2 and the three-layer framework.
+- If a ## Forming 5m Bar block is present: read the confidence_delta value and apply it to your final confidence. A negative delta means the forming bar is working against your direction — treat it seriously.
 
 ### STEP 1 — PRICE ACTION READ (mandatory — complete before any rule)
 Read the ## Recent Price Action candle block and answer all four questions. Capture answers in candle_summary. Your decision MUST be consistent with candle_summary — if they contradict, candle_summary overrides indicators.
@@ -466,6 +657,7 @@ def build_decision_prompt(
     buy_gate: str = "OPEN",
     sell_gate: str = "OPEN",
     volume_signal: str = "NONE",
+    forming_bar_block: str = "",
 ) -> str:
     if day_type == "NARROW":
         cpr_type = "NARROW (trending day)"
@@ -504,6 +696,8 @@ def build_decision_prompt(
         sell_gate = "OPEN"
     if not volume_signal:
         volume_signal = "NONE"
+    if not forming_bar_block:
+        forming_bar_block = ""
 
     return DECISION_PROMPT_TEMPLATE.format(
         historical_context_block=historical_context_block,
@@ -546,4 +740,5 @@ def build_decision_prompt(
         buy_gate=buy_gate,
         sell_gate=sell_gate,
         volume_signal=volume_signal,
+        forming_bar_block=forming_bar_block,
     )

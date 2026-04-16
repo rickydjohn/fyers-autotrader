@@ -16,10 +16,11 @@ from sqlalchemy import text
 
 from config import settings
 from db.connection import engine
-from routers import ingest, historical, aggregated, context, decision_history, sr_levels as sr_levels_router, report as report_router, magnets as magnets_router
+from routers import ingest, historical, aggregated, context, decision_history, sr_levels as sr_levels_router, report as report_router, magnets as magnets_router, volume_profile as volume_profile_router
 from routers.context import set_redis_client
 from context.builder import build_context_snapshot, format_context_for_prompt
 from db.connection import AsyncSessionLocal
+from repositories.market_data import bootstrap_volume_profile
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -105,7 +106,26 @@ async def lifespan(app: FastAPI):
             "CREATE INDEX IF NOT EXISTS historical_sr_symbol_strength_idx "
             "ON historical_sr_levels (symbol, strength DESC)"
         ))
-        logger.info("Schema guards applied (daily_ohlcv, historical_sr_levels)")
+        # Migration 003: volume profile table
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS volume_profile (
+                symbol       TEXT        NOT NULL,
+                time_slot    TIME        NOT NULL,
+                avg_volume   BIGINT      NOT NULL,
+                sample_count INT         NOT NULL DEFAULT 0,
+                updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (symbol, time_slot)
+            )
+        """))
+        logger.info("Schema guards applied (daily_ohlcv, historical_sr_levels, volume_profile)")
+
+    # Bootstrap volume profile from all historical candles (no-op if already populated)
+    async with AsyncSessionLocal() as db:
+        try:
+            await bootstrap_volume_profile(db)
+            logger.info("Volume profile bootstrap complete")
+        except Exception as e:
+            logger.warning(f"Volume profile bootstrap failed: {e}")
 
     # Connect Redis
     redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
@@ -157,6 +177,7 @@ app.include_router(decision_history.router,      prefix=PREFIX)
 app.include_router(sr_levels_router.router,      prefix=PREFIX)
 app.include_router(report_router.router,         prefix=PREFIX)
 app.include_router(magnets_router.router,        prefix=PREFIX)
+app.include_router(volume_profile_router.router, prefix=PREFIX)
 
 
 @app.get("/healthz")

@@ -110,6 +110,7 @@ async def get_candles(
     interval: str = "1m",
     limit: int = 200,
     since: Optional[datetime] = None,
+    until: Optional[datetime] = None,
 ) -> List[Dict[str, Any]]:
     """
     Fetch candles from the appropriate view based on interval.
@@ -128,22 +129,26 @@ async def get_candles(
     }
     table, time_col = view_map.get(interval, ("market_candles", "time"))
 
-    since_clause = ""
+    where_parts = ["symbol = :symbol"]
     params: Dict[str, Any] = {"symbol": symbol, "limit": limit}
     if since:
-        since_clause = f"AND {time_col} >= :since"
+        where_parts.append(f"{time_col} >= :since")
         params["since"] = since
+    if until:
+        where_parts.append(f"{time_col} < :until")
+        params["until"] = until
+    where_clause = " AND ".join(where_parts)
 
     sql = text(f"""
         SELECT {time_col} AS time, open, high, low, close, volume, vwap_avg AS vwap
         FROM {table}
-        WHERE symbol = :symbol {since_clause}
+        WHERE {where_clause}
         ORDER BY {time_col} DESC
         LIMIT :limit
     """) if table != "market_candles" else text(f"""
         SELECT time, open, high, low, close, volume, vwap, rsi, ema_9, ema_21
         FROM {table}
-        WHERE symbol = :symbol {since_clause}
+        WHERE {where_clause}
         ORDER BY time DESC
         LIMIT :limit
     """)
@@ -433,6 +438,93 @@ async def get_monthly_ohlc(
     except Exception:
         pass
     return None
+
+
+async def get_volume_profile(
+    db: AsyncSession,
+    symbol: str,
+) -> List[Dict[str, Any]]:
+    """Return historical average 5m volume per time slot for a symbol."""
+    sql = text("""
+        SELECT time_slot::TEXT AS time_slot, avg_volume, sample_count
+        FROM volume_profile
+        WHERE symbol = :symbol
+        ORDER BY time_slot
+    """)
+    result = await db.execute(sql, {"symbol": symbol})
+    rows = result.mappings().all()
+    return [dict(r) for r in rows]
+
+
+async def bootstrap_volume_profile(db: AsyncSession) -> None:
+    """Populate volume_profile from all existing market_candles data (session hours only).
+    Safe to call on every startup — skips if already populated."""
+    count_result = await db.execute(text("SELECT COUNT(*) FROM volume_profile"))
+    count = count_result.scalar()
+    if count and count > 0:
+        return
+
+    await db.execute(text("""
+        INSERT INTO volume_profile (symbol, time_slot, avg_volume, sample_count)
+        WITH bars AS (
+            SELECT
+                symbol,
+                date_trunc('day', time) AS day,
+                time_bucket('5 minutes', time - INTERVAL '9 hours 15 minutes')
+                    + INTERVAL '9 hours 15 minutes' AS bucket,
+                SUM(volume) AS bar_vol
+            FROM market_candles
+            WHERE volume < 200000000
+              AND time::TIME >= '09:15:00'
+              AND time::TIME <  '15:31:00'
+            GROUP BY symbol, day, bucket
+        )
+        SELECT
+            symbol,
+            bucket::TIME AS time_slot,
+            AVG(bar_vol)::BIGINT AS avg_volume,
+            COUNT(DISTINCT day)::INT AS sample_count
+        FROM bars
+        GROUP BY symbol, time_slot
+        ON CONFLICT (symbol, time_slot) DO UPDATE
+            SET avg_volume   = EXCLUDED.avg_volume,
+                sample_count = EXCLUDED.sample_count,
+                updated_at   = NOW()
+    """))
+    await db.commit()
+
+
+async def update_volume_profile_for_date(db: AsyncSession, symbol: str, session_date: str) -> None:
+    """Incremental update: recompute volume profile for one session date and merge into averages."""
+    await db.execute(text("""
+        INSERT INTO volume_profile (symbol, time_slot, avg_volume, sample_count)
+        WITH bars AS (
+            SELECT
+                symbol,
+                time_bucket('5 minutes', time - INTERVAL '9 hours 15 minutes')
+                    + INTERVAL '9 hours 15 minutes' AS bucket,
+                SUM(volume) AS bar_vol
+            FROM market_candles
+            WHERE symbol = :symbol
+              AND time::DATE = :session_date::DATE
+              AND volume < 200000000
+              AND time::TIME >= '09:15:00'
+              AND time::TIME <  '15:31:00'
+            GROUP BY symbol, bucket
+        )
+        SELECT
+            symbol,
+            bucket::TIME AS time_slot,
+            bar_vol::BIGINT AS avg_volume,
+            1 AS sample_count
+        FROM bars
+        ON CONFLICT (symbol, time_slot) DO UPDATE
+            SET avg_volume   = ((volume_profile.avg_volume * volume_profile.sample_count) + EXCLUDED.avg_volume)
+                               / (volume_profile.sample_count + 1),
+                sample_count = volume_profile.sample_count + 1,
+                updated_at   = NOW()
+    """), {"symbol": symbol, "session_date": session_date})
+    await db.commit()
 
 
 async def insert_options_oi_batch(db: AsyncSession, rows: List[Dict[str, Any]]) -> int:
