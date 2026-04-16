@@ -644,19 +644,39 @@ async def bootstrap_historical_data(
             per_interval[interval] = 0
             continue
 
-        batch = [
-            {
-                "time":   c.timestamp.isoformat(),
-                "symbol": symbol,
-                "open":   c.open,
-                "high":   c.high,
-                "low":    c.low,
-                "close":  c.close,
-                "volume": c.volume,
-            }
-            for c in candles
-        ]
-        await data_client.persist_candles_batch(batch)
+        if interval == "1d":
+            # Daily candles go to daily_ohlcv, not market_candles.
+            # Storing them in market_candles pollutes 1m queries with day-level
+            # OHLCV rows (midnight timestamps, 400M+ volume) that corrupt
+            # intraday day_high/day_low calculations.
+            batch = [
+                {
+                    "date":   c.timestamp.strftime("%Y-%m-%d"),
+                    "symbol": symbol,
+                    "open":   c.open,
+                    "high":   c.high,
+                    "low":    c.low,
+                    "close":  c.close,
+                    "volume": c.volume,
+                }
+                for c in candles
+            ]
+            await data_client.persist_daily_ohlcv_batch(batch)
+        else:
+            batch = [
+                {
+                    "time":   c.timestamp.isoformat(),
+                    "symbol": symbol,
+                    "open":   c.open,
+                    "high":   c.high,
+                    "low":    c.low,
+                    "close":  c.close,
+                    "volume": c.volume,
+                }
+                for c in candles
+            ]
+            await data_client.persist_candles_batch(batch)
+
         n = len(candles)
         per_interval[interval] = n
         total += n
