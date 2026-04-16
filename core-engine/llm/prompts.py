@@ -83,15 +83,12 @@ def compute_trading_gates(
         buy_gate_parts.append(f"BLOCKED — RSI {rsi:.1f} extreme")
         sell_gate_parts.append(f"BLOCKED — RSI {rsi:.1f} extreme")
 
-    # Day's low proximity (< 0.5% → SELL blocked)
-    day_low_dist_pct = ((price - day_low) / day_low * 100) if day_low > 0 else 99.0
-    if day_low_dist_pct < 0.25:
-        sell_gate_parts.append(
-            f"BLOCKED — price {day_low_dist_pct:.2f}% above day's low (support floor)"
-        )
-
     buy_gate  = "; ".join(buy_gate_parts)  if buy_gate_parts  else "OPEN"
     sell_gate = "; ".join(sell_gate_parts) if sell_gate_parts else "OPEN"
+
+    # Day's low proximity — informational only (not a hard block).
+    # LLM reads candle structure to decide whether the low is defended (bounce) or breaking.
+    day_low_dist_pct = ((price - day_low) / day_low * 100) if day_low > 0 else 99.0
 
     # Volume reversal signal
     volume_signal = "NONE"
@@ -334,13 +331,12 @@ CPR relevance qualifier (apply before using ABOVE/BELOW_CPR as a confirmation):
 - When CPR is irrelevant (price too far away), replace it with: is price above or below VWAP by >0.5%? That becomes the structural anchor instead.
 
 Intraday range position (apply before directional conditions):
-- SELL Gate already accounts for day's low proximity — if SELL Gate shows BLOCKED, do not output SELL.
 - Intraday Position shows < 0.5% below day's high: reduce BUY confidence by 0.10; risk/reward is poor this close to the high.
-- If the day's low was tested earlier in the session (visible in the candle block as a wick or spike) and price bounced back strongly (close >0.3% above that low), the low is "tested and held" support — do not issue SELL until price breaks and closes below that level.
+- Day's low proximity (from Intraday Position line): if price is < 0.25% above the day's low AND the candle block shows lower wicks / buyers defending (hammer, bullish engulfing, BULLISH_AT_LOW), treat as support — reduce SELL confidence by 0.10. If candle block shows LH+LL with no lower-wick defense (clean bearish closes, no bounces), this is a breakdown — proceed with SELL normally.
 
 Volume spike awareness (general — applies when reversal triggers above did not fire):
 - Bearish spike (close < open) ≥ 5× avg in the last 3 candles: strong distribution — reduce BUY confidence by 0.10
-- Bullish spike (close > open) ≥ 5× avg in the last 3 candles near day's low: SELL is BLOCKED
+- Bullish spike (close > open) ≥ 5× avg in the last 3 candles near day's low: reduce SELL confidence by 0.10 (potential reversal — check candle block for confirmation before committing to SELL)
 
 Directional conditions:
 - ABOVE_CPR (when within 1%) + price above VWAP + EMA9 > EMA21: intraday structure BULLISH — aligns with BUY, contradicts SELL
