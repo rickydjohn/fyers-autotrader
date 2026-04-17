@@ -10,10 +10,19 @@ class Settings(BaseSettings):
     fyers_redirect_uri: str = Field("http://100.78.91.15:8001/fyers/callback", env="FYERS_REDIRECT_URI")
     token_path: str = "/app/tokens/access_token.json"
 
+    # LLM provider selection — "ollama" or "claude"
+    llm_provider: str = Field("ollama", env="LLM_PROVIDER")
+
     # Ollama
-    ollama_base_url: str = Field("http://localhost:11434", env="OLLAMA_BASE_URL")
-    ollama_model: str = Field("gemma4:latest", env="OLLAMA_MODEL")
-    ollama_timeout: int = 45
+    ollama_endpoint: str = Field("http://localhost:11434", env="OLLAMA_ENDPOINT")
+    ollama_model: str    = Field("gemma4:latest",          env="OLLAMA_MODEL")
+    ollama_timeout: int  = Field(45,                       env="OLLAMA_TIMEOUT")
+
+    # Claude (Anthropic)
+    claude_endpoint: str       = Field("https://api.anthropic.com", env="CLAUDE_ENDPOINT")
+    claude_model: str          = Field("claude-haiku-4-5-20251001", env="CLAUDE_MODEL")
+    claude_api_key: str        = Field("",                          env="CLAUDE_API_KEY")
+    claude_timeout: int        = Field(30,                          env="CLAUDE_TIMEOUT")
 
     # Redis
     redis_url: str = Field("redis://localhost:6379", env="REDIS_URL")

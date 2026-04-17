@@ -31,7 +31,7 @@ from indicators.technicals import (
     format_candles_for_prompt,
     get_macd_signal_label,
 )
-from llm.client import query_ollama
+from llm.client import get_provider
 from llm.prompts import build_decision_prompt
 from models.schemas import OHLCBar
 
@@ -227,7 +227,7 @@ async def run_backtest() -> list[dict]:
                 scan_time = last.timestamp.astimezone(IST)
 
                 prompt = build_prompt_from_history(symbol, window, prev_ohlc, scan_time)
-                raw    = await query_ollama(prompt)
+                raw    = await get_provider().query(prompt)
                 result = parse_response(raw)
 
                 # What did price do in the NEXT 30 min (6 candles) — for hindsight evaluation

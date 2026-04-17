@@ -28,7 +28,7 @@ from fyers.proxy import configure_fyers_proxy
 from fyers.auth import exchange_auth_code, get_auth_url, get_valid_token
 from fyers.orders import get_funds, get_fyers_positions, get_order_fill, place_market_order
 from fyers.market_data import get_quote
-from llm.client import check_ollama_health
+from llm.client import check_llm_health, get_provider
 from scheduler.jobs import (
     create_scheduler, _refresh_news, run_market_scan,
     refresh_context_cache, bootstrap_historical_data,
@@ -141,8 +141,8 @@ async def health_check():
     except Exception:
         checks["redis"] = "error"
 
-    ollama_ok = await check_ollama_health()
-    checks["ollama"] = "ok" if ollama_ok else "unavailable"
+    llm_ok = await check_llm_health()
+    checks[get_provider().name] = "ok" if llm_ok else "unavailable"
 
     try:
         get_valid_token()

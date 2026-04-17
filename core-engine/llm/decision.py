@@ -16,7 +16,7 @@ import pytz
 import redis.asyncio as aioredis
 
 from config import settings
-from llm.client import query_ollama
+from llm.client import get_provider
 from llm.prompts import build_decision_prompt, format_options_oi_block, format_daily_candles_for_prompt, compute_trading_gates
 from models.schemas import LLMDecision, MarketSnapshot, TechnicalIndicators
 from news.sentiment import format_news_for_prompt
@@ -301,15 +301,16 @@ async def make_decision(
         forming_bar_block=forming_bar_block,
     )
 
-    logger.info(f"Querying Ollama for {snapshot.symbol}...")
+    provider = get_provider()
+    logger.info(f"Querying {provider.name} for {snapshot.symbol}...")
     try:
         raw_response = await asyncio.wait_for(
-            query_ollama(prompt),
-            timeout=settings.ollama_timeout,
+            provider.query(prompt),
+            timeout=provider.timeout,
         )
     except asyncio.TimeoutError:
         logger.warning(
-            f"LLM hard timeout after {settings.ollama_timeout}s for {snapshot.symbol} — defaulting to HOLD"
+            f"LLM hard timeout after {provider.timeout}s for {snapshot.symbol} — defaulting to HOLD"
         )
         raw_response = None
     if not raw_response:
