@@ -362,6 +362,63 @@ async def _handle_decision(data: dict) -> None:
         )
         return
 
+    # ORB gate — block directional entries until the opening range is established.
+    # Opening range = 09:15–09:30 IST (first 3 five-minute candles of the session).
+    # After 09:30: BUY only if price has broken above ORB high (bullish breakout)
+    #             SELL only if price has broken below ORB low  (bearish breakout)
+    # Before 09:30: all BUY/SELL blocked — market is still forming direction.
+    if decision in ("BUY", "SELL"):
+        now_ist = datetime.now(IST)
+        orb_close_time = now_ist.replace(hour=9, minute=30, second=0, microsecond=0)
+
+        if now_ist < orb_close_time:
+            logger.info(
+                f"[ORB GATE] {decision} {symbol}: before 09:30 IST — "
+                f"opening range not yet established, skipped"
+            )
+            return
+
+        # Compute ORB high/low from today's 09:15–09:29 candles in market snapshot
+        candles = market.get("candles", [])
+        orb_candles = []
+        for c in candles:
+            ts_str = c.get("timestamp", "")
+            if not ts_str:
+                continue
+            try:
+                ts = datetime.fromisoformat(ts_str)
+                if ts.tzinfo is None:
+                    ts = IST.localize(ts)
+            except Exception:
+                continue
+            candle_date  = ts.astimezone(IST).date()
+            candle_hour  = ts.astimezone(IST).hour
+            candle_minute = ts.astimezone(IST).minute
+            if (candle_date == now_ist.date()
+                    and candle_hour == 9
+                    and 15 <= candle_minute < 30):
+                orb_candles.append(c)
+
+        if not orb_candles:
+            # No opening range data available — skip gate, be permissive
+            logger.debug(f"[ORB GATE] {symbol}: no opening range candles found — gate skipped")
+        else:
+            orb_high = max(float(c["high"]) for c in orb_candles)
+            orb_low  = min(float(c["low"])  for c in orb_candles)
+
+            if decision == "BUY" and current_price <= orb_high:
+                logger.info(
+                    f"[ORB GATE] BUY {symbol}: ₹{current_price:.2f} has not broken above "
+                    f"ORB high ₹{orb_high:.2f} — skipped"
+                )
+                return
+            elif decision == "SELL" and current_price >= orb_low:
+                logger.info(
+                    f"[ORB GATE] SELL {symbol}: ₹{current_price:.2f} has not broken below "
+                    f"ORB low ₹{orb_low:.2f} — skipped"
+                )
+                return
+
     # Entry proximity gate — mirror of the PA_RESISTANCE / PA_SUPPORT exit rules.
     # Don't enter a BUY if the underlying is already at resistance (we'd exit immediately).
     # Don't enter a SELL if the underlying is already at support (same reason).
