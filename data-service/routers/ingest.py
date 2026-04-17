@@ -10,14 +10,18 @@ POST /ingest/news
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+import json
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
+import redis.asyncio as aioredis
 
 from db.connection import get_db
 from repositories.market_data import upsert_candle, upsert_daily_indicator, insert_options_oi_batch
 from repositories.decisions import upsert_decision
 from repositories.trades import upsert_trade
+from routers.context import get_redis
 from repositories.news import insert_news_batch
 
 router = APIRouter(prefix="/ingest", tags=["Ingest"])
@@ -133,8 +137,20 @@ async def ingest_decision(payload: DecisionIn, db: AsyncSession = Depends(get_db
 
 
 @router.post("/trade")
-async def ingest_trade(payload: TradeIn, db: AsyncSession = Depends(get_db)):
-    await upsert_trade(db, payload.model_dump())
+async def ingest_trade(
+    payload: TradeIn,
+    db: AsyncSession = Depends(get_db),
+    redis: aioredis.Redis = Depends(get_redis),
+):
+    data = payload.model_dump()
+    await upsert_trade(db, data)
+    # Mirror the update into trades:all so the UI (which reads Redis, not the DB)
+    # sees the corrected values immediately — critical for reconcile fixes.
+    trade_id = data.get("trade_id")
+    if trade_id:
+        # Build a JSON-serialisable dict (convert datetime/None as strings)
+        redis_payload = {k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in data.items()}
+        await redis.hset("trades:all", trade_id, json.dumps(redis_payload))
     return {"status": "ok"}
 
 
