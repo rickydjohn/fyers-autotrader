@@ -56,8 +56,8 @@ DELTA_EROSION_MIN: float   = 0.20   # exit if |delta| drops below this
 IV_CRUSH_THRESHOLD: float  = 0.80   # exit if iv < entry_iv × this
 
 # Price action exit thresholds
-PA_RESISTANCE_PROXIMITY: float = 0.0020  # exit CE if underlying within 0.20% of resistance
-PA_SUPPORT_PROXIMITY: float    = 0.0020  # exit PE if underlying within 0.20% of support
+PA_RESISTANCE_PROXIMITY: float = 0.0025  # exit CE if underlying within 0.25% of resistance
+PA_SUPPORT_PROXIMITY: float    = 0.0025  # exit PE if underlying within 0.25% of support
 # Minimum gross gain (option_ltp − entry) × qty before PA_RESISTANCE/PA_SUPPORT fires.
 # Prevents commission-eating exits where the option barely moved. ₹60 covers round-trip
 # commission (₹40) + exit slippage (≈₹13 BNF / ≈₹5 NIFTY) with a small safety margin.
