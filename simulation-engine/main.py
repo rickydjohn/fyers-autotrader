@@ -257,6 +257,42 @@ async def _consume_decisions() -> None:
             await asyncio.sleep(2)
 
 
+async def _resolve_close_price(pos: Position, underlying_ltp: float) -> float:
+    """
+    Return the correct exit price for a position being closed on a signal flip.
+
+    For option positions the exit price must be the option's current premium,
+    not the underlying index LTP.  Using the index level (e.g. BANKNIFTY 56138)
+    as the exit price for an option premium (e.g. ₹835) produces completely
+    wrong P&L and inflates the trade record by 60×.
+
+    Priority:
+      1. market:{option_symbol}  — written every 10s by fast_position_watcher
+      2. Live Fyers fetch via _fetch_live_ltp (fallback when Redis key expired)
+      3. entry_option_price      — last resort to avoid recording index price
+    """
+    if not pos.option_symbol:
+        return underlying_ltp
+
+    opt_raw = await redis_client.get(f"market:{pos.option_symbol}")
+    if opt_raw:
+        ltp = json.loads(opt_raw).get("ltp")
+        if ltp:
+            return float(ltp)
+
+    live = await _fetch_live_ltp(pos.option_symbol)
+    if live:
+        return live
+
+    # Neither Redis nor Fyers could provide the option price.
+    # Use the entry price so P&L shows 0 rather than a nonsensical index value.
+    logger.warning(
+        f"[FLIP CLOSE] Could not resolve option LTP for {pos.option_symbol} "
+        f"— using entry price ₹{pos.entry_option_price:.2f} as fallback"
+    )
+    return pos.entry_option_price
+
+
 async def _handle_decision(data: dict) -> None:
     symbol = data.get("symbol", "")
     decision = data.get("decision", "HOLD")
@@ -316,12 +352,28 @@ async def _handle_decision(data: dict) -> None:
 
     logger.info(f"[{mode.upper()}] {decision} {symbol} @ ₹{current_price:.2f} (conf={confidence:.2f})")
 
+    # 70% confidence floor: treat any BUY/SELL below this threshold as HOLD.
+    # Eliminates low-conviction churn that loses to commission even when the
+    # direction is right, without touching the stop-loss / exit-rules path.
+    CONFIDENCE_FLOOR = 0.70
+    if decision in ("BUY", "SELL") and confidence < CONFIDENCE_FLOOR:
+        logger.info(
+            f"[CONF FLOOR] {decision} {symbol} conf={confidence:.2f} < {CONFIDENCE_FLOOR} — skipped"
+        )
+        return
+
     if decision == "BUY":
         existing = await redis_client.hget("positions:open", symbol)
         if existing:
             pos = Position(**json.loads(existing))
             if pos.side == "SELL":
-                await broker.close_position(redis_client, symbol, current_price)
+                # Signal flip: close bearish position, open bullish
+                close_price = await _resolve_close_price(pos, current_price)
+                await broker.close_position(redis_client, symbol, close_price)
+            else:
+                # Already long — don't add to or replace an open BUY position
+                logger.debug(f"[SKIP] BUY {symbol}: BUY position already open")
+                return
 
         await broker.open_position(
             redis_client, symbol, "BUY", current_price,
@@ -337,7 +389,13 @@ async def _handle_decision(data: dict) -> None:
         if existing:
             pos = Position(**json.loads(existing))
             if pos.side == "BUY":
-                await broker.close_position(redis_client, symbol, current_price)
+                # Signal flip: close bullish position, open bearish
+                close_price = await _resolve_close_price(pos, current_price)
+                await broker.close_position(redis_client, symbol, close_price)
+            else:
+                # Already short — don't add to or replace an open SELL position
+                logger.debug(f"[SKIP] SELL {symbol}: SELL position already open")
+                return
 
         await broker.open_position(
             redis_client, symbol, "SELL", current_price,

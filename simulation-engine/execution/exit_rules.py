@@ -58,6 +58,10 @@ IV_CRUSH_THRESHOLD: float  = 0.80   # exit if iv < entry_iv × this
 # Price action exit thresholds
 PA_RESISTANCE_PROXIMITY: float = 0.0020  # exit CE if underlying within 0.20% of resistance
 PA_SUPPORT_PROXIMITY: float    = 0.0020  # exit PE if underlying within 0.20% of support
+# Minimum gross gain (option_ltp − entry) × qty before PA_RESISTANCE/PA_SUPPORT fires.
+# Prevents commission-eating exits where the option barely moved. ₹60 covers round-trip
+# commission (₹40) + exit slippage (≈₹13 BNF / ≈₹5 NIFTY) with a small safety margin.
+PA_MIN_GROSS_PROFIT: float = 60.0
 
 
 def _indicators_confirm(side: str, indicators: dict) -> bool:
@@ -179,43 +183,47 @@ def check_exit(
 
         # ── Rule 3: Price action — resistance/support level reached ──────────
         if market_context and option_ltp and option_ltp > pos.entry_option_price:
-            # Only fire when the position is currently in profit — no point
-            # locking in a loss at a level; let the premium stop handle that.
-            is_ce = pos.side == "BUY"
-
-            # Levels to check: nearest S/R first, then day extremes, then PDH/PDL
-            if is_ce:
-                resistance_levels = [
-                    (market_context.get("nearest_resistance", 0),
-                     market_context.get("nearest_resistance_label", "resistance")),
-                    (market_context.get("day_high", 0),     "day_high"),
-                    (market_context.get("prev_day_high", 0), "PDH"),
-                ]
-                for level, label in resistance_levels:
-                    if level > 0 and underlying_ltp >= level * (1 - PA_RESISTANCE_PROXIMITY):
-                        logger.info(
-                            f"[EXIT] PA_RESISTANCE — {pos.symbol}: "
-                            f"underlying ₹{underlying_ltp:.2f} at {label} ₹{level:.2f} "
-                            f"(within {PA_RESISTANCE_PROXIMITY*100:.2f}%), "
-                            f"option ₹{option_ltp:.2f} > entry ₹{pos.entry_option_price:.2f}, locking in profit"
-                        )
-                        return True, "PA_RESISTANCE", option_ltp, milestone
-            else:
-                support_levels = [
-                    (market_context.get("nearest_support", 0),
-                     market_context.get("nearest_support_label", "support")),
-                    (market_context.get("day_low", 0),     "day_low"),
-                    (market_context.get("prev_day_low", 0), "PDL"),
-                ]
-                for level, label in support_levels:
-                    if level > 0 and underlying_ltp <= level * (1 + PA_SUPPORT_PROXIMITY):
-                        logger.info(
-                            f"[EXIT] PA_SUPPORT — {pos.symbol}: "
-                            f"underlying ₹{underlying_ltp:.2f} at {label} ₹{level:.2f} "
-                            f"(within {PA_SUPPORT_PROXIMITY*100:.2f}%), "
-                            f"option ₹{option_ltp:.2f} > entry ₹{pos.entry_option_price:.2f}, locking in profit"
-                        )
-                        return True, "PA_SUPPORT", option_ltp, milestone
+            # Only fire when gross gain is large enough to survive exit costs.
+            # Prevents commission-bleeding "profit lock" exits when the option barely
+            # moved (e.g. ₹1.50 gross on a ₹40 round-trip commission = guaranteed loss).
+            gross_gain = (option_ltp - pos.entry_option_price) * pos.quantity
+            if gross_gain >= PA_MIN_GROSS_PROFIT:
+                is_ce = pos.side == "BUY"
+                # Levels to check: nearest S/R first, then day extremes, then PDH/PDL
+                if is_ce:
+                    resistance_levels = [
+                        (market_context.get("nearest_resistance", 0),
+                         market_context.get("nearest_resistance_label", "resistance")),
+                        (market_context.get("day_high", 0),     "day_high"),
+                        (market_context.get("prev_day_high", 0), "PDH"),
+                    ]
+                    for level, label in resistance_levels:
+                        if level > 0 and underlying_ltp >= level * (1 - PA_RESISTANCE_PROXIMITY):
+                            logger.info(
+                                f"[EXIT] PA_RESISTANCE — {pos.symbol}: "
+                                f"underlying ₹{underlying_ltp:.2f} at {label} ₹{level:.2f} "
+                                f"(within {PA_RESISTANCE_PROXIMITY*100:.2f}%), "
+                                f"option ₹{option_ltp:.2f} > entry ₹{pos.entry_option_price:.2f} "
+                                f"gross=₹{gross_gain:.0f}, locking in profit"
+                            )
+                            return True, "PA_RESISTANCE", option_ltp, milestone
+                else:
+                    support_levels = [
+                        (market_context.get("nearest_support", 0),
+                         market_context.get("nearest_support_label", "support")),
+                        (market_context.get("day_low", 0),     "day_low"),
+                        (market_context.get("prev_day_low", 0), "PDL"),
+                    ]
+                    for level, label in support_levels:
+                        if level > 0 and underlying_ltp <= level * (1 + PA_SUPPORT_PROXIMITY):
+                            logger.info(
+                                f"[EXIT] PA_SUPPORT — {pos.symbol}: "
+                                f"underlying ₹{underlying_ltp:.2f} at {label} ₹{level:.2f} "
+                                f"(within {PA_SUPPORT_PROXIMITY*100:.2f}%), "
+                                f"option ₹{option_ltp:.2f} > entry ₹{pos.entry_option_price:.2f} "
+                                f"gross=₹{gross_gain:.0f}, locking in profit"
+                            )
+                            return True, "PA_SUPPORT", option_ltp, milestone
 
         if greeks:
             # ── Rule 4: Delta erosion ─────────────────────────────────────────
