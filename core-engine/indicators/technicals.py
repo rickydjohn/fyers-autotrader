@@ -145,15 +145,62 @@ def _summarise_candles(candles: List[OHLCBar]) -> str:
     return " | ".join(parts)
 
 
-def format_candles_for_prompt(candles: List[OHLCBar], lookback: int = 12) -> str:
+def aggregate_1m_to_5m(candles: List[OHLCBar]) -> List[OHLCBar]:
+    """Aggregate 1m OHLCBar candles into completed 5m bars aligned to 09:15 IST.
+
+    Partially-formed bars (the bar currently in progress) are included as-is so
+    the LLM always sees up to the latest data.  The last bar may contain fewer
+    than 5 minutes when called mid-bar.
     """
-    Format the last `lookback` today-only 5m candles as a structured block for the LLM.
+    import datetime as _dt
+    if not candles:
+        return []
+
+    SESSION_START_MIN = 9 * 60 + 15   # 09:15 IST
+
+    bars: dict = {}
+    for c in candles:
+        ts_ist = c.timestamp.astimezone(_IST)
+        total_min = ts_ist.hour * 60 + ts_ist.minute
+        offset = total_min - SESSION_START_MIN
+        if offset < 0:
+            continue
+        bar_start_min = SESSION_START_MIN + (offset // 5) * 5
+        bh = bar_start_min // 60
+        bm = bar_start_min % 60
+        key = (ts_ist.date(), bh, bm)
+        if key not in bars:
+            bar_ts = _dt.datetime(ts_ist.year, ts_ist.month, ts_ist.day,
+                                  bh, bm, 0, tzinfo=_IST)
+            bars[key] = OHLCBar(timestamp=bar_ts, open=c.open, high=c.high,
+                                low=c.low, close=c.close, volume=c.volume)
+        else:
+            b = bars[key]
+            b.high   = max(b.high, c.high)
+            b.low    = min(b.low,  c.low)
+            b.close  = c.close
+            b.volume += c.volume
+
+    return [bars[k] for k in sorted(bars.keys())]
+
+
+def format_candles_for_prompt(
+    candles: List[OHLCBar],
+    lookback: int = 12,
+    session_date=None,
+) -> str:
+    """Format the last `lookback` today-only 5m candles as a structured block for the LLM.
+
+    Input candles may be 1m or 5m; 1m candles are aggregated to 5m first.
     Each row shows OHLC, % change from open, body classification, and wick notes.
     Body strength is derived from body/range ratio (self-normalising across volatility regimes).
+
+    session_date: optional date override (for backtesting historical sessions).
+                  Defaults to today's IST date when not provided.
     """
     import datetime as _dt
 
-    today = _dt.datetime.now(_IST).date()
+    today = session_date if session_date is not None else _dt.datetime.now(_IST).date()
     today_candles = [
         c for c in candles
         if (
@@ -162,6 +209,13 @@ def format_candles_for_prompt(candles: List[OHLCBar], lookback: int = 12) -> str
             else c.timestamp.replace(tzinfo=_IST).date()
         ) == today
     ]
+
+    if not today_candles:
+        return "  No intraday candles available for today."
+
+    # Aggregate to 5m if input looks like 1m candles (more than 50 bars in session)
+    if len(today_candles) > 50:
+        today_candles = aggregate_1m_to_5m(today_candles)
 
     if not today_candles:
         return "  No intraday candles available for today."

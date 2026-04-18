@@ -32,14 +32,15 @@ from indicators.technicals import (
     get_macd_signal_label,
 )
 from llm.client import get_provider
-from llm.prompts import build_decision_prompt
+from llm.prompts import build_decision_prompt, format_daily_candles_for_prompt
+from llm.providers.claude import get_token_stats
 from models.schemas import OHLCBar
 
 IST = pytz.timezone("Asia/Kolkata")
 DATA_URL = "http://data-service:8003"
 
 SYMBOLS = ["NSE:NIFTY50-INDEX", "NSE:NIFTYBANK-INDEX"]
-DATES   = ["2026-04-09", "2026-04-10"]
+DATES   = ["2026-04-15", "2026-04-16"]
 
 # Scan every N 5m candles (3 = every 15 min — keeps call count ≈ 100 total)
 STEP = 3
@@ -82,6 +83,26 @@ async def fetch_5m_candles(symbol: str, date_str: str) -> list[OHLCBar]:
     return sorted(candles, key=lambda c: c.timestamp)
 
 
+async def fetch_daily_candles(symbol: str, before_date: str, limit: int = 14) -> list[dict]:
+    """Fetch the last N daily candles strictly before before_date."""
+    # Calculate end date as the day before backtest_date
+    end_dt = datetime.strptime(before_date, "%Y-%m-%d") - timedelta(days=1)
+    end_str = end_dt.strftime("%Y-%m-%d")
+    # Go back far enough to get at least `limit` trading days
+    start_dt = end_dt - timedelta(days=limit * 2)
+    start_str = start_dt.strftime("%Y-%m-%d")
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.get(
+            f"{DATA_URL}/api/v1/historical-data",
+            params={"symbol": symbol, "interval": "daily", "start": start_str, "end": end_str},
+        )
+        r.raise_for_status()
+        data = r.json()
+    rows = data.get("candles", []) if isinstance(data, dict) else data
+    # Return last `limit` rows
+    return rows[-limit:] if rows else []
+
+
 async def fetch_prev_day_ohlc(symbol: str, backtest_date: str) -> Optional[dict]:
     """
     Fetch prev day OHLC for CPR computation using the daily-indicators endpoint,
@@ -115,6 +136,7 @@ def build_prompt_from_history(
     candles: list[OHLCBar],
     prev_ohlc: dict,
     scan_time: datetime,
+    daily_candles: list[dict] | None = None,
 ) -> str:
     ltp = candles[-1].close
 
@@ -132,7 +154,8 @@ def build_prompt_from_history(
     day_high, day_low = calculate_day_range(candles)
     consol_pct, consol_high, consol_low = calculate_consolidation(candles)
     macd_label    = get_macd_signal_label(macd, sig)
-    candle_block  = format_candles_for_prompt(candles, lookback=12)
+    candle_block  = format_candles_for_prompt(candles, lookback=12, session_date=scan_time.date())
+    daily_block   = format_daily_candles_for_prompt(daily_candles or [])
 
     BREAKOUT_BUFFER = 0.0005
     if consol_pct < 0.40 and ltp > consol_high * (1 + BREAKOUT_BUFFER):
@@ -141,8 +164,6 @@ def build_prompt_from_history(
         range_breakout = "BREAKOUT_LOW"
     else:
         range_breakout = "NONE"
-
-    pdh_pivot_confluence = abs(prev_ohlc["high"] - cpr.pivot) / cpr.pivot < 0.002
 
     return build_decision_prompt(
         symbol=symbol,
@@ -172,8 +193,8 @@ def build_prompt_from_history(
         sentiment_label="NEUTRAL",
         sentiment_score=0.0,
         day_type=cpr.day_type,
-        pdh_pivot_confluence=pdh_pivot_confluence,
         candle_block=candle_block,
+        daily_candle_block=daily_block,
     )
 
 
@@ -207,8 +228,9 @@ async def run_backtest() -> list[dict]:
             log(f"  {symbol}  |  {date_str}")
             log(f"{'='*65}")
 
-            candles  = await fetch_5m_candles(symbol, date_str)
-            prev_ohlc = await fetch_prev_day_ohlc(symbol, date_str)
+            candles       = await fetch_5m_candles(symbol, date_str)
+            prev_ohlc     = await fetch_prev_day_ohlc(symbol, date_str)
+            daily_candles = await fetch_daily_candles(symbol, before_date=date_str)
 
             if not candles:
                 log(f"  No 5m candles found — skipping")
@@ -217,7 +239,7 @@ async def run_backtest() -> list[dict]:
                 log(f"  No prev day OHLC found — skipping")
                 continue
 
-            log(f"  {len(candles)} candles | prev H={prev_ohlc['high']} L={prev_ohlc['low']} C={prev_ohlc['close']}")
+            log(f"  {len(candles)} candles | prev H={prev_ohlc['high']} L={prev_ohlc['low']} C={prev_ohlc['close']} | {len(daily_candles)} daily bars loaded")
             log(f"  {'Time':5}  {'Price':>8}  {'Decision':<6}  {'Conf':>5}  Reasoning (first 90 chars)")
             log(f"  {'-'*80}")
 
@@ -226,7 +248,7 @@ async def run_backtest() -> list[dict]:
                 last      = window[-1]
                 scan_time = last.timestamp.astimezone(IST)
 
-                prompt = build_prompt_from_history(symbol, window, prev_ohlc, scan_time)
+                prompt = build_prompt_from_history(symbol, window, prev_ohlc, scan_time, daily_candles)
                 raw    = await get_provider().query(prompt)
                 result = parse_response(raw)
 
@@ -272,3 +294,22 @@ if __name__ == "__main__":
     results = asyncio.run(run_backtest())
     # Full JSON to stdout so it can be redirected to a file
     print(json.dumps(results, indent=2))
+    # Token usage summary to stderr
+    stats = get_token_stats()
+    log(f"\n{'='*65}")
+    log(f"  TOKEN USAGE SUMMARY")
+    log(f"{'='*65}")
+    log(f"  Model   : {get_provider().name}")
+    log(f"  Calls   : {stats['calls']}")
+    log(f"  Input   : {stats['input_tokens']:,} tokens")
+    log(f"  Output  : {stats['output_tokens']:,} tokens")
+    log(f"  Total   : {stats['total_tokens']:,} tokens")
+    # Rough cost estimate (Haiku: $0.80/$4.00 per MTok; Sonnet: $3.00/$15.00 per MTok)
+    import os
+    model = os.environ.get("CLAUDE_MODEL", "")
+    if "haiku" in model.lower():
+        cost = stats['input_tokens'] / 1e6 * 0.80 + stats['output_tokens'] / 1e6 * 4.00
+        log(f"  Est cost: ${cost:.4f} (Haiku pricing)")
+    elif "sonnet" in model.lower():
+        cost = stats['input_tokens'] / 1e6 * 3.00 + stats['output_tokens'] / 1e6 * 15.00
+        log(f"  Est cost: ${cost:.4f} (Sonnet pricing)")

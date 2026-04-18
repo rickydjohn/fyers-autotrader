@@ -23,13 +23,18 @@ async def get_historical_data(
     interval: str = Query("5m",  regex="^(1m|5m|15m|1h|daily)$"),
     limit:    int = Query(200,  ge=1, le=1000),
     since:    Optional[str] = Query(None, description="ISO datetime string"),
+    until:    Optional[str] = Query(None, description="ISO datetime string (exclusive upper bound)"),
     db: AsyncSession = Depends(get_db),
 ):
     since_dt: Optional[datetime] = None
     if since:
         since_dt = datetime.fromisoformat(since)
 
-    candles = await get_candles(db, symbol, interval=interval, limit=limit, since=since_dt)
+    until_dt: Optional[datetime] = None
+    if until:
+        until_dt = datetime.fromisoformat(until)
+
+    candles = await get_candles(db, symbol, interval=interval, limit=limit, since=since_dt, until=until_dt)
     return {
         "status": "ok",
         "symbol": symbol,
