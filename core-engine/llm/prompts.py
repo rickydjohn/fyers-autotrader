@@ -457,6 +457,7 @@ Read the ## Pre-Computed Trading Gates block above. These are facts computed by 
 - If Volume Signal is not NONE: use that direction and confidence as your starting point. Adjust by ±0.08 max for Layer 1 or Layer 3 factors. Do not override to HOLD unless a hard RSI stop applies.
 - If all gates are OPEN and Volume Signal is NONE: proceed to Steps 1–2 and the three-layer framework.
 - If a ## Forming 5m Bar block is present: read the confidence_delta value and apply it to your final confidence. A negative delta means the forming bar is working against your direction — treat it seriously.
+  **Exception — bullish bar arriving at resistance:** If the forming bar delta is positive (bullish) AND the completed candle structure (Step 1) shows LH+LL AND price is within 0.3% of a known resistance (CPR TC, VWAP, R1, PDH, daily swing high): the bullish bar is delivering price to the resistance level, not breaking through it. This is setup completion for a SELL, not a contradiction. In this case treat the positive delta as 0.00 for SELL purposes — do not let it reduce SELL confidence. A bullish forming bar that terminates at resistance with a bearish macro structure is the trigger arriving, not a reversal signal.
 
 ### STEP 1 — PRICE ACTION READ (mandatory — complete before any rule)
 Read the ## Recent Price Action candle block and answer all four questions. Capture answers in candle_summary. Your decision MUST be consistent with candle_summary — if they contradict, candle_summary overrides indicators.
@@ -481,6 +482,7 @@ BULLISH patterns (add +0.08 to BUY confidence, or flip HOLD → BUY if 2+ indica
 BEARISH patterns (add +0.08 to SELL confidence, or flip HOLD → SELL if 2+ indicators already align):
 - Shooting Star / Bearish Pin Bar: small body, upper wick ≥ 2× body size, at resistance/CPR TC/key daily high — sellers active
 - Bearish Engulfing: large red body fully covers prior green candle at resistance — momentum reversal
+- Strong bearish close at a key level (CPR TC, VWAP, daily swing high, R1): body ≥ 60% of candle range, closing near the low of the bar, at a recognised resistance level — sellers committing, not just probing. This is a momentum confirmation candle; treat it as a high-conviction SELL signal even if no prior candle is engulfed.
 REJECTION at resistance (hard rule — overrides BUY signals):
 - If the last 1–2 candles at/near nearest resistance or a key daily swing high show upper wicks larger than the candle body: output HOLD — price is being sold at that level, not accepted above it
 - If upper wick ≥ 60% of total candle range at resistance: reduce BUY confidence by 0.10
@@ -520,6 +522,7 @@ CPR relevance qualifier (apply before using ABOVE/BELOW_CPR as a confirmation):
 - ABOVE_CPR only counts as a Layer 2 BUY confirmation when price is within 1.0% of CPR TC. If price is more than 1% above TC, the market has been above CPR for hours — it carries no fresh intraday information and must NOT be counted as a confirmation signal.
 - BELOW_CPR only counts as a Layer 2 SELL confirmation when price is within 1.0% of CPR BC.
 - When CPR is irrelevant (price too far away), replace it with: is price above or below VWAP by >0.5%? That becomes the structural anchor instead.
+- TC and BC are not symmetric walls — they are the two edges of a decision zone. TC is the resistance ceiling (sellers defend above it); BC is the support floor (buyers defend below it). Price inside the band is testing one of those edges, not sitting in neutral space.
 
 Intraday range position (apply before directional conditions):
 - Intraday Position shows < 0.5% below day's high: reduce BUY confidence by 0.10; risk/reward is poor this close to the high.
@@ -532,7 +535,10 @@ Volume spike awareness (general — applies when reversal triggers above did not
 Directional conditions:
 - ABOVE_CPR (when within 1%) + price above VWAP + EMA9 > EMA21: intraday structure BULLISH — aligns with BUY, contradicts SELL
 - BELOW_CPR (when within 1%) + price below VWAP + EMA9 < EMA21: intraday structure BEARISH — aligns with SELL, contradicts BUY
-- INSIDE_CPR: no directional edge — HOLD unless Layer 1 and Layer 3 both strongly agree on direction
+- INSIDE_CPR — read position within the band, not just "inside":
+  - Price near TC (within 0.2% of TC) with a strong bearish close or LH+LL structure: TC is acting as resistance. Count this as a SELL confirmation equivalent to BELOW_CPR. The candle is telling you sellers are defending TC — that is the signal.
+  - Price near BC (within 0.2% of BC) with a strong bullish close or HH+HL structure: BC is acting as support. Count this as a BUY confirmation equivalent to ABOVE_CPR.
+  - Price mid-band (not near TC or BC): genuinely no directional edge — require Layer 1 and Layer 3 to strongly agree before committing.
 - MACD divergence: MACD BULLISH while signaling SELL → reduce SELL confidence by 0.08; MACD BEARISH while signaling BUY → reduce BUY confidence by 0.08. MACD lags price by 2–5 candles — do not let a lagging MACD override a fresh high-volume price signal; it is one of the 4 directional conditions, not a veto.
 - Range Breakout = BREAKOUT_HIGH (consolidation_pct < 0.40%): high-probability BUY if above VWAP + RSI 45-75 + MACD not BEARISH; confidence 0.75-0.85
 - Range Breakout = BREAKOUT_LOW: high-probability SELL if below VWAP + RSI 20-55 + MACD not BULLISH; confidence 0.75-0.85
