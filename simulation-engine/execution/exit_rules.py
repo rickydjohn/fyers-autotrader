@@ -211,8 +211,9 @@ def check_exit(
                     support_levels = [
                         (market_context.get("nearest_support", 0),
                          market_context.get("nearest_support_label", "support")),
-                        (market_context.get("day_low", 0),     "day_low"),
+                        (market_context.get("day_low", 0),      "day_low"),
                         (market_context.get("prev_day_low", 0), "PDL"),
+                        (market_context.get("prev_day_high", 0), "PDH"),
                     ]
                     for level, label in support_levels:
                         if level > 0 and underlying_ltp <= level * (1 + PA_SUPPORT_PROXIMITY):

@@ -406,14 +406,18 @@ async def _handle_decision(data: dict) -> None:
             mkt_ind.get("nearest_support", 0),
             mkt_ind.get("day_low", 0),
             mkt_ind.get("prev_day_low", 0),
+            mkt_ind.get("prev_day_high", 0),
         ]
         for level in support_levels:
             if level > 0 and current_price <= level * (1 + PA_PROXIMITY):
-                label = (
-                    mkt_ind.get("nearest_support_label", "support")
-                    if level == mkt_ind.get("nearest_support", 0)
-                    else ("day_low" if level == mkt_ind.get("day_low", 0) else "PDL")
-                )
+                if level == mkt_ind.get("nearest_support", 0):
+                    label = mkt_ind.get("nearest_support_label", "support")
+                elif level == mkt_ind.get("day_low", 0):
+                    label = "day_low"
+                elif level == mkt_ind.get("prev_day_low", 0):
+                    label = "PDL"
+                else:
+                    label = "PDH"
                 logger.info(
                     f"[ENTRY BLOCK] SELL {symbol}: underlying ₹{current_price:.2f} already "
                     f"within {PA_PROXIMITY*100:.2f}% of {label} ₹{level:.2f} — skipped"
