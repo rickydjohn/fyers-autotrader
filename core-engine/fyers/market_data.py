@@ -145,12 +145,12 @@ def get_historical_candles_daterange(
 # Weights are approximate and reviewed quarterly by NSE — update if index
 # composition changes significantly. Total coverage: ~74% of NIFTY weight.
 SECTOR_INDICES: dict = {
-    "BANK":   ("NSE:NIFTYBANK-INDEX",  35),
-    "IT":     ("NSE:CNXIT-INDEX",      14),
-    "FMCG":   ("NSE:CNXFMCG-INDEX",    9),
-    "AUTO":   ("NSE:CNXAUTO-INDEX",    7),
-    "PHARMA": ("NSE:CNXPHARMA-INDEX",  5),
-    "METAL":  ("NSE:CNXMETAL-INDEX",   4),
+    "BANK":   ("NSE:NIFTYBANK-INDEX",   35),
+    "IT":     ("NSE:NIFTYIT-INDEX",     14),
+    "FMCG":   ("NSE:NIFTYFMCG-INDEX",   9),
+    "AUTO":   ("NSE:NIFTYAUTO-INDEX",    7),
+    "PHARMA": ("NSE:NIFTYPHARMA-INDEX",  5),
+    "METAL":  ("NSE:NIFTYMETAL-INDEX",   4),
 }
 
 
