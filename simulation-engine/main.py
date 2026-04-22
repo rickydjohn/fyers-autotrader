@@ -383,18 +383,15 @@ async def _handle_decision(data: dict) -> None:
     PA_PROXIMITY = 0.0025
     mkt_ind = market.get("indicators", {})
     if decision == "BUY":
+        # Only static levels: nearest_resistance (S/R from pivot calc) and PDH.
+        # day_high is excluded — it tracks the running intraday high and always sits
+        # just above current price during a rally, permanently blocking BUY entries.
         resistance_levels = [
-            mkt_ind.get("nearest_resistance", 0),
-            mkt_ind.get("day_high", 0),
-            mkt_ind.get("prev_day_high", 0),
+            (mkt_ind.get("nearest_resistance", 0), mkt_ind.get("nearest_resistance_label", "resistance")),
+            (mkt_ind.get("prev_day_high", 0),       "PDH"),
         ]
-        for level in resistance_levels:
+        for level, label in resistance_levels:
             if level > 0 and level * (1 - PA_PROXIMITY) <= current_price <= level:
-                label = (
-                    mkt_ind.get("nearest_resistance_label", "resistance")
-                    if level == mkt_ind.get("nearest_resistance", 0)
-                    else ("day_high" if level == mkt_ind.get("day_high", 0) else "PDH")
-                )
                 logger.info(
                     f"[ENTRY BLOCK] BUY {symbol}: underlying ₹{current_price:.2f} approaching "
                     f"{label} ₹{level:.2f} from below (within {PA_PROXIMITY*100:.2f}%) — skipped"
@@ -402,19 +399,15 @@ async def _handle_decision(data: dict) -> None:
                 return
 
     elif decision == "SELL":
+        # Only static levels: nearest_support (S1/S2 from pivot calc) and PDL.
+        # day_low is excluded — it tracks the running intraday low and always sits
+        # just below current price during a drop, permanently blocking SELL entries.
         support_levels = [
-            mkt_ind.get("nearest_support", 0),
-            mkt_ind.get("day_low", 0),
-            mkt_ind.get("prev_day_low", 0),
+            (mkt_ind.get("nearest_support", 0), mkt_ind.get("nearest_support_label", "support")),
+            (mkt_ind.get("prev_day_low", 0),     "PDL"),
         ]
-        for level in support_levels:
+        for level, label in support_levels:
             if level > 0 and level <= current_price <= level * (1 + PA_PROXIMITY):
-                if level == mkt_ind.get("nearest_support", 0):
-                    label = mkt_ind.get("nearest_support_label", "support")
-                elif level == mkt_ind.get("day_low", 0):
-                    label = "day_low"
-                else:
-                    label = "PDL"
                 logger.info(
                     f"[ENTRY BLOCK] SELL {symbol}: underlying ₹{current_price:.2f} approaching "
                     f"{label} ₹{level:.2f} from above (within {PA_PROXIMITY*100:.2f}%) — skipped"
