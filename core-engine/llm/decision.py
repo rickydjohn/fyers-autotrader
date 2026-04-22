@@ -212,6 +212,7 @@ async def make_decision(
     forming_bar_block: str = "",
     forming_bar_delta: float = 0.0,
     forming_bar_is_bull: Optional[bool] = None,
+    sector_breadth_block: str = "",
 ) -> Optional[LLMDecision]:
     """Build prompt (with historical context), call LLM, parse, publish to Redis and DB."""
     ind: TechnicalIndicators = snapshot.indicators
@@ -300,6 +301,7 @@ async def make_decision(
         sell_gate=gates["sell_gate"],
         volume_signal=gates["volume_signal"],
         forming_bar_block=forming_bar_block,
+        sector_breadth_block=sector_breadth_block,
     )
 
     provider = get_provider()

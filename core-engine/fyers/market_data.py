@@ -140,6 +140,65 @@ def get_historical_candles_daterange(
         return []
 
 
+# NSE sector sub-indices with approximate NIFTY 50 weight contributions.
+# Symbols use Fyers' CNX prefix (NSE's legacy CRISIL naming).
+# Weights are approximate and reviewed quarterly by NSE — update if index
+# composition changes significantly. Total coverage: ~74% of NIFTY weight.
+SECTOR_INDICES: dict = {
+    "BANK":   ("NSE:NIFTYBANK-INDEX",  35),
+    "IT":     ("NSE:CNXIT-INDEX",      14),
+    "FMCG":   ("NSE:CNXFMCG-INDEX",    9),
+    "AUTO":   ("NSE:CNXAUTO-INDEX",    7),
+    "PHARMA": ("NSE:CNXPHARMA-INDEX",  5),
+    "METAL":  ("NSE:CNXMETAL-INDEX",   4),
+}
+
+
+def get_sector_breadth() -> dict:
+    """Fetch real-time quotes for NSE sector sub-indices in one batch call.
+
+    Returns a dict keyed by sector name:
+        {
+          "BANK": {"change_pct": -0.82, "ltp": 51234.5, "weight": 35},
+          "IT":   {"change_pct": -0.31, "ltp": 37890.2, "weight": 14},
+          ...
+        }
+    Sectors that fail to quote are silently omitted so callers degrade
+    gracefully when a symbol string is wrong or Fyers is unavailable.
+    """
+    fyers = get_fyers_client()
+    symbols_str = ",".join(sym for sym, _wt in SECTOR_INDICES.values())
+    try:
+        response = fyers.quotes(data={"symbols": symbols_str})
+        if response.get("s") != "ok":
+            logger.warning(f"Sector breadth batch quote failed: {response}")
+            return {}
+
+        # Build lookup by Fyers symbol name from response
+        sym_to_data: dict = {}
+        for entry in response.get("d", []):
+            n = entry.get("n", "")
+            v = entry.get("v", {})
+            sym_to_data[n] = v
+
+        result: dict = {}
+        for sector, (fyers_sym, weight) in SECTOR_INDICES.items():
+            v = sym_to_data.get(fyers_sym)
+            if not v:
+                logger.debug(f"No quote data for sector {sector} ({fyers_sym})")
+                continue
+            result[sector] = {
+                "ltp":        float(v.get("lp", 0) or 0),
+                "change_pct": float(v.get("chp", 0) or 0),
+                "weight":     weight,
+                "symbol":     fyers_sym,
+            }
+        return result
+    except Exception as e:
+        logger.exception(f"Error fetching sector breadth: {e}")
+        return {}
+
+
 def get_previous_day_ohlc(symbol: str) -> Optional[dict]:
     """Get previous trading day OHLC for CPR calculation."""
     candles = get_historical_candles(symbol, interval="1d", limit=2)

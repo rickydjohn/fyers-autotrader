@@ -17,7 +17,7 @@ import redis.asyncio as aioredis
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from config import settings
-from fyers.market_data import get_historical_candles, get_historical_candles_daterange, get_previous_day_ohlc, get_quote
+from fyers.market_data import get_historical_candles, get_historical_candles_daterange, get_previous_day_ohlc, get_quote, get_sector_breadth
 from fyers.auth import get_fyers_client
 from fyers.greeks import get_option_quote_with_greeks
 from models.schemas import OHLCBar
@@ -34,7 +34,7 @@ from indicators.technicals import (
 )
 from indicators.historical_sr import compute_sr_levels, format_sr_for_prompt
 from llm.decision import make_decision
-from llm.prompts import compute_forming_bar_signal
+from llm.prompts import compute_forming_bar_signal, format_sector_breadth_block
 from models.schemas import MarketSnapshot, NewsSentiment, TechnicalIndicators
 from news.scraper import get_all_news
 from news.sentiment import analyze_sentiment
@@ -65,6 +65,9 @@ _volume_profile_cache: dict = {}
 # identical data. Caching cuts get_historical_candles calls by 80% and
 # reduces event-loop blocking proportionally.
 _candle_cache: dict = {}  # symbol -> {"candles": List[OHLCBar], "bar_ts": datetime}
+# Sector breadth cache — refreshed once per scan, shared across all symbols.
+# Holds the pre-formatted prompt block so the format call runs only once.
+_sector_breadth_block: str = ""
 
 
 def _is_market_open() -> bool:
@@ -193,7 +196,11 @@ async def _get_volume_profile(symbol: str) -> list:
     return slots
 
 
-async def _process_symbol(symbol: str, redis_client: aioredis.Redis) -> None:
+async def _process_symbol(
+    symbol: str,
+    redis_client: aioredis.Redis,
+    sector_breadth_block: str = "",
+) -> None:
     """Fetch data, compute indicators, get LLM decision for one symbol."""
     logger.info(f"Processing {symbol}...")
 
@@ -400,6 +407,7 @@ async def _process_symbol(symbol: str, redis_client: aioredis.Redis) -> None:
         forming_bar_block=forming_bar_block,
         forming_bar_delta=forming_bar_delta,
         forming_bar_is_bull=forming_bar_is_bull,
+        sector_breadth_block=sector_breadth_block,
     )
 
     # Store final (gated) decision for downstream symbols to use as peer signal
@@ -504,8 +512,23 @@ async def run_market_scan(redis_client: aioredis.Redis) -> None:
     if not _is_market_open():
         logger.debug("Market closed, skipping scan")
         return
+
+    # Fetch sector sub-index breadth once per scan — shared across all symbols.
+    # A single Fyers batch quotes call for 6 sector indices costs one API hit
+    # and provides macro conviction context to every LLM decision this cycle.
+    global _sector_breadth_block
+    try:
+        breadth_data = get_sector_breadth()
+        _sector_breadth_block = format_sector_breadth_block(breadth_data)
+        if breadth_data:
+            net = sum(d["change_pct"] * d["weight"] / 100 for d in breadth_data.values())
+            logger.info(f"[SECTOR BREADTH] {len(breadth_data)} sectors fetched, net contribution {net:+.3f}%")
+    except Exception as e:
+        logger.warning(f"Sector breadth fetch failed, continuing without it: {e}")
+        _sector_breadth_block = ""
+
     results = await asyncio.gather(
-        *[_process_symbol(symbol, redis_client) for symbol in settings.symbols],
+        *[_process_symbol(symbol, redis_client, _sector_breadth_block) for symbol in settings.symbols],
         return_exceptions=True,
     )
     for symbol, result in zip(settings.symbols, results):

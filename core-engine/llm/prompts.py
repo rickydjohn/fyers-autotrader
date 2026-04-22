@@ -211,6 +211,63 @@ def compute_trading_gates(
     return {"buy_gate": buy_gate, "sell_gate": sell_gate, "volume_signal": volume_signal}
 
 
+def format_sector_breadth_block(breadth: Dict[str, Any]) -> str:
+    """Format sector sub-index quotes into a prompt-ready breadth block.
+
+    Args:
+        breadth: {sector: {change_pct, ltp, weight, symbol}} from get_sector_breadth()
+
+    Returns a multi-line string summarising sector direction, weighted
+    contribution, and a net breadth signal for the LLM to use.
+    """
+    if not breadth:
+        return "  No sector data available — skip this section."
+
+    lines = []
+    net_contribution = 0.0
+    declining = 0
+    advancing = 0
+    total_weight = 0
+
+    for sector, data in breadth.items():
+        chp    = data.get("change_pct", 0.0)
+        weight = data.get("weight", 0)
+        contrib = chp * weight / 100          # contribution to index in %
+        net_contribution += contrib
+        total_weight += weight
+
+        arrow = "▲" if chp > 0.05 else ("▼" if chp < -0.05 else "—")
+        if chp < -0.05:
+            declining += 1
+        elif chp > 0.05:
+            advancing += 1
+
+        lines.append(
+            f"  {arrow} {sector:<7} {chp:+.2f}%  "
+            f"(wt ~{weight}%,  contribution {contrib:+.3f}%)"
+        )
+
+    total = advancing + declining
+    if total_weight > 0:
+        breadth_pct = advancing / (advancing + declining) * 100 if (advancing + declining) > 0 else 50
+
+    # Net signal label
+    if net_contribution <= -0.30:
+        signal = f"STRONGLY BEARISH ({declining}/{len(breadth)} sectors declining)"
+    elif net_contribution <= -0.10:
+        signal = f"BEARISH ({declining}/{len(breadth)} sectors declining)"
+    elif net_contribution >= 0.30:
+        signal = f"STRONGLY BULLISH ({advancing}/{len(breadth)} sectors advancing)"
+    elif net_contribution >= 0.10:
+        signal = f"BULLISH ({advancing}/{len(breadth)} sectors advancing)"
+    else:
+        signal = f"MIXED/NEUTRAL ({advancing} up, {declining} down)"
+
+    header = f"  ~{total_weight}% of NIFTY weight covered\n"
+    footer = f"  Net weighted contribution: {net_contribution:+.3f}%  →  {signal}"
+    return header + "\n".join(lines) + "\n" + footer
+
+
 def compute_forming_bar_signal(
     forming_1m_candles: List[Dict[str, Any]],
     bar_position: int,
@@ -453,6 +510,9 @@ Zones where price has historically reversed — derived from {years_of_data} of 
 ## Options Market Structure
 {options_oi_block}
 
+## Sector Momentum (NSE Sub-Indices)
+{sector_breadth_block}
+
 ## News Sentiment (last 2 hours)
 {news_summary}
 Overall Sentiment: {sentiment_label} (score: {sentiment_score:.2f})
@@ -653,6 +713,15 @@ Use the Options Market Structure block above to adjust confidence — do not cha
 - Basis negative (futures < spot by > 0.1%): bearish institutional positioning → +0.02 for SELL signals
 - If no options data listed above: skip this section entirely
 
+### SECTOR BREADTH (from ## Sector Momentum block)
+Use the net weighted contribution and sector breakdown to adjust confidence. Do not change decision direction — only conviction.
+- Net contribution ≤ −0.20% (strongly bearish): SELL confidence +0.05; BUY confidence −0.05
+- Net contribution ≥ +0.20% (strongly bullish): BUY confidence +0.05; SELL confidence −0.05
+- Net contribution between −0.10% and +0.10%: no adjustment
+- BANK sector alone: if BANK change ≤ −0.5% and you are trading BANKNIFTY → additional SELL confidence +0.03; if BANK ≥ +0.5% → additional BUY confidence +0.03
+- All 5+ sectors in same direction (breadth sweep): double the net contribution adjustment (cap total sector adjustment at +0.10)
+- If no sector data listed: skip this section entirely
+
 ### ALL DAYS
 - Set stop_loss 0.3-0.5% from entry (below entry for BUY, above entry for SELL)
 - Target must give minimum 1.5:1 risk/reward ratio
@@ -711,6 +780,7 @@ def build_decision_prompt(
     sell_gate: str = "OPEN",
     volume_signal: str = "NONE",
     forming_bar_block: str = "",
+    sector_breadth_block: str = "",
 ) -> str:
     if day_type == "NARROW":
         cpr_type = "NARROW (trending day)"
@@ -751,6 +821,8 @@ def build_decision_prompt(
         volume_signal = "NONE"
     if not forming_bar_block:
         forming_bar_block = ""
+    if not sector_breadth_block:
+        sector_breadth_block = "  No sector data available — skip this section."
 
     return DECISION_PROMPT_TEMPLATE.format(
         historical_context_block=historical_context_block,
@@ -794,4 +866,5 @@ def build_decision_prompt(
         sell_gate=sell_gate,
         volume_signal=volume_signal,
         forming_bar_block=forming_bar_block,
+        sector_breadth_block=sector_breadth_block,
     )
