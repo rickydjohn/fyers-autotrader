@@ -402,15 +402,20 @@ async def _handle_decision(data: dict) -> None:
         # Only static levels: nearest_support (S1/S2 from pivot calc) and PDL.
         # day_low is excluded — it tracks the running intraday low and always sits
         # just below current price during a drop, permanently blocking SELL entries.
+        # PDL uses a tighter 0.10% band (vs 0.25% for pivot levels) so level-to-level
+        # continuation trades (S1 break → PE targeting PDL) are not blocked when the
+        # S1–PDL gap is narrow (~0.27%). Entries that are dangerously close to PDL
+        # (<0.10%, i.e. < ~24 pts) are still blocked.
+        PA_PDL_PROXIMITY = 0.0010
         support_levels = [
-            (mkt_ind.get("nearest_support", 0), mkt_ind.get("nearest_support_label", "support")),
-            (mkt_ind.get("prev_day_low", 0),     "PDL"),
+            (mkt_ind.get("nearest_support", 0), mkt_ind.get("nearest_support_label", "support"), PA_PROXIMITY),
+            (mkt_ind.get("prev_day_low", 0),     "PDL",                                           PA_PDL_PROXIMITY),
         ]
-        for level, label in support_levels:
-            if level > 0 and level <= current_price <= level * (1 + PA_PROXIMITY):
+        for level, label, prox in support_levels:
+            if level > 0 and level <= current_price <= level * (1 + prox):
                 logger.info(
                     f"[ENTRY BLOCK] SELL {symbol}: underlying ₹{current_price:.2f} approaching "
-                    f"{label} ₹{level:.2f} from above (within {PA_PROXIMITY*100:.2f}%) — skipped"
+                    f"{label} ₹{level:.2f} from above (within {prox*100:.2f}%) — skipped"
                 )
                 return
 

@@ -469,6 +469,43 @@ Read the ## Pre-Computed Trading Gates block above. These are facts computed by 
 - If a ## Forming 5m Bar block is present: read the confidence_delta value and apply it to your final confidence. A negative delta means the forming bar is working against your direction — treat it seriously.
   **Exception — bullish bar arriving at resistance:** If the forming bar delta is positive (bullish) AND the completed candle structure (Step 1) shows LH+LL AND price is within 0.3% of a known resistance (CPR TC, VWAP, R1, PDH, daily swing high): the bullish bar is delivering price to the resistance level, not breaking through it. This is setup completion for a SELL, not a contradiction. In this case treat the positive delta as 0.00 for SELL purposes — do not let it reduce SELL confidence. A bullish forming bar that terminates at resistance with a bearish macro structure is the trigger arriving, not a reversal signal.
 
+### LEVEL BREAKTHROUGH CONTINUATION — HIGH PRIORITY (evaluate after STEP 0, before Steps 1–2)
+
+Three high-probability setups that bypass the standard 3-condition Layer 2 gate. Check Step 1 candle structure to confirm, then output the decision directly — you do not need to complete all of Steps 1–2.
+
+#### Setup A — Broken Support → SELL continuation
+**Trigger** — all four must be true:
+1. `nearest_resistance` label is an S-level (S1, S2, etc.) — a pivot support that price has broken below and now acts as overhead resistance
+2. RSI in valid SELL range (20–55) — hard requirement
+3. Step 1 candle structure shows LH+LL — lower highs, lower lows, bearish momentum continuing
+4. `prev_day_low` (PDL) is below current price — a named target exists below
+
+**Decision**: SELL. Confidence 0.72–0.80. Target = `prev_day_low`. Stop = `nearest_resistance` + 0.15%.
+
+The broken S-level is now overhead resistance and your invalidation level. PDL is the natural floor target. You are in a momentum continuation trade — the breakdown happened; enter it.
+
+**⚠ Do NOT output HOLD because price is "between levels."** Being between a broken support (now resistance) and the next support below IS the continuation trade zone for a breakdown. HOLD between levels = missed trade.
+
+**Day's low proximity exception during breakdowns**: `day_low` tracks the session low and falls with price during a downtrend — it is always close to current price in a decline. When LH+LL structure is present with clean bearish closes (no significant lower-wick defense), do NOT apply the -0.10 day's-low proximity penalty. A falling `day_low` trailing the breakdown is not a static support floor.
+
+#### Setup B — Level Bounce → BUY reversal
+**Trigger** — all three must be true:
+1. Current price is within 0.5% above `prev_day_low` or `nearest_support` — the level is being tested from above
+2. Step 1 candle structure shows active defense: lower wick ≥ 2× body (hammer / pin bar), bullish engulfing, or a BULLISH_AT_LOW volume signal
+3. RSI ≥ 30 — price at a major support after a sustained decline will often be oversold; the normal RSI ≥ 45 floor is relaxed here to RSI ≥ 30
+
+**Decision**: BUY. Confidence 0.70–0.78. Target = first named resistance above (the previously broken S-level now acts as target). Stop = `prev_day_low` − 0.2%.
+
+A bullish candle at PDL after a sustained intraday decline is one of the highest-probability reversal signals of the session. If the candle structure shows lower-wick defense at this level, output BUY — do not output HOLD at PDL.
+
+#### Setup C — Broken Resistance → BUY continuation
+**Trigger** — mirror of Setup A for breakouts:
+1. `nearest_support` label is an R-level (R1, R2, etc.) — a pivot resistance that price has broken above and now acts as floor support
+2. RSI in valid BUY range (45–75)
+3. Step 1 candle structure shows HH+HL — bullish continuation
+
+**Decision**: BUY. Confidence 0.72–0.80. Target = next named resistance above. Stop = `nearest_support` − 0.15%.
+
 ### STEP 1 — PRICE ACTION READ (mandatory — complete before any rule)
 Read the ## Recent Price Action candle block and answer all four questions. Capture answers in candle_summary. Your decision MUST be consistent with candle_summary — if they contradict, candle_summary overrides indicators.
 1. BODIES: Are the last 3 candle bodies large (strong momentum) or small with large wicks (indecision/exhaustion)?
