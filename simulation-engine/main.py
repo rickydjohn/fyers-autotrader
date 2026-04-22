@@ -376,10 +376,10 @@ async def _handle_decision(data: dict) -> None:
             )
             return
 
-    # Entry proximity gate — mirror of the PA_RESISTANCE / PA_SUPPORT exit rules.
-    # Don't enter a BUY if the underlying is already at resistance (we'd exit immediately).
-    # Don't enter a SELL if the underlying is already at support (same reason).
-    # Uses the same 0.25% proximity band as the exit rules.
+    # Entry proximity gate — only block when price is *approaching* a level, not after breaking through.
+    # BUY: block if price is within 0.25% *below* resistance (approaching from below — no room above).
+    # SELL: block if price is within 0.25% *above* support (approaching from above — no room below).
+    # Once price has broken through a level, that level is no longer an obstacle and the block must not fire.
     PA_PROXIMITY = 0.0025
     mkt_ind = market.get("indicators", {})
     if decision == "BUY":
@@ -389,15 +389,15 @@ async def _handle_decision(data: dict) -> None:
             mkt_ind.get("prev_day_high", 0),
         ]
         for level in resistance_levels:
-            if level > 0 and current_price >= level * (1 - PA_PROXIMITY):
+            if level > 0 and level * (1 - PA_PROXIMITY) <= current_price <= level:
                 label = (
                     mkt_ind.get("nearest_resistance_label", "resistance")
                     if level == mkt_ind.get("nearest_resistance", 0)
                     else ("day_high" if level == mkt_ind.get("day_high", 0) else "PDH")
                 )
                 logger.info(
-                    f"[ENTRY BLOCK] BUY {symbol}: underlying ₹{current_price:.2f} already "
-                    f"within {PA_PROXIMITY*100:.2f}% of {label} ₹{level:.2f} — skipped"
+                    f"[ENTRY BLOCK] BUY {symbol}: underlying ₹{current_price:.2f} approaching "
+                    f"{label} ₹{level:.2f} from below (within {PA_PROXIMITY*100:.2f}%) — skipped"
                 )
                 return
 
@@ -406,21 +406,18 @@ async def _handle_decision(data: dict) -> None:
             mkt_ind.get("nearest_support", 0),
             mkt_ind.get("day_low", 0),
             mkt_ind.get("prev_day_low", 0),
-            mkt_ind.get("prev_day_high", 0),
         ]
         for level in support_levels:
-            if level > 0 and current_price <= level * (1 + PA_PROXIMITY):
+            if level > 0 and level <= current_price <= level * (1 + PA_PROXIMITY):
                 if level == mkt_ind.get("nearest_support", 0):
                     label = mkt_ind.get("nearest_support_label", "support")
                 elif level == mkt_ind.get("day_low", 0):
                     label = "day_low"
-                elif level == mkt_ind.get("prev_day_low", 0):
-                    label = "PDL"
                 else:
-                    label = "PDH"
+                    label = "PDL"
                 logger.info(
-                    f"[ENTRY BLOCK] SELL {symbol}: underlying ₹{current_price:.2f} already "
-                    f"within {PA_PROXIMITY*100:.2f}% of {label} ₹{level:.2f} — skipped"
+                    f"[ENTRY BLOCK] SELL {symbol}: underlying ₹{current_price:.2f} approaching "
+                    f"{label} ₹{level:.2f} from above (within {PA_PROXIMITY*100:.2f}%) — skipped"
                 )
                 return
 
