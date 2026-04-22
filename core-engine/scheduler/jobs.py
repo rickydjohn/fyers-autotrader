@@ -343,6 +343,7 @@ async def _process_symbol(symbol: str, redis_client: aioredis.Redis) -> None:
     # Forming bar signal: analyse the current incomplete 5m bar
     forming_bar_block = ""
     forming_bar_delta = 0.0
+    forming_bar_is_bull: Optional[bool] = None
     try:
         volume_profile = await _get_volume_profile(symbol)
         session_start_min = 9 * 60 + 15
@@ -358,8 +359,9 @@ async def _process_symbol(symbol: str, redis_client: aioredis.Redis) -> None:
                >= current_bar_start_min
         ]
         fb_signal = compute_forming_bar_signal(forming_candles, bar_position, volume_profile)
-        forming_bar_block = fb_signal.get("forming_bar_block", "")
-        forming_bar_delta = fb_signal.get("confidence_delta", 0.0)
+        forming_bar_block   = fb_signal.get("forming_bar_block", "")
+        forming_bar_delta   = fb_signal.get("confidence_delta", 0.0)
+        forming_bar_is_bull = fb_signal.get("forming_bar_is_bull", None)
     except Exception as e:
         logger.debug(f"Could not compute forming bar signal for {symbol}: {e}")
         forming_bar_delta = 0.0
@@ -397,6 +399,7 @@ async def _process_symbol(symbol: str, redis_client: aioredis.Redis) -> None:
         raw_candles=candles,
         forming_bar_block=forming_bar_block,
         forming_bar_delta=forming_bar_delta,
+        forming_bar_is_bull=forming_bar_is_bull,
     )
 
     # Store final (gated) decision for downstream symbols to use as peer signal

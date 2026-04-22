@@ -211,6 +211,7 @@ async def make_decision(
     raw_candles: Optional[list] = None,
     forming_bar_block: str = "",
     forming_bar_delta: float = 0.0,
+    forming_bar_is_bull: Optional[bool] = None,
 ) -> Optional[LLMDecision]:
     """Build prompt (with historical context), call LLM, parse, publish to Redis and DB."""
     ind: TechnicalIndicators = snapshot.indicators
@@ -325,7 +326,16 @@ async def make_decision(
 
     # Forming bar hard gate — apply confidence delta in Python regardless of
     # whether the LLM correctly acted on the text instruction.
+    # Direction alignment: a positive delta (strong body) should boost confidence only
+    # when the bar's direction matches the decision. If the bar contradicts the decision,
+    # flip the sign so it reduces confidence instead of boosting it.
+    # Negative deltas (doji, late reversal, low volume) are kept as-is — they always
+    # reduce confidence regardless of direction.
     if forming_bar_delta != 0.0 and validated["decision"] in ("BUY", "SELL"):
+        if forming_bar_is_bull is not None and forming_bar_delta > 0:
+            decision_is_bull = validated["decision"] == "BUY"
+            if forming_bar_is_bull != decision_is_bull:
+                forming_bar_delta = -forming_bar_delta
         old_conf = validated["confidence"]
         new_conf = max(0.0, min(1.0, old_conf + forming_bar_delta))
         validated["confidence"] = new_conf

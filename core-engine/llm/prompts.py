@@ -322,13 +322,22 @@ def compute_forming_bar_signal(
         confidence_delta = 0.0
         reason = "ultra-low volume — signal suppressed"
 
-    # Late reversal penalty at minutes 4-5 (bar_position 3-4)
+    # Late reversal penalty at minutes 4-5 (bar_position 3-4).
+    # Only penalise heavily if the reversal candle has real body (>20% of bar range).
+    # A 2-point tick against a 20-point bar is noise, not a reversal — don't kill the signal.
     if bar_position >= 3 and len(forming_1m_candles) >= 2:
-        last_1m     = forming_1m_candles[-1]
-        last_1m_bull = float(last_1m.get("close", 0)) >= float(last_1m.get("open", 0))
+        last_1m      = forming_1m_candles[-1]
+        last_1m_cl   = float(last_1m.get("close", 0))
+        last_1m_op   = float(last_1m.get("open",  0))
+        last_1m_bull = last_1m_cl >= last_1m_op
         if last_1m_bull != is_bull:
-            confidence_delta -= 0.15
-            reason += " | late reversal candle (-0.15)"
+            reversal_ratio = abs(last_1m_cl - last_1m_op) / candle_range if candle_range > 0 else 0.0
+            if reversal_ratio >= 0.20:
+                confidence_delta -= 0.15
+                reason += f" | significant late reversal ({reversal_ratio:.0%}, -0.15)"
+            else:
+                confidence_delta -= 0.05
+                reason += f" | minor late reversal ({reversal_ratio:.0%}, -0.05)"
 
     # Confirmation boost at minutes 4-5 if body + volume both confirm
     elif bar_position >= 3 and volume_ratio >= 1.5 and body_ratio >= 0.40:
@@ -356,6 +365,7 @@ def compute_forming_bar_signal(
         "confidence_delta": confidence_delta,
         "forming_bar_block": forming_bar_block,
         "skip_llm": skip_llm,
+        "forming_bar_is_bull": is_bull,
     }
 
 
