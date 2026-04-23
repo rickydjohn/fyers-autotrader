@@ -441,6 +441,12 @@ async def make_decision(
             "consolidation_pct": ind.consolidation_pct,
             "range_breakout": ind.range_breakout,
             "pdh_pivot_confluence": ind.pdh_pivot_confluence,
+            "nearest_resistance": ind.nearest_resistance,
+            "nearest_resistance_label": ind.nearest_resistance_label,
+            "nearest_support": ind.nearest_support,
+            "nearest_support_label": ind.nearest_support_label,
+            "prev_day_high": ind.prev_day_high,
+            "prev_day_low": ind.prev_day_low,
         },
     )
 

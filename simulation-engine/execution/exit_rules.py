@@ -8,8 +8,8 @@ trigger exits directly.
 Rule priority:
   1. SESSION_CLOSE  — 15:00 IST force close (always applies)
   2. STOP_LOSS      — option LTP ≤ entry × 0.90  (−10% hard stop)
-  3. PA_RESISTANCE  — CE: underlying within 0.20% of nearest resistance/day_high/PDH
-     PA_SUPPORT     — PE: underlying within 0.20% of nearest support/day_low/PDL
+  3. PA_RESISTANCE  — CE: underlying within 0.25% of nearest resistance/PDH
+     PA_SUPPORT     — PE: underlying within 0.25% of nearest support/PDL
                       Only fires when position is currently in profit (locks in gains)
   4. DELTA_ERODED   — |delta| < 0.20 (option far OTM, premium bleeding pointlessly)
   5. IV_CRUSH       — IV fell >20% from entry (vega working against us)
@@ -120,9 +120,11 @@ def check_exit(
                         (keys: rsi, vwap, ltp, macd, macd_signal).
         now:            Current IST datetime (defaults to datetime.now(IST)).
         market_context: Current structural price levels from market snapshot
-                        (day_high, day_low, prev_day_high, prev_day_low,
+                        (prev_day_high, prev_day_low,
                          nearest_resistance, nearest_resistance_label,
                          nearest_support, nearest_support_label).
+                        day_high/day_low are intentionally excluded — they track
+                        the running intraday extreme and would cause premature exits.
 
     Returns:
         (should_exit, exit_reason, exit_price, new_milestone_count)
@@ -189,12 +191,14 @@ def check_exit(
             gross_gain = (option_ltp - pos.entry_option_price) * pos.quantity
             if gross_gain >= PA_MIN_GROSS_PROFIT:
                 is_ce = pos.side == "BUY"
-                # Levels to check: nearest S/R first, then day extremes, then PDH/PDL
+                # Levels to check: nearest S/R and PDH/PDL only.
+                # day_high/day_low are excluded — they track the running intraday
+                # extreme and always sit just above/below current price during a
+                # trend, causing premature exits. Same reasoning as the entry block.
                 if is_ce:
                     resistance_levels = [
                         (market_context.get("nearest_resistance", 0),
                          market_context.get("nearest_resistance_label", "resistance")),
-                        (market_context.get("day_high", 0),     "day_high"),
                         (market_context.get("prev_day_high", 0), "PDH"),
                     ]
                     for level, label in resistance_levels:
@@ -211,7 +215,6 @@ def check_exit(
                     support_levels = [
                         (market_context.get("nearest_support", 0),
                          market_context.get("nearest_support_label", "support")),
-                        (market_context.get("day_low", 0),      "day_low"),
                         (market_context.get("prev_day_low", 0), "PDL"),
                     ]
                     for level, label in support_levels:
