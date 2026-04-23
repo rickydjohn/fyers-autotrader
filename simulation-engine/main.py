@@ -376,48 +376,32 @@ async def _handle_decision(data: dict) -> None:
             )
             return
 
-    # Entry proximity gate — only block when price is *approaching* a level, not after breaking through.
-    # BUY: block if price is within 0.25% *below* resistance (approaching from below — no room above).
-    # SELL: block if price is within 0.25% *above* support (approaching from above — no room below).
-    # Once price has broken through a level, that level is no longer an obstacle and the block must not fire.
+    # Entry proximity gate — block when price is approaching the nearest level from the wrong side.
+    # nearest_resistance is the closest level ABOVE price (resistance role, regardless of label).
+    # nearest_support   is the closest level BELOW price (support role, regardless of label).
+    # PDH/PDL are included in the pivot calc and assigned dynamically — no hardcoded role.
+    # day_high/day_low excluded — track the running intraday extreme, not structural levels.
     PA_PROXIMITY = 0.0025
     mkt_ind = market.get("indicators", {})
     if decision == "BUY":
-        # Only static levels: nearest_resistance (S/R from pivot calc) and PDH.
-        # day_high is excluded — it tracks the running intraday high and always sits
-        # just above current price during a rally, permanently blocking BUY entries.
-        resistance_levels = [
-            (mkt_ind.get("nearest_resistance", 0), mkt_ind.get("nearest_resistance_label", "resistance")),
-            (mkt_ind.get("prev_day_high", 0),       "PDH"),
-        ]
-        for level, label in resistance_levels:
-            if level > 0 and level * (1 - PA_PROXIMITY) <= current_price <= level:
-                logger.info(
-                    f"[ENTRY BLOCK] BUY {symbol}: underlying ₹{current_price:.2f} approaching "
-                    f"{label} ₹{level:.2f} from below (within {PA_PROXIMITY*100:.2f}%) — skipped"
-                )
-                return
+        nr = mkt_ind.get("nearest_resistance", 0)
+        nr_label = mkt_ind.get("nearest_resistance_label", "resistance")
+        if nr > 0 and nr * (1 - PA_PROXIMITY) <= current_price <= nr:
+            logger.info(
+                f"[ENTRY BLOCK] BUY {symbol}: underlying ₹{current_price:.2f} approaching "
+                f"{nr_label} ₹{nr:.2f} from below (within {PA_PROXIMITY*100:.2f}%) — skipped"
+            )
+            return
 
     elif decision == "SELL":
-        # Only static levels: nearest_support (S1/S2 from pivot calc) and PDL.
-        # day_low is excluded — it tracks the running intraday low and always sits
-        # just below current price during a drop, permanently blocking SELL entries.
-        # PDL uses a tighter 0.10% band (vs 0.25% for pivot levels) so level-to-level
-        # continuation trades (S1 break → PE targeting PDL) are not blocked when the
-        # S1–PDL gap is narrow (~0.27%). Entries that are dangerously close to PDL
-        # (<0.10%, i.e. < ~24 pts) are still blocked.
-        PA_PDL_PROXIMITY = 0.0010
-        support_levels = [
-            (mkt_ind.get("nearest_support", 0), mkt_ind.get("nearest_support_label", "support"), PA_PROXIMITY),
-            (mkt_ind.get("prev_day_low", 0),     "PDL",                                           PA_PDL_PROXIMITY),
-        ]
-        for level, label, prox in support_levels:
-            if level > 0 and level <= current_price <= level * (1 + prox):
-                logger.info(
-                    f"[ENTRY BLOCK] SELL {symbol}: underlying ₹{current_price:.2f} approaching "
-                    f"{label} ₹{level:.2f} from above (within {prox*100:.2f}%) — skipped"
-                )
-                return
+        ns = mkt_ind.get("nearest_support", 0)
+        ns_label = mkt_ind.get("nearest_support_label", "support")
+        if ns > 0 and ns <= current_price <= ns * (1 + PA_PROXIMITY):
+            logger.info(
+                f"[ENTRY BLOCK] SELL {symbol}: underlying ₹{current_price:.2f} approaching "
+                f"{ns_label} ₹{ns:.2f} from above (within {PA_PROXIMITY*100:.2f}%) — skipped"
+            )
+            return
 
     if decision == "BUY":
         existing = await redis_client.hget("positions:open", symbol)
