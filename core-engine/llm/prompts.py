@@ -721,6 +721,7 @@ Use the net weighted contribution and sector breakdown to adjust confidence. Do 
 - BANK sector alone: if BANK change ≤ −0.5% and you are trading BANKNIFTY → additional SELL confidence +0.03; if BANK ≥ +0.5% → additional BUY confidence +0.03
 - All 5+ sectors in same direction (breadth sweep): double the net contribution adjustment (cap total sector adjustment at +0.10)
 - If no sector data listed: skip this section entirely
+- In your reasoning, name the specific sectors driving the signal (e.g. "IT −3.9%, AUTO −1.2% dragging NIFTY"), not just "sector breadth". Only mention sectors with |change| > 0.5%.
 
 ### ALL DAYS
 - Set stop_loss 0.3-0.5% from entry (below entry for BUY, above entry for SELL)

@@ -522,7 +522,12 @@ async def run_market_scan(redis_client: aioredis.Redis) -> None:
         _sector_breadth_block = format_sector_breadth_block(breadth_data)
         if breadth_data:
             net = sum(d["change_pct"] * d["weight"] / 100 for d in breadth_data.values())
-            logger.info(f"[SECTOR BREADTH] {len(breadth_data)} sectors fetched, net contribution {net:+.3f}%")
+            sector_parts = "  ".join(
+                f"{s} {d['change_pct']:+.2f}%" for s, d in breadth_data.items()
+            )
+            logger.info(
+                f"[SECTOR BREADTH] {len(breadth_data)} sectors, net {net:+.3f}%  |  {sector_parts}"
+            )
     except Exception as e:
         logger.warning(f"Sector breadth fetch failed, continuing without it: {e}")
         _sector_breadth_block = ""
