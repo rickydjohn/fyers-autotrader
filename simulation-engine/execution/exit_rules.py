@@ -8,8 +8,8 @@ trigger exits directly.
 Rule priority:
   1. SESSION_CLOSE  — 15:00 IST force close (always applies)
   2. STOP_LOSS      — option LTP ≤ entry × 0.90  (−10% hard stop)
-  3. PA_RESISTANCE  — CE: underlying within 0.25% of PDH (previous day high)
-     PA_SUPPORT     — PE: underlying within 0.25% of PDL (previous day low)
+  3. PA_RESISTANCE  — CE: underlying within 0.25% of nearest resistance / PDH
+     PA_SUPPORT     — PE: underlying within 0.25% of nearest support / PDL
                       Only fires when position is currently in profit (locks in gains)
   4. DELTA_ERODED   — |delta| < 0.20 (option far OTM, premium bleeding pointlessly)
   5. IV_CRUSH       — IV fell >20% from entry (vega working against us)
@@ -191,15 +191,14 @@ def check_exit(
             gross_gain = (option_ltp - pos.entry_option_price) * pos.quantity
             if gross_gain >= PA_MIN_GROSS_PROFIT:
                 is_ce = pos.side == "BUY"
-                # Only PDH/PDL — yesterday's actual traded extremes.
-                # nearest_resistance/nearest_support (S1, S2 etc.) are excluded:
-                # they share the same 0.25% proximity band as the entry block, so
-                # any trade that just cleared the entry filter gets exited the moment
-                # price ticks 0.01% lower. PDH/PDL are the real structural targets
-                # for level-to-level moves and don't cause same-bar exits.
-                # day_high/day_low also excluded — track the running intraday extreme.
+                # Levels to check: nearest S/R and PDH/PDL only.
+                # day_high/day_low are excluded — they track the running intraday
+                # extreme and always sit just above/below current price during a
+                # trend, causing premature exits. Same reasoning as the entry block.
                 if is_ce:
                     resistance_levels = [
+                        (market_context.get("nearest_resistance", 0),
+                         market_context.get("nearest_resistance_label", "resistance")),
                         (market_context.get("prev_day_high", 0), "PDH"),
                     ]
                     for level, label in resistance_levels:
@@ -214,6 +213,8 @@ def check_exit(
                             return True, "PA_RESISTANCE", option_ltp, milestone
                 else:
                     support_levels = [
+                        (market_context.get("nearest_support", 0),
+                         market_context.get("nearest_support_label", "support")),
                         (market_context.get("prev_day_low", 0), "PDL"),
                     ]
                     for level, label in support_levels:
