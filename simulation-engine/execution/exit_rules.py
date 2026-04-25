@@ -9,7 +9,9 @@ Rule priority:
   1. SESSION_CLOSE  — 15:00 IST force close (always applies)
   2. STOP_LOSS      — option LTP ≤ entry × 0.90  (−10% hard stop)
   3. PA_RESISTANCE  — CE: underlying within 0.25% of nearest resistance / PDH
-     PA_SUPPORT     — PE: underlying within 0.25% of nearest support / PDL
+     PA_SUPPORT     — PE: underlying within ±0.25% of nearest support (band check).
+                      PDL only included when underlying is still above PDL — if market
+                      has already broken below PDL, PDL is skipped as a target.
                       Only fires when position is currently in profit (locks in gains)
   4. DELTA_ERODED   — |delta| < 0.20 (option far OTM, premium bleeding pointlessly)
   5. IV_CRUSH       — IV fell >20% from entry (vega working against us)
@@ -215,10 +217,20 @@ def check_exit(
                     support_levels = [
                         (market_context.get("nearest_support", 0),
                          market_context.get("nearest_support_label", "support")),
-                        (market_context.get("prev_day_low", 0), "PDL"),
                     ]
+                    # Only use PDL as exit target if underlying is still above it.
+                    # When the market has already broken below PDL, PDL is no longer
+                    # a support the price needs to "reach" — including it makes the
+                    # condition trivially true and exits every trade in seconds.
+                    pdl = market_context.get("prev_day_low", 0)
+                    if pdl > 0 and underlying_ltp > pdl:
+                        support_levels.append((pdl, "PDL"))
                     for level, label in support_levels:
-                        if level > 0 and underlying_ltp <= level * (1 + PA_SUPPORT_PROXIMITY):
+                        # Fire only when underlying is within ±0.25% of the level.
+                        # The old condition (ltp <= level×1.0025) was always true when
+                        # the market was already below the level (e.g. all day below PDL),
+                        # causing immediate exits before the trade had room to develop.
+                        if level > 0 and level * (1 - PA_SUPPORT_PROXIMITY) <= underlying_ltp <= level * (1 + PA_SUPPORT_PROXIMITY):
                             logger.info(
                                 f"[EXIT] PA_SUPPORT — {pos.symbol}: "
                                 f"underlying ₹{underlying_ltp:.2f} at {label} ₹{level:.2f} "
