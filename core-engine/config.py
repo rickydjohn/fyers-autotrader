@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     timezone: str = "Asia/Kolkata"
     scan_interval_seconds: int = Field(300, env="SCAN_INTERVAL_SECONDS")
     position_watcher_interval_seconds: int = Field(5, env="POSITION_WATCHER_INTERVAL_SECONDS")
-    candle_interval: str = Field("1", env="CANDLE_INTERVAL")
+    candle_interval: str = Field("1m", env="CANDLE_INTERVAL")
 
     # Watchlist
     symbols: List[str] = [

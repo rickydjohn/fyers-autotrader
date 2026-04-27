@@ -24,6 +24,7 @@ from models.schemas import OHLCBar
 from indicators.cpr import calculate_cpr, get_cpr_signal
 from indicators.pivots import calculate_pivots, get_nearest_levels
 from indicators.technicals import (
+    aggregate_1m_to_5m,
     calculate_consolidation,
     calculate_day_range,
     calculate_ema,
@@ -144,7 +145,7 @@ async def refresh_context_cache(symbol: str) -> None:
         logger.debug(f"No historical context available for {symbol} yet")
 
 
-def _get_candles_cached(symbol: str, limit: int = 100) -> List[OHLCBar]:
+def _get_candles_cached(symbol: str, limit: int = 500) -> List[OHLCBar]:
     """
     Return candles for symbol at settings.candle_interval, fetching from Fyers only
     when a new bar has closed. The bar boundary is derived from the interval so that
@@ -209,9 +210,10 @@ async def _process_symbol(
         logger.error(f"[SCAN SKIP] {symbol}: get_quote returned None — Fyers auth issue or symbol unsupported")
         return
 
-    candles = _get_candles_cached(symbol, limit=100)
+    candles_1m = _get_candles_cached(symbol, limit=500)
+    candles = aggregate_1m_to_5m(candles_1m)
     if len(candles) < 30:
-        logger.error(f"[SCAN SKIP] {symbol}: only {len(candles)} candles returned (need 30) — insufficient Fyers history")
+        logger.error(f"[SCAN SKIP] {symbol}: only {len(candles)} 5m candles after aggregation (need 30) — insufficient Fyers history")
         return
 
     prev_ohlc = get_previous_day_ohlc(symbol)
@@ -282,9 +284,9 @@ async def _process_symbol(
     )
 
     # ── Persist to TimescaleDB via data-service ───────────────────────────────
-    # 1. Write the latest candle (most recent 1m bar)
-    if candles:
-        latest = candles[-1]
+    # 1. Write the latest 1m candle (raw resolution, not aggregated)
+    if candles_1m:
+        latest = candles_1m[-1]
         await data_client.persist_candle({
             "time":   latest.timestamp.isoformat(),
             "symbol": symbol,
@@ -361,7 +363,7 @@ async def _process_symbol(
         forming_candles = [
             {"time": c.timestamp.isoformat(), "open": c.open, "high": c.high,
              "low": c.low, "close": c.close, "volume": c.volume}
-            for c in candles
+            for c in candles_1m
             if (c.timestamp.astimezone(IST).hour * 60 + c.timestamp.astimezone(IST).minute)
                >= current_bar_start_min
         ]

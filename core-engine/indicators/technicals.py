@@ -213,9 +213,7 @@ def format_candles_for_prompt(
     if not today_candles:
         return "  No intraday candles available for today."
 
-    # Aggregate to 5m if input looks like 1m candles (more than 50 bars in session)
-    if len(today_candles) > 50:
-        today_candles = aggregate_1m_to_5m(today_candles)
+    today_candles = aggregate_1m_to_5m(today_candles)
 
     if not today_candles:
         return "  No intraday candles available for today."

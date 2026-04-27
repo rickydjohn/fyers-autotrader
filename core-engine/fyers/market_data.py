@@ -28,7 +28,7 @@ RESOLUTION_MAP = {
 
 def get_historical_candles(
     symbol: str,
-    interval: str = "5m",
+    interval: str = "1m",
     limit: int = 200,
 ) -> List[OHLCBar]:
     """Fetch historical OHLCV candles for a symbol."""
