@@ -284,22 +284,51 @@ async def _process_symbol(
     )
 
     # ── Persist to TimescaleDB via data-service ───────────────────────────────
-    # 1. Write the latest 1m candle (raw resolution, not aggregated)
+    # 1. Write all new 1m candles since the last persisted timestamp.
+    #    Tracking via Redis prevents gaps when Ollama delays push scans past 60s.
     if candles_1m:
-        latest = candles_1m[-1]
-        await data_client.persist_candle({
-            "time":   latest.timestamp.isoformat(),
-            "symbol": symbol,
-            "open":   latest.open,
-            "high":   latest.high,
-            "low":    latest.low,
-            "close":  latest.close,
-            "volume": latest.volume,
-            "vwap":   vwap,
-            "rsi":    rsi,
-            "ema_9":  ema_9,
-            "ema_21": ema_21,
-        })
+        redis_ts_key = f"last_candle_ts:{symbol}"
+        last_ts_raw = await redis_client.get(redis_ts_key)
+        if last_ts_raw:
+            from datetime import timezone as _tz
+            last_ts = datetime.fromisoformat(last_ts_raw.decode()).astimezone(_tz.utc)
+            new_candles = [c for c in candles_1m if c.timestamp.astimezone(_tz.utc) > last_ts]
+        else:
+            new_candles = candles_1m[-1:]
+
+        if new_candles:
+            # Batch-persist all catchup candles (OHLCV only — no indicators)
+            if len(new_candles) > 1:
+                await data_client.persist_candles_batch([
+                    {
+                        "time":   c.timestamp.isoformat(),
+                        "symbol": symbol,
+                        "open":   c.open,
+                        "high":   c.high,
+                        "low":    c.low,
+                        "close":  c.close,
+                        "volume": c.volume,
+                    }
+                    for c in new_candles[:-1]
+                ])
+
+            # Latest candle gets current indicator values
+            latest = new_candles[-1]
+            await data_client.persist_candle({
+                "time":   latest.timestamp.isoformat(),
+                "symbol": symbol,
+                "open":   latest.open,
+                "high":   latest.high,
+                "low":    latest.low,
+                "close":  latest.close,
+                "volume": latest.volume,
+                "vwap":   vwap,
+                "rsi":    rsi,
+                "ema_9":  ema_9,
+                "ema_21": ema_21,
+            })
+
+            await redis_client.set(redis_ts_key, new_candles[-1].timestamp.isoformat())
 
     # 2. Write today's daily indicator (CPR / pivots)
     await data_client.persist_daily_indicator({
