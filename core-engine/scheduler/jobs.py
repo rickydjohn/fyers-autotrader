@@ -291,7 +291,7 @@ async def _process_symbol(
         last_ts_raw = await redis_client.get(redis_ts_key)
         if last_ts_raw:
             from datetime import timezone as _tz
-            last_ts = datetime.fromisoformat(last_ts_raw.decode()).astimezone(_tz.utc)
+            last_ts = datetime.fromisoformat(last_ts_raw).astimezone(_tz.utc)
             new_candles = [c for c in candles_1m if c.timestamp.astimezone(_tz.utc) > last_ts]
         else:
             new_candles = candles_1m[-1:]
