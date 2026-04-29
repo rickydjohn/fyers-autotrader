@@ -36,11 +36,11 @@ NSE intraday autotrader using Fyers API, TimescaleDB, and a pluggable LLM backen
 
 | Service | Port | Role |
 |---|---|---|
-| core-engine | 8001 | Market data, indicators, LLM decisions, Fyers OAuth |
-| simulation-engine | 8002 | Trade execution (sim or live), exits, P&L, reconciliation |
-| data-service | 8003 | TimescaleDB ORM, historical context, S/R levels, volume profile |
-| api-service | 8000 | REST + SSE gateway |
-| ui-service | 3000 | React dashboard |
+| [core-engine](core-engine/README.md) | 8001 | Market data, indicators, LLM decisions, Fyers OAuth |
+| [simulation-engine](simulation-engine/README.md) | 8002 | Trade execution (sim or live), exits, P&L, reconciliation |
+| [data-service](data-service/README.md) | 8003 | TimescaleDB ORM, historical context, S/R levels, volume profile |
+| [api-service](api-service/README.md) | 8000 | REST + SSE gateway |
+| [ui-service](ui-service/README.md) | 3000 | React dashboard |
 
 ## Setup
 
@@ -84,7 +84,8 @@ FYERS_REDIRECT_URI=http://localhost:8001/fyers/callback
 
 INITIAL_BUDGET=100000
 SCAN_INTERVAL_SECONDS=60
-CANDLE_INTERVAL=5
+CANDLE_INTERVAL=1m
+MIN_BAR_POSITION=2
 ```
 
 ### 4. Start all services
@@ -212,12 +213,15 @@ curl -X POST http://localhost:8001/scan/trigger
 
 | Variable | Default | Description |
 |---|---|---|
-| `CANDLE_INTERVAL` | `5` | Candle timeframe (minutes) |
+| `CANDLE_INTERVAL` | `1m` | `1m` (fetch 1m, aggregate to 5m) or `5m` (fetch 5m directly) |
+| `MIN_BAR_POSITION` | `2` | Minutes into current 5m bar before LLM runs (0–4). Combine with `CANDLE_INTERVAL=5m` and set to `4` to replicate pre-1m behaviour. |
 | `SCAN_INTERVAL_SECONDS` | `60` | How often to scan |
 | `INITIAL_BUDGET` | `100000` | Virtual capital (INR) |
 | `MAX_POSITION_SIZE_PCT` | `10` | Max % of budget per trade |
 | `SLIPPAGE_PCT` | `0.05` | Entry/exit slippage |
 | `COMMISSION_FLAT` | `20` | Min commission per trade (INR) |
+| `MIN_OPTION_PREMIUM` | `30` | Skip option strikes below this premium (₹) |
+| `SL_COOLDOWN_MINUTES` | `15` | Block re-entry on underlying after stop-loss |
 
 ### Proxy (optional)
 
