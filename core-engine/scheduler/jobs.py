@@ -367,14 +367,13 @@ async def _process_symbol(
         logger.debug(f"[SCAN SKIP LLM] {symbol}: past session close, skipping LLM decision")
         return
 
-    # Timing gate: skip LLM during the first 2 minutes of every 5m bar.
-    # Minutes 2-3 within a 5m bar show ~38% false directional signals;
-    # minute 1 only shows ~8%.  We wait until bar_position >= 2 (3rd minute+).
+    # Timing gate: skip LLM until bar_position >= MIN_BAR_POSITION.
+    # Configurable via MIN_BAR_POSITION env var (default 2 = 3rd minute).
     bar_position = _current_bar_position()
-    if bar_position < 2:
+    if bar_position < settings.min_bar_position:
         logger.debug(
             f"[SCAN SKIP LLM] {symbol}: bar_position={bar_position} "
-            f"(waiting for 3rd minute of 5m bar)"
+            f"(min_bar_position={settings.min_bar_position})"
         )
         return
 

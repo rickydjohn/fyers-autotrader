@@ -35,7 +35,30 @@ class Settings(BaseSettings):
     timezone: str = "Asia/Kolkata"
     scan_interval_seconds: int = Field(300, env="SCAN_INTERVAL_SECONDS")
     position_watcher_interval_seconds: int = Field(5, env="POSITION_WATCHER_INTERVAL_SECONDS")
+
+    # Candle resolution fetched from Fyers.
+    # "1m" — fetch 1-minute bars and aggregate to 5m in-process (default).
+    #         Gives the forming-bar signal real intra-bar data to work with.
+    # "5m" — fetch 5-minute bars directly; forming-bar signal is effectively
+    #         silent (only 1 completed bar available). Use this if the 1m
+    #         approach causes too much intra-bar noise.
+    # To revert to pre-1m behaviour: set CANDLE_INTERVAL=5m + MIN_BAR_POSITION=4.
     candle_interval: str = Field("1m", env="CANDLE_INTERVAL")
+
+    # Minimum bar position (0-indexed minute within the current 5m bar) before
+    # the LLM scan is allowed to run.
+    #
+    # How bar position maps to clock time (bar starting at xx:15, xx:20, …):
+    #   0 → first minute  (xx:15, xx:20, …) — only 1 data point, very noisy
+    #   1 → second minute (xx:16, xx:21, …) — 2 data points, still thin
+    #   2 → third minute  (xx:17, xx:22, …) — DEFAULT; candle shape emerging
+    #   3 → fourth minute (xx:18, xx:23, …) — 4 of 5 minutes complete
+    #   4 → fifth minute  (xx:19, xx:24, …) — bar nearly complete, least noise
+    #
+    # Setting this to 4 closely approximates waiting for a fully-formed 5m bar
+    # (equivalent to the pre-1m-candle behaviour). Combined with CANDLE_INTERVAL=5m
+    # this fully replicates that setup via config alone — no code revert needed.
+    min_bar_position: int = Field(2, env="MIN_BAR_POSITION")
 
     # Watchlist
     symbols: List[str] = [
