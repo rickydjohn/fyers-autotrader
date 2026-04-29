@@ -152,16 +152,16 @@ Confidence floor applied → trade executes or HOLD
 
 ```bash
 # LLM decision backtest on historical candles
-python core-engine/backtest_candles.py
+python tests/backtests/backtest_candles.py
 
 # Measure cross-symbol gate impact on trade history
-python backtest_cross_symbol_gate.py
+python tests/backtests/backtest_cross_symbol_gate.py
 
 # Test rule changes against candle data
-python backtest_new_rules.py
+python tests/backtests/backtest_new_rules.py
 
 # Range breakout logic validation
-python backtest_range_breakout.py
+python tests/backtests/backtest_range_breakout.py
 ```
 
 Historical data is fetched via:
