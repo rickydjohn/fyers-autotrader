@@ -748,15 +748,14 @@ async def bootstrap_historical_data(
 ) -> Dict[str, Any]:
     """
     Fetch multi-timeframe OHLCV from Fyers and persist to data-service (market_candles).
-    Includes 1m (chunked) so the UI timeframe selector has data.
-    Intervals / lookbacks follow Fyers per-request limits via max_chunk_days.
+    Only 1m and 1d candles are fetched.
+    5m/15m/1h are derived from 1m on read (via DB views or fallback aggregation).
+    Storing them in market_candles would overwrite 1m bars at boundary timestamps
+    (shared primary key on time+symbol) — corrupting intraday OHLC data.
     """
     # (interval, lookback_days, max_chunk_days per Fyers request)
     configs = [
         ("1m",  60, 28),   # ~60d of 1m; chunk < 30d limit
-        ("5m",  90, 90),
-        ("15m", 90, 90),
-        ("1h",  180, 99),
         ("1d",  365, 365),
     ]
 

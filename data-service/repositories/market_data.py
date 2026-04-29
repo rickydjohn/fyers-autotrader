@@ -7,7 +7,7 @@ import logging
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -76,18 +76,20 @@ async def _get_bucketed_candles_from_base(
 
 async def upsert_candle(db: AsyncSession, candle: Dict[str, Any]) -> None:
     stmt = insert(MarketCandle).values(**candle)
+    # OHLCV always updated; indicator columns only updated when the incoming
+    # value is non-NULL so bootstrap (OHLCV-only) never clears live indicators.
     stmt = stmt.on_conflict_do_update(
         index_elements=["time", "symbol"],
         set_={
-            "open": stmt.excluded.open,
-            "high": stmt.excluded.high,
-            "low":  stmt.excluded.low,
-            "close": stmt.excluded.close,
+            "open":   stmt.excluded.open,
+            "high":   stmt.excluded.high,
+            "low":    stmt.excluded.low,
+            "close":  stmt.excluded.close,
             "volume": stmt.excluded.volume,
-            "vwap":  stmt.excluded.vwap,
-            "rsi":   stmt.excluded.rsi,
-            "ema_9": stmt.excluded.ema_9,
-            "ema_21": stmt.excluded.ema_21,
+            "vwap":   func.coalesce(stmt.excluded.vwap,   MarketCandle.vwap),
+            "rsi":    func.coalesce(stmt.excluded.rsi,    MarketCandle.rsi),
+            "ema_9":  func.coalesce(stmt.excluded.ema_9,  MarketCandle.ema_9),
+            "ema_21": func.coalesce(stmt.excluded.ema_21, MarketCandle.ema_21),
         },
     )
     await db.execute(stmt)
