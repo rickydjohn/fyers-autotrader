@@ -59,13 +59,15 @@ export function ReportPage() {
   const [toDate, setToDate]           = useState(todayISO())
   const [cumReport, setCumReport]     = useState<CumulativeReport | null>(null)
 
-  const [loading, setLoading] = useState(false)
-  const [error, setError]     = useState<string | null>(null)
+  const [loading, setLoading]             = useState(false)
+  const [error, setError]                 = useState<string | null>(null)
+  const [selectedReason, setSelectedReason] = useState<string | null>(null)
 
   const tradingMode = modeFilter === 'all' ? undefined : modeFilter
 
   useEffect(() => {
     if (view !== 'monthly') return
+    setSelectedReason(null)
     setLoading(true)
     setError(null)
     fetchMonthReport(month, tradingMode)
@@ -76,6 +78,7 @@ export function ReportPage() {
 
   useEffect(() => {
     if (view !== 'cumulative') return
+    setSelectedReason(null)
     setLoading(true)
     setError(null)
     fetchCumulativeReport(fromDate, toDate, tradingMode)
@@ -220,16 +223,29 @@ export function ReportPage() {
           )}
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <ChartCard title="P&L by Exit Reason">
-              <PnlPieChart breakdown={report.by_exit_reason} />
+            <ChartCard title="P&L by Exit Reason" hint="Click a slice to filter trades">
+              <PnlPieChart
+                breakdown={report.by_exit_reason}
+                selected={selectedReason}
+                onSelect={(r) => setSelectedReason((prev) => (prev === r ? null : r))}
+              />
             </ChartCard>
-            <ChartCard title="Trade Count by Exit Reason">
-              <CountPieChart breakdown={report.by_exit_reason} />
+            <ChartCard title="Trade Count by Exit Reason" hint="Click a slice to filter trades">
+              <CountPieChart
+                breakdown={report.by_exit_reason}
+                selected={selectedReason}
+                onSelect={(r) => setSelectedReason((prev) => (prev === r ? null : r))}
+              />
             </ChartCard>
           </div>
 
           {/* Trade table */}
-          <TradeTable trades={report.trades} showMode={modeFilter === 'all'} />
+          <TradeTable
+            trades={report.trades}
+            showMode={modeFilter === 'all'}
+            selectedReason={selectedReason}
+            onClearReason={() => setSelectedReason(null)}
+          />
         </>
       )}
     </div>
@@ -247,10 +263,13 @@ function StatCard({ label, value, color = 'text-white' }: { label: string; value
   )
 }
 
-function ChartCard({ title, children }: { title: string; children: React.ReactNode }) {
+function ChartCard({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-lg p-4">
-      <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-4">{title}</h3>
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wide">{title}</h3>
+        {hint && <span className="text-xs text-gray-600">{hint}</span>}
+      </div>
       {children}
     </div>
   )
@@ -304,7 +323,13 @@ function MonthlyPnlChart({ byMonth }: { byMonth: Record<string, MonthlyBreakdown
   )
 }
 
-function PnlPieChart({ breakdown }: { breakdown: Record<string, { pnl: number; count: number }> }) {
+function PnlPieChart({
+  breakdown, selected, onSelect,
+}: {
+  breakdown: Record<string, { pnl: number; count: number }>
+  selected: string | null
+  onSelect: (r: string) => void
+}) {
   const data = Object.entries(breakdown)
     .map(([reason, v]) => ({ name: reason, value: Math.abs(v.pnl), raw: v.pnl }))
     .filter((d) => d.value > 0)
@@ -321,10 +346,22 @@ function PnlPieChart({ breakdown }: { breakdown: Record<string, { pnl: number; c
           outerRadius={100}
           paddingAngle={2}
           dataKey="value"
+          onClick={(entry) => onSelect(entry.name)}
+          style={{ cursor: 'pointer' }}
         >
-          {data.map((entry) => (
-            <Cell key={entry.name} fill={reasonColor(entry.name)} opacity={entry.raw < 0 ? 0.6 : 1} />
-          ))}
+          {data.map((entry) => {
+            const isSelected = selected === entry.name
+            const dimmed = selected !== null && !isSelected
+            return (
+              <Cell
+                key={entry.name}
+                fill={reasonColor(entry.name)}
+                opacity={dimmed ? 0.25 : entry.raw < 0 ? 0.6 : 1}
+                stroke={isSelected ? '#fff' : 'none'}
+                strokeWidth={isSelected ? 2 : 0}
+              />
+            )
+          })}
         </Pie>
         <Tooltip
           contentStyle={{ background: '#1f2937', border: '1px solid #374151', borderRadius: 6 }}
@@ -336,7 +373,15 @@ function PnlPieChart({ breakdown }: { breakdown: Record<string, { pnl: number; c
           itemStyle={{ color: '#e5e7eb' }}
         />
         <Legend
-          formatter={(value) => <span className="text-xs text-gray-400">{value}</span>}
+          formatter={(value) => (
+            <span
+              className="text-xs cursor-pointer"
+              style={{ color: selected === value ? '#fff' : selected ? '#4b5563' : '#9ca3af' }}
+              onClick={() => onSelect(value)}
+            >
+              {value}
+            </span>
+          )}
           wrapperStyle={{ fontSize: 12 }}
         />
       </PieChart>
@@ -344,7 +389,13 @@ function PnlPieChart({ breakdown }: { breakdown: Record<string, { pnl: number; c
   )
 }
 
-function CountPieChart({ breakdown }: { breakdown: Record<string, { count: number; wins: number; losses: number }> }) {
+function CountPieChart({
+  breakdown, selected, onSelect,
+}: {
+  breakdown: Record<string, { count: number; wins: number; losses: number }>
+  selected: string | null
+  onSelect: (r: string) => void
+}) {
   const data = Object.entries(breakdown)
     .map(([reason, v]) => ({ name: reason, value: v.count }))
     .sort((a, b) => b.value - a.value)
@@ -360,12 +411,24 @@ function CountPieChart({ breakdown }: { breakdown: Record<string, { count: numbe
           outerRadius={100}
           paddingAngle={2}
           dataKey="value"
-          label={({ name, value }) => `${value}`}
+          label={({ value }) => `${value}`}
           labelLine={false}
+          onClick={(entry) => onSelect(entry.name)}
+          style={{ cursor: 'pointer' }}
         >
-          {data.map((entry) => (
-            <Cell key={entry.name} fill={reasonColor(entry.name)} />
-          ))}
+          {data.map((entry) => {
+            const isSelected = selected === entry.name
+            const dimmed = selected !== null && !isSelected
+            return (
+              <Cell
+                key={entry.name}
+                fill={reasonColor(entry.name)}
+                opacity={dimmed ? 0.25 : 1}
+                stroke={isSelected ? '#fff' : 'none'}
+                strokeWidth={isSelected ? 2 : 0}
+              />
+            )
+          })}
         </Pie>
         <Tooltip
           contentStyle={{ background: '#1f2937', border: '1px solid #374151', borderRadius: 6 }}
@@ -374,7 +437,15 @@ function CountPieChart({ breakdown }: { breakdown: Record<string, { count: numbe
           itemStyle={{ color: '#e5e7eb' }}
         />
         <Legend
-          formatter={(value) => <span className="text-xs text-gray-400">{value}</span>}
+          formatter={(value) => (
+            <span
+              className="text-xs cursor-pointer"
+              style={{ color: selected === value ? '#fff' : selected ? '#4b5563' : '#9ca3af' }}
+              onClick={() => onSelect(value)}
+            >
+              {value}
+            </span>
+          )}
           wrapperStyle={{ fontSize: 12 }}
         />
       </PieChart>
@@ -384,13 +455,26 @@ function CountPieChart({ breakdown }: { breakdown: Record<string, { count: numbe
 
 const PAGE_SIZE = 25
 
-function TradeTable({ trades, showMode }: { trades: Trade[]; showMode: boolean }) {
-  const closed = trades.filter((t) => t.status !== 'OPEN').reverse()
+function TradeTable({
+  trades, showMode, selectedReason, onClearReason,
+}: {
+  trades: Trade[]
+  showMode: boolean
+  selectedReason: string | null
+  onClearReason: () => void
+}) {
+  const allClosed = trades.filter((t) => t.status !== 'OPEN').reverse()
+  const closed = selectedReason
+    ? allClosed.filter((t) => (t.exit_reason ?? t.status) === selectedReason)
+    : allClosed
   const [page, setPage] = useState(1)
+
+  useEffect(() => { setPage(1) }, [selectedReason])
+
   const totalPages = Math.ceil(closed.length / PAGE_SIZE)
   const paginated = closed.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
 
-  if (!closed.length) {
+  if (!allClosed.length) {
     return (
       <div className="bg-gray-900 border border-gray-800 rounded-lg p-6 text-center text-gray-600 text-sm">
         No closed trades in this period
@@ -400,10 +484,26 @@ function TradeTable({ trades, showMode }: { trades: Trade[]; showMode: boolean }
 
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
-      <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wide">
-          All Trades — {closed.length} closed
-        </h3>
+      <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex items-center gap-3">
+          <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wide">
+            {selectedReason ? `${closed.length} of ${allClosed.length} trades` : `All Trades — ${allClosed.length} closed`}
+          </h3>
+          {selectedReason && (
+            <span
+              className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-mono font-medium border cursor-pointer hover:opacity-75 transition-opacity"
+              style={{
+                backgroundColor: `${reasonColor(selectedReason)}22`,
+                color: reasonColor(selectedReason),
+                borderColor: `${reasonColor(selectedReason)}44`,
+              }}
+              onClick={onClearReason}
+            >
+              {selectedReason}
+              <span className="text-gray-500">×</span>
+            </span>
+          )}
+        </div>
         {totalPages > 1 && (
           <span className="text-xs text-gray-500">
             Page {page} of {totalPages}
