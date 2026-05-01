@@ -18,6 +18,14 @@ export interface MonthSummary {
   gross_loss: number
 }
 
+export interface MonthlyBreakdown {
+  total_trades: number
+  winners: number
+  losers: number
+  net_pnl: number
+  win_rate: number
+}
+
 export interface MonthReport {
   month: string
   summary: MonthSummary
@@ -25,9 +33,31 @@ export interface MonthReport {
   trades: Trade[]
 }
 
+export interface CumulativeReport {
+  from_date: string
+  to_date: string
+  summary: MonthSummary
+  by_exit_reason: Record<string, ReasonBreakdown>
+  by_month: Record<string, MonthlyBreakdown>
+  trades: Trade[]
+}
+
 export async function fetchMonthReport(month: string, tradingMode?: string): Promise<MonthReport> {
   const params: Record<string, string> = { month }
   if (tradingMode) params.trading_mode = tradingMode
   const res = await apiClient.get('/report/trades', { params })
+  return res.data
+}
+
+export async function fetchCumulativeReport(
+  fromDate?: string,
+  toDate?: string,
+  tradingMode?: string,
+): Promise<CumulativeReport> {
+  const params: Record<string, string> = {}
+  if (fromDate) params.from_date = fromDate
+  if (toDate) params.to_date = toDate
+  if (tradingMode) params.trading_mode = tradingMode
+  const res = await apiClient.get('/report/cumulative', { params })
   return res.data
 }

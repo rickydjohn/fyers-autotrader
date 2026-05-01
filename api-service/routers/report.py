@@ -27,3 +27,25 @@ async def monthly_report(
         return JSONResponse(content=r.json(), status_code=r.status_code)
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
+
+
+@router.get("/cumulative")
+async def cumulative_report(
+    request: Request,
+    from_date: Optional[str] = Query(None),
+    to_date: Optional[str] = Query(None),
+    trading_mode: Optional[str] = Query(None),
+):
+    client = _get_http_client(request)
+    params: dict = {}
+    if from_date:
+        params["from_date"] = from_date
+    if to_date:
+        params["to_date"] = to_date
+    if trading_mode:
+        params["trading_mode"] = trading_mode
+    try:
+        r = await client.get("/api/v1/report/cumulative", params=params)
+        return JSONResponse(content=r.json(), status_code=r.status_code)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
