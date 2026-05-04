@@ -4,7 +4,9 @@ All writes are upserts (ON CONFLICT DO UPDATE) for idempotency.
 """
 
 import logging
+import math
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import func, select, text
@@ -21,6 +23,21 @@ def _is_missing_relation_error(exc: Exception) -> bool:
     """Detect missing table/view errors from asyncpg-backed ProgrammingError."""
     msg = str(exc).lower()
     return "does not exist" in msg and "relation" in msg
+
+
+def _sanitize_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Replace Decimal NaN/Inf with None so FastAPI can serialize the row."""
+    out = {}
+    for k, v in row.items():
+        if isinstance(v, Decimal):
+            try:
+                f = float(v)
+                out[k] = None if (math.isnan(f) or math.isinf(f)) else v
+            except Exception:
+                out[k] = None
+        else:
+            out[k] = v
+    return out
 
 
 async def _get_bucketed_candles_from_base(
@@ -71,7 +88,7 @@ async def _get_bucketed_candles_from_base(
     """)
     result = await db.execute(sql, params)
     rows = result.mappings().all()
-    return [dict(r) for r in reversed(rows)]
+    return [_sanitize_row(dict(r)) for r in reversed(rows)]
 
 
 async def upsert_candle(db: AsyncSession, candle: Dict[str, Any]) -> None:
@@ -158,7 +175,7 @@ async def get_candles(
     try:
         result = await db.execute(sql, params)
         rows = result.mappings().all()
-        return [dict(r) for r in reversed(rows)]
+        return [_sanitize_row(dict(r)) for r in reversed(rows)]
     except ProgrammingError as exc:
         # If continuous aggregate views (candles_5m/15m/1h/daily) are missing
         # in an older DB volume, fallback to computing buckets from base candles.
