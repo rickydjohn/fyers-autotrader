@@ -28,11 +28,11 @@ _cfg = _stub("config")
 _cfg.settings = MagicMock(log_level="INFO")
 
 # llm sub-modules
-_stub("llm.client", query_ollama=MagicMock())
-_stub("llm.prompts", build_decision_prompt=MagicMock())
-
-# models.schemas — only LLMDecision and co. are needed at import time
-_stub("models.schemas", LLMDecision=MagicMock, MarketSnapshot=MagicMock, TechnicalIndicators=MagicMock)
+_stub("llm.client", query_ollama=MagicMock(), get_provider=MagicMock())
+_stub("llm.prompts", build_decision_prompt=MagicMock(),
+      format_options_oi_block=MagicMock(return_value=""),
+      format_daily_candles_for_prompt=MagicMock(return_value=""),
+      compute_trading_gates=MagicMock(return_value=("", "")))
 
 # news
 _stub("news.sentiment", format_news_for_prompt=MagicMock())

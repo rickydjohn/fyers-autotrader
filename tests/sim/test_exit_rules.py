@@ -381,7 +381,7 @@ class TestMilestone:
 
     def test_below_first_milestone_does_not_trigger(self):
         entry = 100.0
-        below = entry * 1.15  # +15%, below first milestone of +20%
+        below = entry * 1.10  # +10%, below first milestone of +15%
         should_exit, _, _, ms = check_exit(
             _pos(entry_option_price=entry, milestone_count=0),
             underlying_ltp=22500.0, option_ltp=below, greeks=_greeks(),

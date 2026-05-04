@@ -39,16 +39,24 @@ def _set_quote(response):
 
 class TestGetOptionQuoteWithGreeks:
     def test_returns_all_fields_on_success(self):
-        _set_quote(_fyers_ok_response())
+        # Greeks are computed via Black-Scholes, not read from the API response.
+        # Use side_effect to return different responses for the two quotes calls:
+        # first = option LTP, second = underlying spot (ATM ≈ strike 22200).
+        option_resp = {"s": "ok", "d": [{"v": {"lp": 250.0}}]}
+        spot_resp   = {"s": "ok", "d": [{"v": {"lp": 22200.0}}]}
+        _mock_auth.get_fyers_client.return_value.quotes.side_effect = [
+            option_resp, spot_resp,
+        ]
         result = get_option_quote_with_greeks(OPTION_SYMBOL)
+        _mock_auth.get_fyers_client.return_value.quotes.side_effect = None
         assert result is not None
         assert result["symbol"] == OPTION_SYMBOL
-        assert result["ltp"]   == 250.0
-        assert result["delta"] == 0.55
-        assert result["theta"] == -1.2
-        assert result["vega"]  == 15.0
-        assert result["gamma"] == 0.002
-        assert result["iv"]    == 18.5
+        assert result["ltp"]    == 250.0
+        assert 0 < result["delta"] < 1   # ATM CE delta near 0.5
+        assert result["theta"] < 0       # time decay always negative
+        assert result["vega"]  > 0       # vega always positive
+        assert result["gamma"] > 0       # gamma always positive
+        assert result["iv"]    > 0       # BS should converge for ATM option
 
     def test_returns_none_when_api_returns_error(self):
         _set_quote({"s": "error", "message": "Invalid symbol"})

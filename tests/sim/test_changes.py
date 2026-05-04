@@ -17,6 +17,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import pytest_asyncio
 import pytz
+
+fastapi = pytest.importorskip("fastapi", reason="fastapi not installed — run inside trading-sim container")
+
 from fakeredis import FakeAsyncRedis
 
 # ─── Patch all external dependencies before importing our modules ─────────────

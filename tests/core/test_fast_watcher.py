@@ -48,7 +48,8 @@ _stub("fyers.market_data",
       get_historical_candles=_noop,
       get_historical_candles_daterange=_noop,
       get_previous_day_ohlc=_noop,
-      get_quote=_noop)
+      get_quote=_noop,
+      get_sector_breadth=_noop)
 _stub("fyers.options", get_atm_option=_noop)
 # Note: fyers.greeks is NOT stubbed here — test_greeks.py needs the real module.
 # Do NOT stub the fyers parent package — let Python resolve fyers/ as the real
@@ -61,16 +62,18 @@ _stub("indicators.cpr",
 _stub("indicators.pivots",
       calculate_pivots=_noop, get_nearest_levels=_noop)
 _stub("indicators.technicals",
+      aggregate_1m_to_5m=_noop,
       calculate_consolidation=_noop, calculate_day_range=_noop,
       calculate_ema=_noop, calculate_macd=_noop,
-      calculate_rsi=_noop, calculate_vwap=_noop)
+      calculate_rsi=_noop, calculate_vwap=_noop,
+      format_candles_for_prompt=MagicMock(return_value=""))
 _stub("indicators.historical_sr",
       compute_sr_levels=_noop, format_sr_for_prompt=_noop)
 _stub("indicators")
 
 # llm / news / context
 _stub("llm.decision",    make_decision=_noop)
-_stub("llm")
+_stub("llm.prompts",     compute_forming_bar_signal=_noop, format_sector_breadth_block=MagicMock(return_value=""))
 _stub("news.scraper",    get_all_news=_noop)
 _stub("news.sentiment",  analyze_sentiment=_noop)
 _stub("news")
