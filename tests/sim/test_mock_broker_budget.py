@@ -218,6 +218,93 @@ class TestBudgetGate:
         mock_alloc.assert_not_called()
 
 
+class TestMultiLotSizing:
+    """open_position() buys as many lots as max_value allows, not always 1."""
+
+    def _open_kwargs(self, premium: float, lot_size: int) -> dict:
+        return dict(
+            symbol="NSE:BANKNIFTY-INDEX",
+            side="BUY",
+            price=50000.0,
+            stop_loss=49000.0,
+            target=51500.0,
+            decision_id="test-decision",
+            reasoning="test",
+            option_symbol="NSE:BANKNIFTY50000CE",
+            option_price=premium,
+            option_lot_size=lot_size,
+        )
+
+    def _frozen_dt(self):
+        dt = MagicMock()
+        dt.now.return_value = MagicMock(hour=10, minute=0)
+        return dt
+
+    @pytest.mark.asyncio
+    async def test_buys_multiple_lots_when_capital_allows(self):
+        # premium=500, lot=15 → cost/lot≈7503.75; max=90000 → 11 lots, qty=165
+        premium, lot_size = 500.0, 15
+        cost_per_lot = premium * (1 + SLIPPAGE) * lot_size   # ≈ 7503.75
+        max_value = 90_000.0
+        expected_lots = int(max_value / cost_per_lot)        # 11
+        expected_qty  = expected_lots * lot_size              # 165
+
+        with (
+            patch("execution.mock_broker.datetime", self._frozen_dt()),
+            patch.object(_mb, "get_max_position_value", AsyncMock(return_value=max_value)),
+            patch.object(_mb, "allocate", AsyncMock(return_value=True)),
+            patch.object(_mb, "data_client") as mock_dc,
+        ):
+            mock_dc.persist_trade = AsyncMock()
+            mock_dc.mark_decision_acted = AsyncMock()
+            result = await open_position(redis_client=_redis(), **self._open_kwargs(premium, lot_size))
+
+        assert result is not None
+        assert result.quantity == expected_qty
+
+    @pytest.mark.asyncio
+    async def test_buys_single_lot_when_only_one_fits(self):
+        # premium=800, lot=15 → cost/lot≈12006; max=10000 → 0 lots (blocked)
+        # Use premium=600 → cost/lot≈9004.5; max=10000 → 1 lot
+        premium, lot_size = 600.0, 15
+        cost_per_lot = premium * (1 + SLIPPAGE) * lot_size   # ≈ 9004.5
+        max_value = 10_000.0
+        assert int(max_value / cost_per_lot) == 1            # exactly 1 lot fits
+
+        with (
+            patch("execution.mock_broker.datetime", self._frozen_dt()),
+            patch.object(_mb, "get_max_position_value", AsyncMock(return_value=max_value)),
+            patch.object(_mb, "allocate", AsyncMock(return_value=True)),
+            patch.object(_mb, "data_client") as mock_dc,
+        ):
+            mock_dc.persist_trade = AsyncMock()
+            mock_dc.mark_decision_acted = AsyncMock()
+            result = await open_position(redis_client=_redis(), **self._open_kwargs(premium, lot_size))
+
+        assert result is not None
+        assert result.quantity == lot_size  # 1 lot = 15 contracts
+
+    @pytest.mark.asyncio
+    async def test_quantity_is_whole_number_of_lots(self):
+        # Ensures quantity is always a multiple of lot_size (never fractional lots)
+        premium, lot_size = 350.0, 15
+        max_value = 90_000.0
+        cost_per_lot = premium * (1 + SLIPPAGE) * lot_size
+
+        with (
+            patch("execution.mock_broker.datetime", self._frozen_dt()),
+            patch.object(_mb, "get_max_position_value", AsyncMock(return_value=max_value)),
+            patch.object(_mb, "allocate", AsyncMock(return_value=True)),
+            patch.object(_mb, "data_client") as mock_dc,
+        ):
+            mock_dc.persist_trade = AsyncMock()
+            mock_dc.mark_decision_acted = AsyncMock()
+            result = await open_position(redis_client=_redis(), **self._open_kwargs(premium, lot_size))
+
+        assert result is not None
+        assert result.quantity % lot_size == 0
+
+
 class TestExistingGatesStillWork:
     """Ensure pre-existing gates (session close, SL cooldown) still block correctly."""
 
@@ -265,3 +352,5 @@ class TestExistingGatesStillWork:
             )
 
         assert result is None
+
+
