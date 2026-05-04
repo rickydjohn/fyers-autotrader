@@ -97,19 +97,19 @@ async def open_position(
         logger.info(f"[GATE] No option price for {option_symbol} — skipping trade")
         return None
 
-    # Trade the option: entry_price = option premium; quantity = 1 lot (from Fyers depth)
     # We always BUY to open (CE for bullish signal, PE for bearish) — slippage is always "BUY"
     lot_size = option_lot_size or 1
     entry_price = _apply_slippage(option_price, "BUY")
-    total_option_cost = entry_price * lot_size
-    if total_option_cost > max_value:
+    cost_per_lot = entry_price * lot_size
+    if cost_per_lot > max_value:
         logger.warning(
-            f"[GATE] Option {option_symbol} costs ₹{total_option_cost:.0f} "
-            f"(₹{entry_price:.2f} × {lot_size} lots) exceeds max position value "
+            f"[GATE] Option {option_symbol} costs ₹{cost_per_lot:.0f}/lot "
+            f"(₹{entry_price:.2f} × {lot_size}) exceeds max position value "
             f"₹{max_value:.0f} — skipping trade"
         )
         return None
-    quantity = lot_size
+    num_lots = int(max_value / cost_per_lot)
+    quantity = num_lots * lot_size
     trade_symbol = option_symbol
     raw_price = option_price
 
@@ -212,7 +212,7 @@ async def open_position(
 
     label = f"{option_symbol} (strike ₹{option_strike})" if option_symbol else trade_symbol
     logger.info(
-        f"OPENED {side} {quantity}x{label} @ ₹{entry_price:.2f} "
+        f"OPENED {side} {num_lots} lot(s) × {lot_size} = {quantity}x{label} @ ₹{entry_price:.2f} "
         f"(commission=₹{commission:.0f})"
     )
 
