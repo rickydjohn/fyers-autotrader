@@ -18,7 +18,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import redis.asyncio as aioredis
 
 from db.connection import get_db
-from repositories.market_data import upsert_candle, upsert_daily_indicator, insert_options_oi_batch
+from repositories.market_data import (
+    upsert_candle, upsert_daily_indicator, insert_options_oi_batch,
+    upsert_sector_breadth, get_sector_breadth_at,
+)
 from repositories.decisions import upsert_decision
 from repositories.trades import upsert_trade
 from routers.context import get_redis
@@ -199,3 +202,23 @@ async def ingest_news(payload: List[NewsItemIn], db: AsyncSession = Depends(get_
     items = [n.model_dump() for n in payload]
     count = await insert_news_batch(db, items)
     return {"status": "ok", "inserted": count}
+
+
+class SectorBreadthIn(BaseModel):
+    time: datetime
+    data: Dict[str, Any]   # {sector: {change_pct, ltp, weight, symbol}}
+
+
+@router.post("/sector-breadth")
+async def ingest_sector_breadth(payload: SectorBreadthIn, db: AsyncSession = Depends(get_db)):
+    await upsert_sector_breadth(db, payload.time, payload.data)
+    return {"status": "ok"}
+
+
+@router.get("/sector-breadth")
+async def query_sector_breadth(at: datetime, db: AsyncSession = Depends(get_db)):
+    """Return the most recent sector breadth snapshot at or before `at` (ISO timestamp)."""
+    data = await get_sector_breadth_at(db, at)
+    if data is None:
+        return {"status": "ok", "data": None}
+    return {"status": "ok", "data": data}

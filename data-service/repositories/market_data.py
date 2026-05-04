@@ -14,7 +14,7 @@ from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models import DailyIndicator, MarketCandle, OptionsOiSnapshot
+from db.models import DailyIndicator, MarketCandle, OptionsOiSnapshot, SectorBreadthSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -571,3 +571,29 @@ async def insert_options_oi_batch(db: AsyncSession, rows: List[Dict[str, Any]]) 
     await db.execute(stmt)
     await db.commit()
     return len(parsed)
+
+
+async def upsert_sector_breadth(db: AsyncSession, time: datetime, data: Dict[str, Any]) -> None:
+    """
+    Insert a sector breadth snapshot. ON CONFLICT DO UPDATE so re-runs are idempotent
+    (e.g., if the same minute is re-processed the latest data wins).
+    """
+    stmt = (
+        insert(SectorBreadthSnapshot)
+        .values(time=time, data=data)
+        .on_conflict_do_update(index_elements=["time"], set_={"data": data})
+    )
+    await db.execute(stmt)
+    await db.commit()
+
+
+async def get_sector_breadth_at(db: AsyncSession, at: datetime) -> Optional[Dict[str, Any]]:
+    """Return the most recent sector breadth snapshot at or before `at`."""
+    result = await db.execute(
+        select(SectorBreadthSnapshot)
+        .where(SectorBreadthSnapshot.time <= at)
+        .order_by(SectorBreadthSnapshot.time.desc())
+        .limit(1)
+    )
+    row = result.scalar_one_or_none()
+    return row.data if row else None

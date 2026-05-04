@@ -83,6 +83,12 @@ async def persist_news_batch(items: List[Dict[str, Any]]) -> None:
         await _post("/api/v1/ingest/news", items)
 
 
+async def persist_sector_breadth(time: str, data: Dict[str, Any]) -> None:
+    """Persist a sector breadth snapshot to TimescaleDB for post-session analysis."""
+    if data:
+        await _post("/api/v1/ingest/sector-breadth", {"time": time, "data": data})
+
+
 async def persist_daily_ohlcv_batch(bars: List[Dict[str, Any]]) -> None:
     """Upsert a batch of daily OHLCV bars into the permanent daily_ohlcv table."""
     if not bars:

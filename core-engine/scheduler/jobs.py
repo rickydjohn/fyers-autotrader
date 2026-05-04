@@ -558,6 +558,10 @@ async def run_market_scan(redis_client: aioredis.Redis) -> None:
             logger.info(
                 f"[SECTOR BREADTH] {len(breadth_data)} sectors, net {net:+.3f}%  |  {sector_parts}"
             )
+            await data_client.persist_sector_breadth(
+                time=datetime.now(IST).isoformat(),
+                data=breadth_data,
+            )
     except Exception as e:
         logger.warning(f"Sector breadth fetch failed, continuing without it: {e}")
         _sector_breadth_block = ""

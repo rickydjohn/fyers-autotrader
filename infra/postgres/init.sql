@@ -388,6 +388,29 @@ SELECT add_retention_policy(
 -- Scheduled via migrations/003_compaction.sql for existing clusters.
 
 -- ============================================================
+-- 13. Sector Breadth Snapshots
+-- ============================================================
+-- One row per scan cycle — stores the full sector dict (BANK, IT, FMCG, etc.)
+-- as JSONB so it can be joined to any decision for prompt reconstruction.
+CREATE TABLE IF NOT EXISTS sector_breadth_snapshots (
+    time  TIMESTAMPTZ  NOT NULL,
+    data  JSONB        NOT NULL,
+    PRIMARY KEY (time)
+);
+
+SELECT create_hypertable(
+    'sector_breadth_snapshots', 'time',
+    chunk_time_interval => INTERVAL '1 day',
+    if_not_exists       => TRUE
+);
+
+SELECT add_retention_policy(
+    'sector_breadth_snapshots',
+    INTERVAL '90 days',
+    if_not_exists => TRUE
+);
+
+-- ============================================================
 -- 12. Compression Policies for Continuous Aggregates
 -- ============================================================
 -- Compress 5m and 15m aggregates after 7 days of inactivity (~10x storage saving).

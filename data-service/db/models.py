@@ -142,6 +142,14 @@ class OptionsOiSnapshot(Base):
     volume:      Mapped[Optional[int]]   = mapped_column(BigInteger, nullable=True)
 
 
+class SectorBreadthSnapshot(Base):
+    """One row per scan cycle — full sector dict for prompt reconstruction."""
+    __tablename__ = "sector_breadth_snapshots"
+
+    time: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), primary_key=True)
+    data: Mapped[dict]     = mapped_column(JSONB, nullable=False)
+
+
 class HistoricalSRLevel(Base):
     """Computed S/R zones from swing-high/low clustering on the daily chart."""
     __tablename__ = "historical_sr_levels"
