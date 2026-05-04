@@ -39,7 +39,7 @@ class TechnicalIndicators(BaseModel):
     cpr: CPRResult
     pivots: PivotLevels
     rsi: float
-    vwap: float
+    vwap: Optional[float]
     macd: float
     macd_signal: float
     macd_histogram: float

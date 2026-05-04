@@ -3,7 +3,7 @@ Technical indicator calculations using pure numpy/pandas.
 All functions accept a list of OHLCBar and return scalar values.
 """
 
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -63,7 +63,7 @@ def calculate_ema(candles: List[OHLCBar], period: int) -> float:
     return round(float(closes.ewm(span=period, adjust=False).mean().iloc[-1]), 2)
 
 
-def calculate_vwap(candles: List[OHLCBar]) -> float:
+def calculate_vwap(candles: List[OHLCBar]) -> Optional[float]:
     import datetime as _dt
     today = _dt.datetime.now(_IST).date()
     today_candles = [
@@ -80,7 +80,8 @@ def calculate_vwap(candles: List[OHLCBar]) -> float:
     cumulative_tp_vol = (typical_price * volumes).cumsum()
     cumulative_vol = volumes.cumsum()
     vwap = cumulative_tp_vol / cumulative_vol.replace(0, np.nan)
-    return round(float(vwap.iloc[-1]), 2)
+    result = vwap.iloc[-1]
+    return None if (result != result) else round(float(result), 2)  # result != result is True only for NaN
 
 
 def get_macd_signal_label(macd: float, signal: float) -> str:
