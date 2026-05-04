@@ -4,7 +4,11 @@ from types import ModuleType, SimpleNamespace
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SIM  = os.path.join(REPO, "simulation-engine")
+if not os.path.isdir(SIM):
+    SIM = REPO
 CORE = os.path.join(REPO, "core-engine")
+if not os.path.isdir(CORE):
+    CORE = REPO
 
 # Remove core-engine from path to avoid models.schemas clash
 if CORE in sys.path:
