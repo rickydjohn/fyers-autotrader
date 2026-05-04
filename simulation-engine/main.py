@@ -376,30 +376,32 @@ async def _handle_decision(data: dict) -> None:
             )
             return
 
-    # Entry proximity gate — block when price is approaching the nearest level from the wrong side.
-    # nearest_resistance is the closest level ABOVE price (resistance role, regardless of label).
-    # nearest_support   is the closest level BELOW price (support role, regardless of label).
-    # PDH/PDL are included in the pivot calc and assigned dynamically — no hardcoded role.
-    # day_high/day_low excluded — track the running intraday extreme, not structural levels.
+    # Entry proximity gate — block when the next level in the trade direction is too close.
+    # For CE (BUY): if the nearest level above is within 0.25%, there is no room to run.
+    # For PE (SELL): if the nearest level below is within 0.25%, there is no room to fall.
+    # Levels are direction-agnostic (PDH, PDL, CPR, R1-R3, S1-S3, Pivot) — whatever the
+    # pivot calc assigned as nearest_resistance / nearest_support.
+    # Falls back to decision-time indicators when the live market snapshot is missing the
+    # field, so the gate is never silently skipped due to a stale Redis key.
     PA_PROXIMITY = 0.0025
     mkt_ind = market.get("indicators", {})
     if decision == "BUY":
-        nr = mkt_ind.get("nearest_resistance", 0)
-        nr_label = mkt_ind.get("nearest_resistance_label", "resistance")
+        nr = float(mkt_ind.get("nearest_resistance") or ind_dict.get("nearest_resistance") or 0)
+        nr_label = mkt_ind.get("nearest_resistance_label") or ind_dict.get("nearest_resistance_label") or "level"
         if nr > 0 and nr * (1 - PA_PROXIMITY) <= current_price <= nr:
             logger.info(
-                f"[ENTRY BLOCK] BUY {symbol}: underlying ₹{current_price:.2f} approaching "
-                f"{nr_label} ₹{nr:.2f} from below (within {PA_PROXIMITY*100:.2f}%) — skipped"
+                f"[ENTRY BLOCK] BUY {symbol}: underlying ₹{current_price:.2f} within "
+                f"{PA_PROXIMITY*100:.2f}% of {nr_label} ₹{nr:.2f} — no room to run, skipped"
             )
             return
 
     elif decision == "SELL":
-        ns = mkt_ind.get("nearest_support", 0)
-        ns_label = mkt_ind.get("nearest_support_label", "support")
+        ns = float(mkt_ind.get("nearest_support") or ind_dict.get("nearest_support") or 0)
+        ns_label = mkt_ind.get("nearest_support_label") or ind_dict.get("nearest_support_label") or "level"
         if ns > 0 and ns <= current_price <= ns * (1 + PA_PROXIMITY):
             logger.info(
-                f"[ENTRY BLOCK] SELL {symbol}: underlying ₹{current_price:.2f} approaching "
-                f"{ns_label} ₹{ns:.2f} from above (within {PA_PROXIMITY*100:.2f}%) — skipped"
+                f"[ENTRY BLOCK] SELL {symbol}: underlying ₹{current_price:.2f} within "
+                f"{PA_PROXIMITY*100:.2f}% of {ns_label} ₹{ns:.2f} — no room to fall, skipped"
             )
             return
 

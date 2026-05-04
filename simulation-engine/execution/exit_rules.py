@@ -198,21 +198,22 @@ def check_exit(
                 # extreme and always sit just above/below current price during a
                 # trend, causing premature exits. Same reasoning as the entry block.
                 if is_ce:
-                    resistance_levels = [
-                        (market_context.get("nearest_resistance", 0),
-                         market_context.get("nearest_resistance_label", "resistance")),
-                        (market_context.get("prev_day_high", 0), "PDH"),
-                    ]
-                    for level, label in resistance_levels:
-                        if level > 0 and underlying_ltp >= level * (1 - PA_RESISTANCE_PROXIMITY):
-                            logger.info(
-                                f"[EXIT] PA_RESISTANCE — {pos.symbol}: "
-                                f"underlying ₹{underlying_ltp:.2f} at {label} ₹{level:.2f} "
-                                f"(within {PA_RESISTANCE_PROXIMITY*100:.2f}%), "
-                                f"option ₹{option_ltp:.2f} > entry ₹{pos.entry_option_price:.2f} "
-                                f"gross=₹{gross_gain:.0f}, locking in profit"
-                            )
-                            return True, "PA_RESISTANCE", option_ltp, milestone
+                    # Only nearest_resistance — the pivot calc already assigns PDH as
+                    # nearest_resistance when approaching from below. A separate PDH
+                    # check fires whenever the market is anywhere above PDH * 0.9975,
+                    # which includes gap-up days where PDH is far below the session open.
+                    level = market_context.get("nearest_resistance", 0)
+                    label = market_context.get("nearest_resistance_label", "level")
+                    if (level > 0
+                            and level * (1 - PA_RESISTANCE_PROXIMITY) <= underlying_ltp <= level * (1 + PA_RESISTANCE_PROXIMITY)):
+                        logger.info(
+                            f"[EXIT] PA_RESISTANCE — {pos.symbol}: "
+                            f"underlying ₹{underlying_ltp:.2f} at {label} ₹{level:.2f} "
+                            f"(within ±{PA_RESISTANCE_PROXIMITY*100:.2f}%), "
+                            f"option ₹{option_ltp:.2f} > entry ₹{pos.entry_option_price:.2f} "
+                            f"gross=₹{gross_gain:.0f}, locking in profit"
+                        )
+                        return True, "PA_RESISTANCE", option_ltp, milestone
                 else:
                     support_levels = [
                         (market_context.get("nearest_support", 0),
