@@ -17,7 +17,13 @@ from typing import Optional
 
 import httpx
 
-sys.path.insert(0, "core-engine")
+import os as _os
+_REPO = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+_CORE = _os.path.join(_REPO, "core-engine")
+if not _os.path.isdir(_CORE):
+    _CORE = _REPO
+if _CORE not in sys.path:
+    sys.path.insert(0, _CORE)
 from llm.prompts import build_decision_prompt
 
 OLLAMA_URL = "http://host.docker.internal:11434/api/generate"

@@ -53,7 +53,13 @@ _stub("fyers.market_data", get_quote=MagicMock(return_value=None))
 _stub("fyers.orders", get_funds=MagicMock(return_value=None))
 
 # Add core-engine to path so the real module can be imported
-sys.path.insert(0, "core-engine")
+import os as _os
+_REPO = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+_CORE = _os.path.join(_REPO, "core-engine")
+if not _os.path.isdir(_CORE):
+    _CORE = _REPO
+if _CORE not in sys.path:
+    sys.path.insert(0, _CORE)
 
 from llm.decision import _apply_cross_symbol_gate  # noqa: E402
 
