@@ -100,6 +100,6 @@ async def reconcile_invested(redis_client: aioredis.Redis) -> None:
 
 
 async def get_max_position_value(redis_client: aioredis.Redis) -> float:
-    """Maximum value for a single position based on config."""
+    """Maximum value for a single position — percentage of current cash so profits compound."""
     state = await load_budget(redis_client)
-    return state.initial * (settings.max_position_size_pct / 100)
+    return state.cash * (settings.max_position_size_pct / 100)
