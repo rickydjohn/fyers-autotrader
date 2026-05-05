@@ -9,7 +9,7 @@ import json
 import logging
 import re
 import uuid
-from datetime import datetime
+from datetime import datetime, date as _date
 from typing import Optional
 
 import pytz
@@ -26,6 +26,7 @@ import data_client
 from context.formatter import format_context_for_prompt, format_magnet_zones
 from fyers.options import get_affordable_option
 from fyers.market_data import get_quote
+from fyers.greeks import get_option_quote_with_greeks
 
 logger = logging.getLogger(__name__)
 IST = pytz.timezone("Asia/Kolkata")
@@ -409,6 +410,33 @@ async def make_decision(
             else:
                 logger.warning(f"No price for {option_symbol}, will trade without option price")
 
+    # Compute DTE and fetch entry Greeks (logged and forwarded to stream; not used in prompt
+    # because the option is resolved after the LLM decision is made)
+    dte = 0
+    entry_greeks: dict = {}
+    if option_expiry:
+        try:
+            exp_date = _date.fromisoformat(option_expiry)
+            dte = max(0, (exp_date - _date.today()).days)
+        except Exception:
+            dte = 0
+    if option_symbol and option_price:
+        try:
+            gq = get_option_quote_with_greeks(option_symbol)
+            if gq:
+                entry_greeks = {k: gq.get(k, 0.0) for k in ("delta", "gamma", "theta", "vega", "iv")}
+        except Exception:
+            pass
+    if entry_greeks:
+        logger.info(
+            f"[GREEKS] {option_symbol}: DTE={dte} "
+            f"delta={entry_greeks.get('delta', 0.0):+.3f} "
+            f"gamma={entry_greeks.get('gamma', 0.0):.5f} "
+            f"theta={entry_greeks.get('theta', 0.0):+.2f}/day "
+            f"vega={entry_greeks.get('vega', 0.0):.3f} "
+            f"iv={entry_greeks.get('iv', 0.0):.1f}%"
+        )
+
     decision = LLMDecision(
         decision_id=str(uuid.uuid4()),
         symbol=snapshot.symbol,
@@ -470,6 +498,12 @@ async def make_decision(
             "option_expiry": decision.option_expiry or "",
             "option_price": str(decision.option_price or 0),
             "option_lot_size": str(decision.option_lot_size or 0),
+            "dte": str(dte),
+            "entry_delta": str(round(entry_greeks.get("delta", 0.0), 4)),
+            "entry_gamma": str(round(entry_greeks.get("gamma", 0.0), 6)),
+            "entry_theta": str(round(entry_greeks.get("theta", 0.0), 4)),
+            "entry_vega":  str(round(entry_greeks.get("vega",  0.0), 4)),
+            "entry_iv":    str(round(entry_greeks.get("iv",    0.0), 2)),
         },
         maxlen=1000,
     )

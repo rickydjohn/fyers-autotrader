@@ -59,6 +59,7 @@ async def open_position(
     option_price: Optional[float] = None,
     option_lot_size: Optional[int] = None,
     day_type: Optional[str] = None,
+    dte: int = 99,
 ) -> Optional[Trade]:
     """Open a new simulated position. Trades the option if one is provided."""
     # ── Gate 1: No new positions at or after session close ────────────────────
@@ -108,8 +109,18 @@ async def open_position(
             f"₹{max_value:.0f} — skipping trade"
         )
         return None
-    num_lots = min(int(max_value / cost_per_lot), settings.max_lots)
+    if dte == 0:
+        dte_lot_cap = 2          # 0DTE: extreme gamma, cap hard at 2 lots
+    elif dte <= 2:
+        dte_lot_cap = 3          # 1-2DTE: elevated gamma, cap at 3 lots
+    else:
+        dte_lot_cap = settings.max_lots   # 3+ DTE: full cap applies
+    num_lots = min(int(max_value / cost_per_lot), dte_lot_cap)
     quantity = num_lots * lot_size
+    logger.info(
+        f"[SIZING] {option_symbol}: DTE={dte}, cost/lot=₹{cost_per_lot:.0f}, "
+        f"max_value=₹{max_value:.0f}, lot_cap={dte_lot_cap} → {num_lots} lot(s) × {lot_size} = {quantity} qty"
+    )
     trade_symbol = option_symbol
     raw_price = option_price
 

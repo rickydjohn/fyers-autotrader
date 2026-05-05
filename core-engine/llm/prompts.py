@@ -58,6 +58,29 @@ def format_options_oi_block(oi: Optional[Dict[str, Any]]) -> str:
     )
 
 
+def format_option_greeks_block(
+    dte: int,
+    delta: float = 0.0,
+    gamma: float = 0.0,
+    theta: float = 0.0,
+    vega: float = 0.0,
+    iv: float = 0.0,
+) -> str:
+    """Format DTE and option Greeks for prompt injection (used post-decision for context in logs)."""
+    if dte == 0:
+        expiry_label = "SAME-DAY (0DTE) — extreme gamma, any noise move = large P&L swing"
+    elif dte <= 2:
+        expiry_label = f"{dte}DTE — elevated gamma, tighter than normal P&L sensitivity"
+    else:
+        expiry_label = f"{dte} days to expiry"
+
+    return (
+        f"  Expiry:  {expiry_label}\n"
+        f"  Delta:   {delta:+.3f}  |  Gamma: {gamma:.5f}  |  Theta: {theta:+.2f}/day\n"
+        f"  Vega:    {vega:.3f}   |  IV:    {iv:.1f}%"
+    )
+
+
 def _aggregate_to_5m(candles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Aggregate 1m candle dicts to 5m bars aligned to 09:15 IST (03:45 UTC)."""
     SESSION_START_UTC_MIN = 3 * 60 + 45   # 03:45 UTC = 09:15 IST

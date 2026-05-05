@@ -102,6 +102,7 @@ async def open_position(
     option_price: Optional[float] = None,
     option_lot_size: Optional[int] = None,
     day_type: Optional[str] = None,
+    dte: int = 99,
 ) -> Optional[Trade]:
     """Place a live Fyers order and record the position in Redis + data-service."""
     # ── Gate 1: No new positions at or after session close ────────────────────

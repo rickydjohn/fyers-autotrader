@@ -350,6 +350,137 @@ class TestMultiLotSizing:
         assert result.quantity == affordable_lots * lot_size  # 3 lots, not capped
 
 
+class TestDteLotCap:
+    """DTE-aware lot cap: 0DTE→2 lots, 1-2DTE→3 lots, 3+DTE→MAX_LOTS (5)."""
+
+    def _frozen_dt(self):
+        dt = MagicMock()
+        dt.now.return_value = MagicMock(hour=10, minute=0)
+        return dt
+
+    def _open_kwargs(self, premium: float, lot_size: int, dte: int) -> dict:
+        return dict(
+            symbol="NSE:NIFTY50-INDEX",
+            side="BUY",
+            price=24000.0,
+            stop_loss=23800.0,
+            target=24400.0,
+            decision_id="test-decision",
+            reasoning="test",
+            option_symbol="NSE:NIFTY24000CE",
+            option_price=premium,
+            option_lot_size=lot_size,
+            dte=dte,
+        )
+
+    @pytest.mark.asyncio
+    async def test_0dte_capped_at_2_lots(self):
+        # 0DTE: regardless of how many lots capital allows, cap at 2
+        premium, lot_size = 60.0, 50   # cheap 0DTE option — would afford many lots
+        max_value = 100_000.0
+        cost_per_lot = premium * (1 + SLIPPAGE) * lot_size
+        assert int(max_value / cost_per_lot) > 2  # pre-condition: capital allows more than 2
+
+        with (
+            patch("execution.mock_broker.datetime", self._frozen_dt()),
+            patch.object(_mb, "get_max_position_value", AsyncMock(return_value=max_value)),
+            patch.object(_mb, "allocate", AsyncMock(return_value=True)),
+            patch.object(_mb, "data_client") as mock_dc,
+        ):
+            mock_dc.persist_trade = AsyncMock()
+            mock_dc.mark_decision_acted = AsyncMock()
+            result = await open_position(redis_client=_redis(), **self._open_kwargs(premium, lot_size, dte=0))
+
+        assert result is not None
+        assert result.quantity == 2 * lot_size  # capped at 2 lots
+
+    @pytest.mark.asyncio
+    async def test_1dte_capped_at_3_lots(self):
+        premium, lot_size = 80.0, 50
+        max_value = 100_000.0
+        cost_per_lot = premium * (1 + SLIPPAGE) * lot_size
+        assert int(max_value / cost_per_lot) > 3
+
+        with (
+            patch("execution.mock_broker.datetime", self._frozen_dt()),
+            patch.object(_mb, "get_max_position_value", AsyncMock(return_value=max_value)),
+            patch.object(_mb, "allocate", AsyncMock(return_value=True)),
+            patch.object(_mb, "data_client") as mock_dc,
+        ):
+            mock_dc.persist_trade = AsyncMock()
+            mock_dc.mark_decision_acted = AsyncMock()
+            result = await open_position(redis_client=_redis(), **self._open_kwargs(premium, lot_size, dte=1))
+
+        assert result is not None
+        assert result.quantity == 3 * lot_size  # capped at 3 lots
+
+    @pytest.mark.asyncio
+    async def test_2dte_capped_at_3_lots(self):
+        premium, lot_size = 80.0, 50
+        max_value = 100_000.0
+
+        with (
+            patch("execution.mock_broker.datetime", self._frozen_dt()),
+            patch.object(_mb, "get_max_position_value", AsyncMock(return_value=max_value)),
+            patch.object(_mb, "allocate", AsyncMock(return_value=True)),
+            patch.object(_mb, "data_client") as mock_dc,
+        ):
+            mock_dc.persist_trade = AsyncMock()
+            mock_dc.mark_decision_acted = AsyncMock()
+            result = await open_position(redis_client=_redis(), **self._open_kwargs(premium, lot_size, dte=2))
+
+        assert result is not None
+        assert result.quantity == 3 * lot_size
+
+    @pytest.mark.asyncio
+    async def test_3plus_dte_uses_max_lots(self):
+        # 3+ DTE: full MAX_LOTS=5 cap applies (from conftest)
+        premium, lot_size = 80.0, 50
+        max_value = 100_000.0
+        cost_per_lot = premium * (1 + SLIPPAGE) * lot_size
+        assert int(max_value / cost_per_lot) > 5  # capital allows more than 5
+
+        with (
+            patch("execution.mock_broker.datetime", self._frozen_dt()),
+            patch.object(_mb, "get_max_position_value", AsyncMock(return_value=max_value)),
+            patch.object(_mb, "allocate", AsyncMock(return_value=True)),
+            patch.object(_mb, "data_client") as mock_dc,
+        ):
+            mock_dc.persist_trade = AsyncMock()
+            mock_dc.mark_decision_acted = AsyncMock()
+            result = await open_position(redis_client=_redis(), **self._open_kwargs(premium, lot_size, dte=3))
+
+        assert result is not None
+        assert result.quantity == 5 * lot_size  # full MAX_LOTS cap
+
+    @pytest.mark.asyncio
+    async def test_default_dte_99_uses_max_lots(self):
+        # When DTE not in payload (old decisions), defaults to 99 → full MAX_LOTS
+        premium, lot_size = 80.0, 50
+        max_value = 100_000.0
+
+        with (
+            patch("execution.mock_broker.datetime", self._frozen_dt()),
+            patch.object(_mb, "get_max_position_value", AsyncMock(return_value=max_value)),
+            patch.object(_mb, "allocate", AsyncMock(return_value=True)),
+            patch.object(_mb, "data_client") as mock_dc,
+        ):
+            mock_dc.persist_trade = AsyncMock()
+            mock_dc.mark_decision_acted = AsyncMock()
+            # No dte kwarg → defaults to 99
+            result = await open_position(
+                redis_client=_redis(),
+                symbol="NSE:NIFTY50-INDEX", side="BUY",
+                price=24000.0, stop_loss=23800.0, target=24400.0,
+                decision_id="test", reasoning="test",
+                option_symbol="NSE:NIFTY24000CE",
+                option_price=premium, option_lot_size=lot_size,
+            )
+
+        assert result is not None
+        assert result.quantity == 5 * lot_size  # MAX_LOTS=5 from conftest
+
+
 class TestExistingGatesStillWork:
     """Ensure pre-existing gates (session close, SL cooldown) still block correctly."""
 

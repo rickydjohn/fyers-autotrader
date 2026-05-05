@@ -239,6 +239,13 @@ export function ReportPage() {
             </ChartCard>
           </div>
 
+          {/* Exit reason breakdown table — ensures all reasons are visible even when pie slices are tiny */}
+          <ExitReasonTable
+            breakdown={report.by_exit_reason}
+            selected={selectedReason}
+            onSelect={(r) => setSelectedReason((prev) => (prev === r ? null : r))}
+          />
+
           {/* Trade table */}
           <TradeTable
             trades={report.trades}
@@ -450,6 +457,81 @@ function CountPieChart({
         />
       </PieChart>
     </ResponsiveContainer>
+  )
+}
+
+function ExitReasonTable({
+  breakdown, selected, onSelect,
+}: {
+  breakdown: Record<string, { count: number; pnl: number; wins: number; losses: number }>
+  selected: string | null
+  onSelect: (r: string) => void
+}) {
+  const rows = Object.entries(breakdown)
+    .map(([reason, v]) => ({ reason, ...v, win_rate: v.count > 0 ? Math.round(v.wins / v.count * 100) : 0 }))
+    .sort((a, b) => b.count - a.count)
+
+  if (!rows.length) return null
+
+  return (
+    <div className="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
+      <div className="px-4 py-3 border-b border-gray-800">
+        <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wide">Exit Reason Breakdown</h3>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="text-gray-500 uppercase border-b border-gray-800">
+              <th className="px-4 py-2 text-left">Exit Reason</th>
+              <th className="px-4 py-2 text-right">Trades</th>
+              <th className="px-4 py-2 text-right">Wins</th>
+              <th className="px-4 py-2 text-right">Losses</th>
+              <th className="px-4 py-2 text-right">Win Rate</th>
+              <th className="px-4 py-2 text-right">Net P&L</th>
+              <th className="px-4 py-2 text-right">Avg P&L</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-800/60">
+            {rows.map(({ reason, count, wins, losses, win_rate, pnl }) => {
+              const isSelected = selected === reason
+              const dimmed = selected !== null && !isSelected
+              const avg = count > 0 ? pnl / count : 0
+              return (
+                <tr
+                  key={reason}
+                  onClick={() => onSelect(reason)}
+                  className={`cursor-pointer transition-all hover:brightness-125 ${
+                    isSelected ? 'bg-gray-700/60' : dimmed ? 'opacity-40' : ''
+                  }`}
+                >
+                  <td className="px-4 py-2.5">
+                    <div className="flex items-center gap-2">
+                      <span
+                        className="inline-block w-2.5 h-2.5 rounded-full flex-shrink-0"
+                        style={{ backgroundColor: reasonColor(reason) }}
+                      />
+                      <span className="font-mono text-gray-200">{reason}</span>
+                    </div>
+                  </td>
+                  <td className="px-4 py-2.5 text-right font-mono text-gray-300">{count}</td>
+                  <td className="px-4 py-2.5 text-right font-mono text-emerald-400">{wins}</td>
+                  <td className="px-4 py-2.5 text-right font-mono text-red-400">{losses}</td>
+                  <td className={`px-4 py-2.5 text-right font-mono font-semibold ${win_rate >= 50 ? 'text-emerald-400' : 'text-red-400'}`}>
+                    {win_rate}%
+                  </td>
+                  <td className={`px-4 py-2.5 text-right font-mono font-semibold ${pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                    {pnl >= 0 ? '+' : ''}₹{pnl.toFixed(2)}
+                  </td>
+                  <td className={`px-4 py-2.5 text-right font-mono ${avg >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                    {avg >= 0 ? '+' : ''}₹{avg.toFixed(2)}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
   )
 }
 

@@ -316,6 +316,19 @@ async def _handle_decision(data: dict) -> None:
     except (ValueError, TypeError):
         option_strike = option_price = option_lot_size = None
 
+    # Extract DTE from stream payload; fall back to computing from option_expiry for
+    # backward compatibility with decisions published before this field was added.
+    try:
+        dte = int(float(data.get("dte", -1) or -1))
+        if dte < 0:
+            if option_expiry:
+                from datetime import date as _date
+                dte = max(0, (_date.fromisoformat(option_expiry) - _date.today()).days)
+            else:
+                dte = 99
+    except Exception:
+        dte = 99
+
     # Determine day type from the ATR-normalized day_type field in indicators snapshot.
     # NARROW → TRENDING (milestone trail at +20%); MODERATE/WIDE → RANGING (lock in at +10%).
     # Falls back to legacy cpr_width_pct threshold for decisions missing the day_type field.
@@ -424,7 +437,7 @@ async def _handle_decision(data: dict) -> None:
             option_symbol=option_symbol, option_strike=option_strike,
             option_type=option_type, option_expiry=option_expiry,
             option_price=option_price, option_lot_size=option_lot_size,
-            day_type=day_type,
+            day_type=day_type, dte=dte,
         )
 
     elif decision == "SELL":
@@ -446,7 +459,7 @@ async def _handle_decision(data: dict) -> None:
             option_symbol=option_symbol, option_strike=option_strike,
             option_type=option_type, option_expiry=option_expiry,
             option_price=option_price, option_lot_size=option_lot_size,
-            day_type=day_type,
+            day_type=day_type, dte=dte,
         )
 
     elif decision == "HOLD":
