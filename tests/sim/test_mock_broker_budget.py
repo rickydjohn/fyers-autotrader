@@ -242,12 +242,14 @@ class TestMultiLotSizing:
 
     @pytest.mark.asyncio
     async def test_buys_multiple_lots_when_capital_allows(self):
-        # premium=500, lot=15 → cost/lot≈7503.75; max=90000 → 11 lots, qty=165
+        # premium=500, lot=15 → cost/lot≈7503.75; max=90000 → 11 affordable lots,
+        # but MAX_LOTS=5 (conftest) caps it → qty = 5 × 15 = 75
         premium, lot_size = 500.0, 15
         cost_per_lot = premium * (1 + SLIPPAGE) * lot_size   # ≈ 7503.75
         max_value = 90_000.0
-        expected_lots = int(max_value / cost_per_lot)        # 11
-        expected_qty  = expected_lots * lot_size              # 165
+        affordable_lots = int(max_value / cost_per_lot)      # 11 — more than cap
+        expected_lots = min(affordable_lots, 5)              # capped at MAX_LOTS=5
+        expected_qty  = expected_lots * lot_size              # 75
 
         with (
             patch("execution.mock_broker.datetime", self._frozen_dt()),
@@ -289,7 +291,6 @@ class TestMultiLotSizing:
         # Ensures quantity is always a multiple of lot_size (never fractional lots)
         premium, lot_size = 350.0, 15
         max_value = 90_000.0
-        cost_per_lot = premium * (1 + SLIPPAGE) * lot_size
 
         with (
             patch("execution.mock_broker.datetime", self._frozen_dt()),
@@ -303,6 +304,50 @@ class TestMultiLotSizing:
 
         assert result is not None
         assert result.quantity % lot_size == 0
+
+    @pytest.mark.asyncio
+    async def test_max_lots_cap_applied_on_cheap_option(self):
+        # Reproduces 2026-05-05 disaster: NIFTY ₹40 option, ₹106k budget → 53 lots without cap.
+        # With MAX_LOTS=5 (conftest default), quantity must be capped at 5 × lot_size.
+        premium, lot_size = 40.0, 50
+        max_value = 106_000.0   # 85% of ~₹125k after morning wins
+        cost_per_lot = premium * (1 + SLIPPAGE) * lot_size  # ≈ ₹2,001
+        uncapped_lots = int(max_value / cost_per_lot)        # would be 52 without cap
+        assert uncapped_lots > 5, "test pre-condition: without cap this buys >5 lots"
+
+        with (
+            patch("execution.mock_broker.datetime", self._frozen_dt()),
+            patch.object(_mb, "get_max_position_value", AsyncMock(return_value=max_value)),
+            patch.object(_mb, "allocate", AsyncMock(return_value=True)),
+            patch.object(_mb, "data_client") as mock_dc,
+        ):
+            mock_dc.persist_trade = AsyncMock()
+            mock_dc.mark_decision_acted = AsyncMock()
+            result = await open_position(redis_client=_redis(), **self._open_kwargs(premium, lot_size))
+
+        assert result is not None
+        assert result.quantity == 5 * lot_size   # capped at MAX_LOTS=5
+
+    @pytest.mark.asyncio
+    async def test_max_lots_cap_does_not_affect_expensive_options(self):
+        # A high-premium option that only affords 3 lots — cap of 5 should not interfere.
+        premium, lot_size = 1200.0, 15
+        max_value = 55_000.0
+        cost_per_lot = premium * (1 + SLIPPAGE) * lot_size  # ≈ ₹18,009
+        affordable_lots = int(max_value / cost_per_lot)      # 3 lots — below cap of 5
+
+        with (
+            patch("execution.mock_broker.datetime", self._frozen_dt()),
+            patch.object(_mb, "get_max_position_value", AsyncMock(return_value=max_value)),
+            patch.object(_mb, "allocate", AsyncMock(return_value=True)),
+            patch.object(_mb, "data_client") as mock_dc,
+        ):
+            mock_dc.persist_trade = AsyncMock()
+            mock_dc.mark_decision_acted = AsyncMock()
+            result = await open_position(redis_client=_redis(), **self._open_kwargs(premium, lot_size))
+
+        assert result is not None
+        assert result.quantity == affordable_lots * lot_size  # 3 lots, not capped
 
 
 class TestExistingGatesStillWork:

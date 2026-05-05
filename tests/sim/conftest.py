@@ -39,6 +39,7 @@ _sim_settings = SimpleNamespace(
     sl_cooldown_minutes=30,
     min_option_premium=5.0,
     max_position_size_pct=10.0,
+    max_lots=5,
     slippage_pct=0.05,
     commission_flat=20.0,
     commission_pct=0.03,
