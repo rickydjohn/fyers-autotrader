@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     # Minimum option premium (₹) — below this, a 10% SL is within the bid-ask spread
     min_option_premium: float = Field(30.0, env="MIN_OPTION_PREMIUM")
 
+    # Maximum number of lots per trade — prevents huge qty on cheap/near-expiry options
+    max_lots: int = Field(5, env="MAX_LOTS")
+
     # Minutes to block re-entry on an underlying after a STOP_LOSS or TRAIL_STOP
     sl_cooldown_minutes: int = Field(15, env="SL_COOLDOWN_MINUTES")
 

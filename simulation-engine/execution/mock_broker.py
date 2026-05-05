@@ -108,7 +108,7 @@ async def open_position(
             f"₹{max_value:.0f} — skipping trade"
         )
         return None
-    num_lots = int(max_value / cost_per_lot)
+    num_lots = min(int(max_value / cost_per_lot), settings.max_lots)
     quantity = num_lots * lot_size
     trade_symbol = option_symbol
     raw_price = option_price
