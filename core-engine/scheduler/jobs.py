@@ -225,7 +225,15 @@ async def _process_symbol(
     daily_atr_pct = (prev_ohlc["high"] - prev_ohlc["low"]) / prev_ohlc["close"] * 100
     cpr = calculate_cpr(prev_ohlc["high"], prev_ohlc["low"], prev_ohlc["close"], daily_atr_pct=daily_atr_pct)
     pivots = calculate_pivots(prev_ohlc["high"], prev_ohlc["low"], prev_ohlc["close"])
-    nearest = get_nearest_levels(quote["ltp"], pivots, prev_ohlc["high"], prev_ohlc["low"])
+    # Compute intraday range before nearest-level lookup so DayHigh/DayLow
+    # are included as support/resistance in the entry proximity gate.
+    day_high, day_low = calculate_day_range(candles)
+    nearest = get_nearest_levels(
+        quote["ltp"], pivots,
+        prev_high=prev_ohlc["high"], prev_low=prev_ohlc["low"],
+        day_high=day_high, day_low=day_low,
+        cpr_bc=cpr.bc, cpr_tc=cpr.tc,
+    )
     # PDH-pivot confluence: PDH within 0.2% of daily Pivot → extra confirmation signal
     pdh_pivot_confluence = abs(prev_ohlc["high"] - cpr.pivot) / cpr.pivot < 0.002
     rsi = calculate_rsi(candles)
@@ -237,7 +245,6 @@ async def _process_symbol(
     cpr_signal = get_cpr_signal(quote["ltp"], cpr)
 
     # Intraday range breakout detection
-    day_high, day_low = calculate_day_range(candles)
     consolidation_pct, consol_high, consol_low = calculate_consolidation(candles)
     ltp = quote["ltp"]
     # Require price to clear the band by at least 0.05% to avoid noise breakouts

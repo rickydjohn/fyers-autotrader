@@ -45,12 +45,21 @@ def calculate_pivots(high: float, low: float, close: float) -> PivotLevels:
     )
 
 
-def get_nearest_levels(price: float, pivots: PivotLevels, prev_high: float = 0.0, prev_low: float = 0.0) -> dict:
+def get_nearest_levels(
+    price: float,
+    pivots: PivotLevels,
+    prev_high: float = 0.0,
+    prev_low: float = 0.0,
+    day_high: float = 0.0,
+    day_low: float = 0.0,
+    cpr_bc: float = 0.0,
+    cpr_tc: float = 0.0,
+) -> dict:
     """Find the nearest support and resistance levels to current price.
 
-    PDH and PDL are included as named levels so the LLM knows when price is
-    testing those key boundaries, not just standard pivot math levels.
-    Extended levels (R4/R5/S4/S5) capture extreme intraday moves.
+    PDH/PDL, intraday DayHigh/DayLow, and CPR-BC/TC are included alongside
+    standard pivot math so the entry proximity gate catches moves into live
+    intraday support or resistance, not just pre-session levels.
     """
     levels = {
         "R5": pivots.r5, "R4": pivots.r4, "R3": pivots.r3, "R2": pivots.r2, "R1": pivots.r1,
@@ -61,6 +70,14 @@ def get_nearest_levels(price: float, pivots: PivotLevels, prev_high: float = 0.0
         levels["PDH"] = prev_high
     if prev_low > 0:
         levels["PDL"] = prev_low
+    if day_high > 0:
+        levels["DayHigh"] = day_high
+    if day_low > 0:
+        levels["DayLow"] = day_low
+    if cpr_bc > 0:
+        levels["CPR-BC"] = cpr_bc
+    if cpr_tc > 0:
+        levels["CPR-TC"] = cpr_tc
     above = {k: v for k, v in levels.items() if v > price}
     below = {k: v for k, v in levels.items() if v <= price}
 
