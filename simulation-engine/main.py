@@ -389,6 +389,21 @@ async def _handle_decision(data: dict) -> None:
             )
             return
 
+    # Consolidation gate — block all entries while price is inside the consolidation range.
+    # range_breakout is BREAKOUT_HIGH or BREAKOUT_LOW when price clears the band with buffer;
+    # NONE means either not consolidating or still inside the range. Only the latter case
+    # (is_consolidating=True AND NONE) should block — wide non-consolidating markets are fine.
+    if decision in ("BUY", "SELL"):
+        range_breakout = ind_dict.get("range_breakout", "")
+        consolidation_pct = float(ind_dict.get("consolidation_pct") or 1.0)
+        is_consolidating = consolidation_pct < 0.40
+        if is_consolidating and range_breakout == "NONE":
+            logger.info(
+                f"[CONSOLIDATION GATE] {decision} {symbol}: price inside consolidation range "
+                f"({consolidation_pct:.1%} of ATR) — no breakout confirmed, skipped"
+            )
+            return
+
     # Entry proximity gate — block when the next level in the trade direction is too close.
     # For CE (BUY): if the nearest level above is within 0.25%, there is no room to run.
     # For PE (SELL): if the nearest level below is within 0.25%, there is no room to fall.
