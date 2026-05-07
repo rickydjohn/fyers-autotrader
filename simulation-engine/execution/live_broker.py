@@ -217,6 +217,7 @@ async def open_position(
         option_expiry=option_expiry,
         entry_option_price=actual_entry_price,
         day_type=day_type,
+        num_lots=1,
     )
     # Capture entry IV from Redis if already populated by fast position watcher
     if option_symbol:

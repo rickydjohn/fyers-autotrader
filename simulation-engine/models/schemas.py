@@ -22,6 +22,7 @@ class Position(BaseModel):
     entry_iv: float = 0.0                  # implied volatility at entry (for IV crush detection)
     milestone_count: int = 0               # trail milestone counter (0 = pre-trail; increments at each +10%)
     day_type: Optional[str] = None         # "RANGING" or "TRENDING" — set at entry from CPR width
+    num_lots: int = 1                      # number of lots traded (used for per-lot PA exit threshold)
 
 
 class Trade(BaseModel):

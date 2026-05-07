@@ -60,10 +60,10 @@ IV_CRUSH_THRESHOLD: float  = 0.80   # exit if iv < entry_iv × this
 # Price action exit thresholds
 PA_RESISTANCE_PROXIMITY: float = 0.0025  # exit CE if underlying within 0.25% of resistance
 PA_SUPPORT_PROXIMITY: float    = 0.0025  # exit PE if underlying within 0.25% of support
-# Minimum gross gain (option_ltp − entry) × qty before PA_RESISTANCE/PA_SUPPORT fires.
-# Prevents commission-eating exits where the option barely moved. ₹60 covers round-trip
-# commission (₹40) + exit slippage (≈₹13 BNF / ≈₹5 NIFTY) with a small safety margin.
-PA_MIN_GROSS_PROFIT: float = 60.0
+# Minimum gross gain per lot before PA_RESISTANCE/PA_SUPPORT fires.
+# ₹5/lot means a 65-lot position needs ₹325 gross profit before the gate opens,
+# ensuring PA exits lock in meaningful gains rather than firing on noise moves.
+PA_MIN_GROSS_PROFIT_PER_LOT: float = 5.0
 
 
 def _indicators_confirm(side: str, indicators: dict) -> bool:
@@ -191,7 +191,7 @@ def check_exit(
             # Prevents commission-bleeding "profit lock" exits when the option barely
             # moved (e.g. ₹1.50 gross on a ₹40 round-trip commission = guaranteed loss).
             gross_gain = (option_ltp - pos.entry_option_price) * pos.quantity
-            if gross_gain >= PA_MIN_GROSS_PROFIT:
+            if gross_gain >= PA_MIN_GROSS_PROFIT_PER_LOT * pos.num_lots:
                 is_ce = pos.side == "BUY"
                 # Levels to check: nearest S/R and PDH/PDL only.
                 # day_high/day_low are excluded — they track the running intraday
