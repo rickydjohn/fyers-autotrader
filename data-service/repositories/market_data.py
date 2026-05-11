@@ -525,7 +525,7 @@ async def update_volume_profile_for_date(db: AsyncSession, symbol: str, session_
                 SUM(volume) AS bar_vol
             FROM market_candles
             WHERE symbol = :symbol
-              AND time::DATE = :session_date::DATE
+              AND time::DATE = CAST(:session_date AS DATE)
               AND volume < 200000000
               AND time::TIME >= '09:15:00'
               AND time::TIME <  '15:31:00'
