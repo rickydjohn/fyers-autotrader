@@ -12,6 +12,7 @@ router = APIRouter(prefix="/trades", tags=["Trades"])
 @router.get("")
 async def get_trades(
     symbol: Optional[str] = Query(None),
+    date: Optional[str] = Query(None, description="Filter by entry date (YYYY-MM-DD)"),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     redis_client: aioredis.Redis = Depends(get_redis),
@@ -26,6 +27,8 @@ async def get_trades(
         try:
             trade = json.loads(item)
             if symbol and trade.get("symbol") != symbol:
+                continue
+            if date and not (trade.get("entry_time") or "").startswith(date):
                 continue
             trades.append(trade)
         except Exception:
