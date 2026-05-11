@@ -542,7 +542,7 @@ async def update_volume_profile_for_date(db: AsyncSession, symbol: str, session_
                                / (volume_profile.sample_count + 1),
                 sample_count = volume_profile.sample_count + 1,
                 updated_at   = NOW()
-    """), {"symbol": symbol, "session_date": session_date})
+    """), {"symbol": symbol, "session_date": date.fromisoformat(session_date) if isinstance(session_date, str) else session_date})
     await db.commit()
 
 
