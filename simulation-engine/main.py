@@ -416,7 +416,10 @@ async def _handle_decision(data: dict) -> None:
     if decision == "BUY":
         nr = float(mkt_ind.get("nearest_resistance") or ind_dict.get("nearest_resistance") or 0)
         nr_label = mkt_ind.get("nearest_resistance_label") or ind_dict.get("nearest_resistance_label") or "level"
-        if nr > 0 and nr * (1 - PA_PROXIMITY) <= current_price <= nr:
+        # DayHigh is a running intraday extreme — on a trending bull day it equals current
+        # price and would block every entry. Only static levels (PDH, CPR, pivots) are valid
+        # entry gates. Same reasoning as exit_rules.py which also excludes DayHigh/DayLow.
+        if nr > 0 and nr_label != "DayHigh" and nr * (1 - PA_PROXIMITY) <= current_price <= nr:
             logger.info(
                 f"[ENTRY BLOCK] BUY {symbol}: underlying ₹{current_price:.2f} within "
                 f"{PA_PROXIMITY*100:.2f}% of {nr_label} ₹{nr:.2f} — no room to run, skipped"
@@ -426,7 +429,9 @@ async def _handle_decision(data: dict) -> None:
     elif decision == "SELL":
         ns = float(mkt_ind.get("nearest_support") or ind_dict.get("nearest_support") or 0)
         ns_label = mkt_ind.get("nearest_support_label") or ind_dict.get("nearest_support_label") or "level"
-        if ns > 0 and ns <= current_price <= ns * (1 + PA_PROXIMITY):
+        # DayLow is a running intraday extreme — on a trending bear day it equals current
+        # price and would block every SELL entry. Exclude it; PDL and pivot levels are enough.
+        if ns > 0 and ns_label != "DayLow" and ns <= current_price <= ns * (1 + PA_PROXIMITY):
             logger.info(
                 f"[ENTRY BLOCK] SELL {symbol}: underlying ₹{current_price:.2f} within "
                 f"{PA_PROXIMITY*100:.2f}% of {ns_label} ₹{ns:.2f} — no room to fall, skipped"
