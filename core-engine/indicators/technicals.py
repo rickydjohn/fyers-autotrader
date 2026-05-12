@@ -112,6 +112,27 @@ def calculate_day_range(candles: List[OHLCBar]) -> Tuple[float, float]:
     return round(float(highs.max()), 2), round(float(lows.min()), 2)
 
 
+def calculate_orb(candles: List[OHLCBar]) -> Tuple[float, float]:
+    """
+    Return (orb_high, orb_low) from the 09:15–09:30 opening range candles for today.
+    Returns (0.0, 0.0) when today's opening range candles are not yet available.
+    """
+    import datetime as _dt
+    today = _dt.datetime.now(_IST).date()
+    orb_candles = []
+    for c in candles:
+        ts_ist = c.timestamp.astimezone(_IST) if c.timestamp.tzinfo else c.timestamp.replace(tzinfo=_IST)
+        if ts_ist.date() != today:
+            continue
+        t = ts_ist.time()
+        if _dt.time(9, 15) <= t < _dt.time(9, 30):
+            orb_candles.append(c)
+    if not orb_candles:
+        return 0.0, 0.0
+    _, _, highs, lows, _ = _to_series(orb_candles)
+    return round(float(highs.max()), 2), round(float(lows.min()), 2)
+
+
 def _summarise_candles(candles: List[OHLCBar]) -> str:
     """One-line pattern summary over the candle window."""
     if not candles:

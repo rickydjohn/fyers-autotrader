@@ -475,6 +475,8 @@ async def make_decision(
             "nearest_support_label": ind.nearest_support_label,
             "prev_day_high": ind.prev_day_high,
             "prev_day_low": ind.prev_day_low,
+            "orb_high": ind.orb_high,
+            "orb_low": ind.orb_low,
         },
     )
 

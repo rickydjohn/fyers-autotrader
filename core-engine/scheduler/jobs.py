@@ -27,6 +27,7 @@ from indicators.technicals import (
     aggregate_1m_to_5m,
     calculate_consolidation,
     calculate_day_range,
+    calculate_orb,
     calculate_ema,
     calculate_macd,
     calculate_rsi,
@@ -228,6 +229,7 @@ async def _process_symbol(
     # Compute intraday range before nearest-level lookup so DayHigh/DayLow
     # are included as support/resistance in the entry proximity gate.
     day_high, day_low = calculate_day_range(candles)
+    orb_high, orb_low = calculate_orb(candles)
     nearest = get_nearest_levels(
         quote["ltp"], pivots,
         prev_high=prev_ohlc["high"], prev_low=prev_ohlc["low"],
@@ -275,6 +277,8 @@ async def _process_symbol(
         consolidation_pct=consolidation_pct,
         range_breakout=range_breakout,
         pdh_pivot_confluence=pdh_pivot_confluence,
+        orb_high=orb_high,
+        orb_low=orb_low,
         **nearest,
     )
 

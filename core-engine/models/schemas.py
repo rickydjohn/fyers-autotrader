@@ -58,6 +58,8 @@ class TechnicalIndicators(BaseModel):
     consolidation_pct: float = 0.0 # range% of last 8 candles; < 0.40 = sideways
     range_breakout: Literal["BREAKOUT_HIGH", "BREAKOUT_LOW", "NONE"] = "NONE"
     pdh_pivot_confluence: bool = False  # PDH within 0.2% of daily Pivot
+    orb_high: float = 0.0   # 09:15–09:30 opening range high
+    orb_low: float = 0.0    # 09:15–09:30 opening range low
 
 
 class NewsItem(BaseModel):

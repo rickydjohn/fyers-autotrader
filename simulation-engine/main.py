@@ -389,6 +389,30 @@ async def _handle_decision(data: dict) -> None:
             )
             return
 
+    # ORB breakout gate — block entries when price is still inside the opening range.
+    # The 09:15–09:30 high/low define the session's opening range.  A trade in the direction
+    # of the signal is only valid once price has cleared that range by 0.20% (data-derived
+    # buffer from 141 days of NIFTY/BANKNIFTY history — inflection point for ~80% continuation).
+    # BUY requires price > orb_high × 1.002 (bullish breakout above range)
+    # SELL requires price < orb_low  × 0.998 (bearish breakdown below range)
+    if decision in ("BUY", "SELL"):
+        orb_high = float(ind_dict.get("orb_high") or 0)
+        orb_low  = float(ind_dict.get("orb_low")  or 0)
+        ORB_BUFFER = 0.002
+        if orb_high > 0 and orb_low > 0:
+            if decision == "BUY" and current_price <= orb_high * (1 + ORB_BUFFER):
+                logger.info(
+                    f"[ORB GATE] BUY {symbol}: price ₹{current_price:.2f} not above "
+                    f"ORB high ₹{orb_high:.2f} +{ORB_BUFFER*100:.2f}% — no breakout confirmed, skipped"
+                )
+                return
+            elif decision == "SELL" and current_price >= orb_low * (1 - ORB_BUFFER):
+                logger.info(
+                    f"[ORB GATE] SELL {symbol}: price ₹{current_price:.2f} not below "
+                    f"ORB low ₹{orb_low:.2f} -{ORB_BUFFER*100:.2f}% — no breakdown confirmed, skipped"
+                )
+                return
+
     # Consolidation gate — block all entries while price is inside the consolidation range.
     # range_breakout is BREAKOUT_HIGH or BREAKOUT_LOW when price clears the band with buffer;
     # NONE means either not consolidating or still inside the range. Only the latter case
