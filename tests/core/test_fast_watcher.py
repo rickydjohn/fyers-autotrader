@@ -64,6 +64,7 @@ _stub("indicators.pivots",
 _stub("indicators.technicals",
       aggregate_1m_to_5m=_noop,
       calculate_consolidation=_noop, calculate_day_range=_noop,
+      calculate_orb=_noop,
       calculate_ema=_noop, calculate_macd=_noop,
       calculate_rsi=_noop, calculate_vwap=_noop,
       format_candles_for_prompt=MagicMock(return_value=""))
