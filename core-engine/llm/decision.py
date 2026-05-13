@@ -477,6 +477,8 @@ async def make_decision(
             "prev_day_low": ind.prev_day_low,
             "orb_high": ind.orb_high,
             "orb_low": ind.orb_low,
+            "cpr_tc": ind.cpr.tc,
+            "cpr_bc": ind.cpr.bc,
         },
     )
 

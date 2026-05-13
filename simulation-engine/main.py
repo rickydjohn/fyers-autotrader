@@ -413,6 +413,32 @@ async def _handle_decision(data: dict) -> None:
                 )
                 return
 
+    # CPR gate — price must have cleared the CPR band by 0.20% before entry.
+    # Uses max(TC, BC) as the upper boundary and min(TC, BC) as the lower boundary so
+    # the gate works correctly for both normal CPR (TC > BC) and inverted CPR (BC > TC).
+    # BUY requires price > upper × 1.002 — confirmed breakout above the band.
+    # SELL requires price < lower × 0.998 — confirmed breakdown below the band.
+    # Gate is skipped when either value is zero (CPR not yet computed).
+    if decision in ("BUY", "SELL"):
+        cpr_tc = float(ind_dict.get("cpr_tc") or 0)
+        cpr_bc = float(ind_dict.get("cpr_bc") or 0)
+        CPR_BUFFER = 0.002
+        if cpr_tc > 0 and cpr_bc > 0:
+            cpr_upper = max(cpr_tc, cpr_bc)
+            cpr_lower = min(cpr_tc, cpr_bc)
+            if decision == "BUY" and current_price <= cpr_upper * (1 + CPR_BUFFER):
+                logger.info(
+                    f"[CPR GATE] BUY {symbol}: price ₹{current_price:.2f} not above "
+                    f"CPR upper ₹{cpr_upper:.2f} +{CPR_BUFFER*100:.2f}% — no confirmed breakout, skipped"
+                )
+                return
+            elif decision == "SELL" and current_price >= cpr_lower * (1 - CPR_BUFFER):
+                logger.info(
+                    f"[CPR GATE] SELL {symbol}: price ₹{current_price:.2f} not below "
+                    f"CPR lower ₹{cpr_lower:.2f} -{CPR_BUFFER*100:.2f}% — no confirmed breakdown, skipped"
+                )
+                return
+
     # Consolidation gate — block all entries while price is inside the consolidation range.
     # range_breakout is BREAKOUT_HIGH or BREAKOUT_LOW when price clears the band with buffer;
     # NONE means either not consolidating or still inside the range. Only the latter case
