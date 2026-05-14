@@ -9,21 +9,21 @@ New rules applied:
   R4 - (acted_upon fix — operational, not backtest-relevant)
   R5 - Extended RSI: price > PDH*1.005 + RSI 45-78 + ABOVE_CPR + price>VWAP → BUY
 
-Run:
-    python3 backtest_new_rules.py
+Run inside trading-data container:
+    docker cp tests/backtests/backtest_new_rules.py trading-data:/tmp/
+    docker exec trading-data python /tmp/backtest_new_rules.py
 """
 
-import json
+import asyncio
 import sys
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from typing import List, Optional, Tuple
 
-import psycopg2
-import psycopg2.extras
+import asyncpg
 import pytz
 
-DB = dict(host="localhost", port=5432, dbname="trading", user="trading", password="trading")
+DB_DSN = "postgresql://trading:trading@timescaledb:5432/trading"
 IST = pytz.timezone("Asia/Kolkata")
 SESSION_END = time(15, 20)   # hard exit at 15:20 IST
 SL_PCT   = 0.003             # 0.3% stop-loss
@@ -56,12 +56,8 @@ class TradeResult:
 
 # ── Database helpers ───────────────────────────────────────────────────────────
 
-def connect():
-    return psycopg2.connect(**DB)
-
-
-def fetch_decisions(cur) -> List[dict]:
-    cur.execute("""
+async def fetch_decisions(conn) -> List[dict]:
+    rows = await conn.fetch("""
         SELECT
             d.decision_id,
             d.time AT TIME ZONE 'Asia/Kolkata'   AS time_ist,
@@ -83,23 +79,33 @@ def fetch_decisions(cur) -> List[dict]:
               AND di.symbol  = d.symbol
         ORDER BY d.symbol, d.time
     """)
-    return [dict(r) for r in cur.fetchall()]
+    return [dict(r) for r in rows]
 
 
-def fetch_candles_after(cur, symbol: str, after: datetime, session_date: date) -> List[dict]:
-    """Fetch 5m candles for symbol from signal time until session end."""
+async def fetch_candles_after(conn, symbol: str, after: datetime, session_date: date) -> List[dict]:
+    """Fetch 5m candles for symbol from signal time until session end.
+    asyncpg returns NUMERIC as Decimal — cast to float so downstream math works."""
     session_end_dt = IST.localize(datetime.combine(session_date, SESSION_END))
-    cur.execute("""
+    rows = await conn.fetch("""
         SELECT
             time AT TIME ZONE 'Asia/Kolkata' AS t,
             open, high, low, close
         FROM market_candles
-        WHERE symbol = %s
-          AND time > %s
-          AND time <= %s
+        WHERE symbol = $1
+          AND time > $2
+          AND time <= $3
         ORDER BY time
-    """, (symbol, after, session_end_dt))
-    return [dict(r) for r in cur.fetchall()]
+    """, symbol, after, session_end_dt)
+    return [
+        {
+            "t":     r["t"],
+            "open":  float(r["open"]),
+            "high":  float(r["high"]),
+            "low":   float(r["low"]),
+            "close": float(r["close"]),
+        }
+        for r in rows
+    ]
 
 
 # ── Rule engine ────────────────────────────────────────────────────────────────
@@ -261,43 +267,42 @@ def evaluate_trade(sig: Signal, candles: List[dict]) -> TradeResult:
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
-def main():
+async def main():
     print("=" * 72)
     print("BACKTEST: New Rule Set Applied to Historical ai_decisions")
     print("=" * 72)
 
-    conn = connect()
-    cur  = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+    conn = await asyncpg.connect(DB_DSN)
 
-    print("\n[1/3] Loading decisions and daily indicators...")
-    decisions = fetch_decisions(cur)
-    print(f"      {len(decisions)} decision rows loaded")
+    try:
+        print("\n[1/3] Loading decisions and daily indicators...")
+        decisions = await fetch_decisions(conn)
+        print(f"      {len(decisions)} decision rows loaded")
 
-    print("[2/3] Applying new rules...")
-    signals, stats = apply_new_rules(decisions)
+        print("[2/3] Applying new rules...")
+        signals, stats = apply_new_rules(decisions)
 
-    print(f"\n  Rule stats:")
-    print(f"    R1 intraday override triggered : {stats['r1_intraday_override']:>4} new BUY signals")
-    print(f"    R2 MACD filter blocked         : {stats['r2_macd_filter_blocked']:>4} SELL→HOLD")
-    print(f"    R5 extended RSI triggered      : {stats['r5_extended_rsi']:>4} new BUY signals")
-    print(f"    Existing signals kept          : {stats['existing_sell_kept'] + stats['existing_buy_kept']:>4}")
-    print(f"    Deduped out (same session)     : {stats['deduped_out']:>4}")
-    print(f"    → Unique trade entries         : {len(signals):>4}")
+        print(f"\n  Rule stats:")
+        print(f"    R1 intraday override triggered : {stats['r1_intraday_override']:>4} new BUY signals")
+        print(f"    R2 MACD filter blocked         : {stats['r2_macd_filter_blocked']:>4} SELL→HOLD")
+        print(f"    R5 extended RSI triggered      : {stats['r5_extended_rsi']:>4} new BUY signals")
+        print(f"    Existing signals kept          : {stats['existing_sell_kept'] + stats['existing_buy_kept']:>4}")
+        print(f"    Deduped out (same session)     : {stats['deduped_out']:>4}")
+        print(f"    → Unique trade entries         : {len(signals):>4}")
 
-    if not signals:
-        print("\nNo signals to backtest.")
-        return
+        if not signals:
+            print("\nNo signals to backtest.")
+            return
 
-    print("\n[3/3] Evaluating each trade against subsequent 5m candles...")
-    results: List[TradeResult] = []
+        print("\n[3/3] Evaluating each trade against subsequent 5m candles...")
+        results: List[TradeResult] = []
 
-    for sig in signals:
-        candles = fetch_candles_after(cur, sig.symbol, sig.signal_time, sig.signal_time.date())
-        result  = evaluate_trade(sig, candles)
-        results.append(result)
-
-    cur.close()
-    conn.close()
+        for sig in signals:
+            candles = await fetch_candles_after(conn, sig.symbol, sig.signal_time, sig.signal_time.date())
+            result  = evaluate_trade(sig, candles)
+            results.append(result)
+    finally:
+        await conn.close()
 
     # ── Summary ───────────────────────────────────────────────────────────────
     wins          = [r for r in results if r.outcome == "WIN"]
@@ -365,4 +370,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

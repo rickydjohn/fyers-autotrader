@@ -12,60 +12,56 @@ Logic:
     3. If NIFTY decision aligns → trade would have been BOOSTED (confidence +0.08),
        but not blocked — no change to whether we traded.
 
-Run from project root:
-    python3 backtest_cross_symbol_gate.py
+Run inside trading-data container:
+    docker cp tests/backtests/backtest_cross_symbol_gate.py trading-data:/tmp/
+    docker exec trading-data python /tmp/backtest_cross_symbol_gate.py
 """
 
-import json
+import asyncio
 import sys
 from datetime import datetime, timedelta
 from typing import Optional
 
-import psycopg2
-import psycopg2.extras
+import asyncpg
 import pytz
 
-DB = dict(host="localhost", port=5432, dbname="trading", user="trading", password="trading")
+DB_DSN  = "postgresql://trading:trading@timescaledb:5432/trading"
 IST = pytz.timezone("Asia/Kolkata")
 PEER_WINDOW_MINUTES = 15
 NIFTY_SYM   = "NSE:NIFTY50-INDEX"
 BNIFTY_SYM  = "NSE:NIFTYBANK-INDEX"
 
 
-def connect():
-    return psycopg2.connect(**DB)
-
-
-def fetch_nifty_decisions(cur) -> list[dict]:
+async def fetch_nifty_decisions(conn) -> list[dict]:
     """All non-HOLD NIFTY decisions, ordered by time."""
-    cur.execute(
+    rows = await conn.fetch(
         """
         SELECT decision_id, time AT TIME ZONE 'Asia/Kolkata' AS time_ist,
                decision, confidence
         FROM ai_decisions
-        WHERE symbol = %s AND decision != 'HOLD'
+        WHERE symbol = $1 AND decision != 'HOLD'
         ORDER BY time ASC
         """,
-        (NIFTY_SYM,),
+        NIFTY_SYM,
     )
     return [
         {
-            "decision_id": r[0],
-            "time": r[1],
-            "decision": r[2],
-            "confidence": float(r[3]),
+            "decision_id": r["decision_id"],
+            "time": r["time_ist"],
+            "decision": r["decision"],
+            "confidence": float(r["confidence"]),
         }
-        for r in cur.fetchall()
+        for r in rows
     ]
 
 
-def fetch_banknifty_trades(cur) -> list[dict]:
+async def fetch_banknifty_trades(conn) -> list[dict]:
     """
     All closed BANKNIFTY trades, identified via the originating decision's symbol.
     Trades use option symbols (e.g. NSE:BANKNIFTY26APR52700CE) not the index symbol,
     so we join on ai_decisions.symbol to filter by underlying.
     """
-    cur.execute(
+    rows = await conn.fetch(
         """
         SELECT t.trade_id,
                t.side,
@@ -78,26 +74,26 @@ def fetch_banknifty_trades(cur) -> list[dict]:
                d.confidence AS decision_confidence
         FROM trades t
         JOIN ai_decisions d ON d.decision_id = t.decision_id
-        WHERE d.symbol = %s
+        WHERE d.symbol = $1
           AND t.status IN ('CLOSED', 'STOPPED')
           AND t.pnl IS NOT NULL
         ORDER BY t.entry_time ASC
         """,
-        (BNIFTY_SYM,),
+        BNIFTY_SYM,
     )
     return [
         {
-            "trade_id":             r[0],
-            "side":                 r[1],
-            "pnl":                  float(r[2]),
-            "entry_ist":            r[3],
-            "exit_reason":          r[4],
-            "status":               r[5],
-            "decision_time":        r[6],
-            "decision":             r[7],
-            "decision_confidence":  float(r[8]) if r[8] else None,
+            "trade_id":             r["trade_id"],
+            "side":                 r["side"],
+            "pnl":                  float(r["pnl"]),
+            "entry_ist":            r["entry_ist"],
+            "exit_reason":          r["exit_reason"],
+            "status":               r["status"],
+            "decision_time":        r["decision_ist"],
+            "decision":             r["decision_text"],
+            "decision_confidence":  float(r["decision_confidence"]) if r["decision_confidence"] else None,
         }
-        for r in cur.fetchall()
+        for r in rows
     ]
 
 
@@ -121,19 +117,19 @@ def fmt_pct(n, total):
     return f"{n/total*100:.1f}%" if total else "—"
 
 
-def run():
+async def run():
     try:
-        conn = connect()
+        conn = await asyncpg.connect(DB_DSN)
     except Exception as e:
         print(f"DB connection failed: {e}")
-        print("Make sure TimescaleDB is accessible on localhost:5432")
+        print(f"DSN: {DB_DSN}")
         sys.exit(1)
 
-    with conn.cursor() as cur:
-        nifty_decisions  = fetch_nifty_decisions(cur)
-        banknifty_trades = fetch_banknifty_trades(cur)
-
-    conn.close()
+    try:
+        nifty_decisions  = await fetch_nifty_decisions(conn)
+        banknifty_trades = await fetch_banknifty_trades(conn)
+    finally:
+        await conn.close()
 
     if not banknifty_trades:
         print("No closed BANKNIFTY trades found in DB.")
@@ -240,4 +236,4 @@ def run():
 
 
 if __name__ == "__main__":
-    run()
+    asyncio.run(run())

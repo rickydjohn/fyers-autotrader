@@ -12,19 +12,20 @@ Rule:
   - Deduplicate: first signal per (symbol, session date).
   - Outcome: subsequent 1m candles walk SL=0.3% / TGT=0.6% (2:1 RR).
 
-Run:
-    python3 backtest_range_breakout.py
+Run inside trading-data container:
+    docker cp tests/backtests/backtest_range_breakout.py trading-data:/tmp/
+    docker exec trading-data python /tmp/backtest_range_breakout.py
 """
 
+import asyncio
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from typing import List, Optional, Tuple
 
-import psycopg2
-import psycopg2.extras
+import asyncpg
 import pytz
 
-DB  = dict(host="localhost", port=5432, dbname="trading", user="trading", password="trading")
+DB_DSN = "postgresql://trading:trading@timescaledb:5432/trading"
 IST = pytz.timezone("Asia/Kolkata")
 
 SESSION_END        = time(15, 20)
@@ -64,12 +65,8 @@ class TradeResult:
 
 # ── DB helpers ─────────────────────────────────────────────────────────────────
 
-def connect():
-    return psycopg2.connect(**DB)
-
-
-def fetch_decisions(cur) -> List[dict]:
-    cur.execute("""
+async def fetch_decisions(conn) -> List[dict]:
+    rows = await conn.fetch("""
         SELECT
             d.decision_id,
             d.time AT TIME ZONE 'Asia/Kolkata'         AS time_ist,
@@ -84,43 +81,56 @@ def fetch_decisions(cur) -> List[dict]:
         FROM ai_decisions d
         ORDER BY d.symbol, d.time
     """)
-    return [dict(r) for r in cur.fetchall()]
+    return [dict(r) for r in rows]
 
 
-def fetch_prior_candles(cur, symbol: str, before: datetime, limit: int) -> List[dict]:
+async def fetch_prior_candles(conn, symbol: str, before: datetime, limit: int) -> List[dict]:
     """
     Fetch the most recent `limit` candles strictly before `before`, newest-first.
     Caller should skip index 0 (the bar that was current at decision time) and use
     the rest for the consolidation window — mirrors the live logic of
     candles[-(lookback+1):-1].
+
+    asyncpg returns NUMERIC as Decimal — cast to float so downstream math works.
     """
-    cur.execute("""
+    rows = await conn.fetch("""
         SELECT
             time AT TIME ZONE 'Asia/Kolkata' AS t,
             high, low, close
         FROM market_candles
-        WHERE symbol = %s
-          AND time < %s
+        WHERE symbol = $1
+          AND time < $2
         ORDER BY time DESC
-        LIMIT %s
-    """, (symbol, before, limit))
-    # Return newest-first so caller can easily skip [0]
-    return [dict(r) for r in cur.fetchall()]
+        LIMIT $3
+    """, symbol, before, limit)
+    return [
+        {"t": r["t"], "high": float(r["high"]), "low": float(r["low"]), "close": float(r["close"])}
+        for r in rows
+    ]
 
 
-def fetch_candles_after(cur, symbol: str, after: datetime, session_date: date) -> List[dict]:
+async def fetch_candles_after(conn, symbol: str, after: datetime, session_date: date) -> List[dict]:
     end_dt = IST.localize(datetime.combine(session_date, SESSION_END))
-    cur.execute("""
+    rows = await conn.fetch("""
         SELECT
             time AT TIME ZONE 'Asia/Kolkata' AS t,
             open, high, low, close
         FROM market_candles
-        WHERE symbol = %s
-          AND time > %s
-          AND time <= %s
+        WHERE symbol = $1
+          AND time > $2
+          AND time <= $3
         ORDER BY time
-    """, (symbol, after, end_dt))
-    return [dict(r) for r in cur.fetchall()]
+    """, symbol, after, end_dt)
+    return [
+        {
+            "t":     r["t"],
+            "open":  float(r["open"]),
+            "high":  float(r["high"]),
+            "low":   float(r["low"]),
+            "close": float(r["close"]),
+        }
+        for r in rows
+    ]
 
 
 # ── Consolidation + breakout logic ─────────────────────────────────────────────
@@ -160,7 +170,7 @@ def compute_consolidation(
 
 # ── Rule engine ────────────────────────────────────────────────────────────────
 
-def apply_range_breakout_rule(decisions: List[dict], cur) -> Tuple[List[Signal], dict]:
+async def apply_range_breakout_rule(decisions: List[dict], conn) -> Tuple[List[Signal], dict]:
     stats = {
         "decisions_checked":   0,
         "consolidating":       0,
@@ -195,7 +205,7 @@ def apply_range_breakout_rule(decisions: List[dict], cur) -> Tuple[List[Signal],
 
         stats["decisions_checked"] += 1
 
-        prior = fetch_prior_candles(cur, d["symbol"], d["time_ist"], CONSOL_LOOKBACK + 1)
+        prior = await fetch_prior_candles(conn, d["symbol"], d["time_ist"], CONSOL_LOOKBACK + 1)
         consol_pct, breakout, c_high, c_low = compute_consolidation(prior, price)
 
         if consol_pct < CONSOL_THRESHOLD and consol_pct > 0:
@@ -305,7 +315,7 @@ def evaluate_trade(sig: Signal, candles: List[dict]) -> TradeResult:
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
-def main():
+async def main():
     print("=" * 76)
     print("BACKTEST: Intraday Range Breakout Rule")
     print(f"  Consolidation window : {CONSOL_LOOKBACK} × 1m candles (≈ {CONSOL_LOOKBACK} min)")
@@ -314,39 +324,38 @@ def main():
     print(f"  SL / TGT             : {SL_PCT*100:.1f}% / {TGT_PCT*100:.1f}%  (RR 2:1)")
     print("=" * 76)
 
-    conn = connect()
-    cur  = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+    conn = await asyncpg.connect(DB_DSN)
 
-    print("\n[1/3] Loading decisions...")
-    decisions = fetch_decisions(cur)
-    print(f"      {len(decisions)} rows")
+    try:
+        print("\n[1/3] Loading decisions...")
+        decisions = await fetch_decisions(conn)
+        print(f"      {len(decisions)} rows")
 
-    print("[2/3] Applying range-breakout rule (fetches prior candles per decision)...")
-    signals, stats = apply_range_breakout_rule(decisions, cur)
+        print("[2/3] Applying range-breakout rule (fetches prior candles per decision)...")
+        signals, stats = await apply_range_breakout_rule(decisions, conn)
 
-    print(f"\n  Funnel:")
-    print(f"    Decisions checked          : {stats['decisions_checked']:>5}")
-    print(f"    Periods in consolidation   : {stats['consolidating']:>5}")
-    print(f"    Raw BREAKOUT_HIGH          : {stats['breakout_high_raw']:>5}")
-    print(f"    Raw BREAKOUT_LOW           : {stats['breakout_low_raw']:>5}")
-    print(f"    Confirmation failed (< {CONFIRM_NEEDED}) : {stats['confirmation_failed']:>5}")
-    print(f"    BUY signals confirmed      : {stats['buy_confirmed']:>5}")
-    print(f"    SELL signals confirmed     : {stats['sell_confirmed']:>5}")
-    print(f"    Deduped (same session)     : {stats['deduped_out']:>5}")
-    print(f"    → Unique trade entries     : {len(signals):>5}")
+        print(f"\n  Funnel:")
+        print(f"    Decisions checked          : {stats['decisions_checked']:>5}")
+        print(f"    Periods in consolidation   : {stats['consolidating']:>5}")
+        print(f"    Raw BREAKOUT_HIGH          : {stats['breakout_high_raw']:>5}")
+        print(f"    Raw BREAKOUT_LOW           : {stats['breakout_low_raw']:>5}")
+        print(f"    Confirmation failed (< {CONFIRM_NEEDED}) : {stats['confirmation_failed']:>5}")
+        print(f"    BUY signals confirmed      : {stats['buy_confirmed']:>5}")
+        print(f"    SELL signals confirmed     : {stats['sell_confirmed']:>5}")
+        print(f"    Deduped (same session)     : {stats['deduped_out']:>5}")
+        print(f"    → Unique trade entries     : {len(signals):>5}")
 
-    if not signals:
-        print("\nNo signals generated — dataset may be too small or no breakouts occurred.")
-        return
+        if not signals:
+            print("\nNo signals generated — dataset may be too small or no breakouts occurred.")
+            return
 
-    print("\n[3/3] Evaluating trades against subsequent 1m candles...")
-    results: List[TradeResult] = []
-    for sig in signals:
-        candles = fetch_candles_after(cur, sig.symbol, sig.signal_time, sig.signal_time.date())
-        results.append(evaluate_trade(sig, candles))
-
-    cur.close()
-    conn.close()
+        print("\n[3/3] Evaluating trades against subsequent 1m candles...")
+        results: List[TradeResult] = []
+        for sig in signals:
+            candles = await fetch_candles_after(conn, sig.symbol, sig.signal_time, sig.signal_time.date())
+            results.append(evaluate_trade(sig, candles))
+    finally:
+        await conn.close()
 
     # ── Summary ───────────────────────────────────────────────────────────────
     wins           = [r for r in results if r.outcome == "WIN"]
@@ -419,4 +428,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
