@@ -30,9 +30,19 @@ ssh "${REMOTE_USER}@${REMOTE_HOST}" "sudo bash -s" <<EOF
 set -euo pipefail
 cd "${REMOTE_PROJECT}"
 
-echo "--- git fetch + reset to origin/${BRANCH} ---"
+echo "--- git fetch + checkout ${BRANCH} ---"
 git fetch origin
-git reset --hard "origin/${BRANCH}"
+# Discard any uncommitted changes so checkout cannot fail with conflicts.
+git reset --hard HEAD 2>/dev/null || true
+# Create-or-reset local branch <BRANCH> to origin/<BRANCH> and switch to it.
+# The remote stays on this branch until a subsequent deploy switches it.
+git checkout -B "${BRANCH}" "origin/${BRANCH}"
+# Keep local master ref aligned with origin/master so a rollback deploy
+# (./deploy.sh from local master) starts from a clean reference. Skipped
+# when BRANCH=master because you cannot force-move the checked-out branch.
+if [ "${BRANCH}" != "master" ]; then
+  git branch -f master origin/master 2>/dev/null || true
+fi
 
 echo "--- docker compose rebuild ---"
 if [ "${SERVICE}" = "all" ]; then
