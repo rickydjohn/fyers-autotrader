@@ -284,3 +284,53 @@ class TestDriftVetoFailOpen:
         )
         fetched.assert_awaited_once_with(SYMBOL)
         opened.assert_called_once()
+
+
+# ── Fresh price flows into downstream gates (regression: 2026-05-14 CPR leak) ──
+
+class TestFreshPriceFeedsGates:
+    """The drift veto's live-LTP fetch runs BEFORE the other gates. When drift is
+    within tolerance, the fresh LTP replaces the stale scan-time price so ORB /
+    CPR / consolidation / entry-proximity all evaluate against the actual market
+    price at order time.
+
+    Regression test for 2026-05-14: BANKNIFTY snapshot price 53,341 was below
+    the CPR-lower threshold (53,413), so the gate let the SELL through. But the
+    actual market at order fire was 53,415 — above the threshold — and the
+    trade should have been blocked. Fix: gate evaluates the fresh price."""
+
+    def test_cpr_gate_blocks_with_fresh_price_even_when_snapshot_would_pass(self):
+        """Scenario: snapshot below CPR-lower (would pass), fresh LTP above
+        CPR-lower (must block). Drift kept below drift_veto_pct so the veto
+        itself doesn't fire — proving the gate, not the veto, blocks."""
+        # cpr_lower threshold for SELL = cpr_lower * 0.998
+        # cpr_lower=53520 → threshold ≈ 53,413
+        # snapshot=53,400 (below threshold) → snapshot-time gate would PASS
+        # live=53,415   (above threshold) → fresh-time gate must BLOCK
+        # drift = (53,415-53,400)/53,400 = +0.028%  (below default 0.10% veto)
+        data = _make_decision(
+            "SELL",
+            snapshot_price=53_400.0,
+            cpr_tc=53_520.0,
+            cpr_bc=53_649.0,  # inverted CPR — matches today's BANKNIFTY shape
+        )
+        opened, fetched = asyncio.get_event_loop().run_until_complete(
+            _run(data, market_ltp=53_400.0, live_ltp=53_415.0)
+        )
+        fetched.assert_awaited_once_with(SYMBOL)
+        opened.assert_not_called()
+
+    def test_cpr_gate_passes_when_both_prices_below_threshold(self):
+        """Control: both snapshot and live are below threshold — no leak,
+        no false-block. Gate correctly passes."""
+        data = _make_decision(
+            "SELL",
+            snapshot_price=53_300.0,
+            cpr_tc=53_520.0,
+            cpr_bc=53_649.0,
+        )
+        # Live moves slightly but stays well below CPR-lower threshold (53,413)
+        opened, _fetched = asyncio.get_event_loop().run_until_complete(
+            _run(data, market_ltp=53_300.0, live_ltp=53_310.0)
+        )
+        opened.assert_called_once()
