@@ -488,6 +488,32 @@ async def _handle_decision(data: dict) -> None:
             )
             return
 
+    # Drift veto — re-check the underlying price right before placing the order.
+    # The market:{symbol} snapshot above is written at the start of the scan cycle, so it
+    # ages by however long the LLM takes (tens of seconds on Ollama gpt-oss:120b). A live
+    # quote here reveals whether price has drifted against the signal during that window.
+    # Fail-open on quote failure so a flaky Fyers call doesn't introduce a new outage mode.
+    if decision in ("BUY", "SELL"):
+        snapshot_price = float(ind_dict.get("price") or 0)
+        if snapshot_price > 0:
+            live_ltp = await _fetch_live_ltp(symbol)
+            if live_ltp:
+                drift = (live_ltp - snapshot_price) / snapshot_price
+                threshold = settings.drift_veto_pct
+                adverse = (
+                    (decision == "BUY"  and drift < -threshold) or
+                    (decision == "SELL" and drift >  threshold)
+                )
+                if adverse:
+                    logger.info(
+                        f"[DRIFT VETO] {decision} {symbol}: snapshot ₹{snapshot_price:.2f} "
+                        f"→ live ₹{live_ltp:.2f} ({drift*100:+.3f}%) — adverse drift exceeds "
+                        f"{threshold*100:.2f}%, skipped"
+                    )
+                    return
+                # Honest fill price for the order
+                current_price = live_ltp
+
     if decision == "BUY":
         existing = await redis_client.hget("positions:open", symbol)
         if existing:
