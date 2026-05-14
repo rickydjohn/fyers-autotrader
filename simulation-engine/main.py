@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import sys
+import time
 from contextlib import asynccontextmanager
 
 from datetime import datetime
@@ -564,11 +565,27 @@ async def _handle_decision(data: dict) -> None:
 
 async def _fetch_live_ltp(symbol: str) -> float | None:
     """
-    Fetch a real-time LTP directly from Fyers via core-engine.
-    Used as a fallback when Redis price keys have expired.
-    Also writes the result back to ltp:{symbol} (30s TTL) so subsequent
-    ticks don't need another round-trip.
+    Return a real-time LTP, preferring the WebSocket-populated Redis cache.
+
+    Path 1 — WS cache (ltp:{symbol}): if core-engine's FyersTickFeed has written
+      a recent tick (≤5s old per the stored `ts`), use it. Sub-millisecond
+      Redis read, no Fyers round-trip.
+    Path 2 — REST fallback via core-engine /fyers/quote: used when the WS
+      cache is missing or stale (WS down, market closed, or symbol not
+      subscribed). Writes the result back to ltp:{symbol} for next time.
     """
+    try:
+        cached = await redis_client.get(f"ltp:{symbol}")
+        if cached:
+            data = json.loads(cached)
+            ts_ms = int(data.get("ts") or 0)
+            age_ms = int(time.time() * 1000) - ts_ms
+            ltp = data.get("ltp")
+            if ts_ms and age_ms <= 5_000 and ltp:
+                return float(ltp)
+    except Exception as e:
+        logger.debug(f"WS cache read failed for {symbol}: {e}")
+
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             r = await client.get(f"{settings.core_engine_url}/fyers/quote/{symbol}")
@@ -577,7 +594,10 @@ async def _fetch_live_ltp(symbol: str) -> float | None:
                 return None
             ltp = r.json().get("ltp")
             if ltp:
-                await redis_client.setex(f"ltp:{symbol}", 30, json.dumps({"ltp": ltp}))
+                await redis_client.setex(
+                    f"ltp:{symbol}", 30,
+                    json.dumps({"ltp": ltp, "ts": int(time.time() * 1000)}),
+                )
             return float(ltp) if ltp else None
     except Exception as e:
         logger.warning(f"Live LTP fetch error for {symbol}: {e}")

@@ -28,6 +28,7 @@ from fyers.proxy import configure_fyers_proxy
 from fyers.auth import exchange_auth_code, get_auth_url, get_valid_token
 from fyers.orders import get_funds, get_fyers_positions, get_order_fill, place_market_order
 from fyers.market_data import get_quote
+from fyers.tick_feed import FyersTickFeed
 from llm.client import check_llm_health, get_provider
 from scheduler.jobs import (
     create_scheduler, _refresh_news, run_market_scan,
@@ -48,17 +49,34 @@ configure_fyers_proxy()
 
 redis_client: aioredis.Redis = None
 scheduler = None
+tick_feed: Optional[FyersTickFeed] = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global redis_client, scheduler
+    global redis_client, scheduler, tick_feed
     redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
     logger.info("Redis connected")
 
     scheduler = create_scheduler(redis_client)
     scheduler.start()
     logger.info("Scheduler started")
+
+    # Start WebSocket tick feed (best-effort — REST scan still works as fallback).
+    # Skipped silently if Fyers isn't authenticated yet; can be triggered later
+    # via the auth callback path if needed.
+    try:
+        get_valid_token()
+        tick_feed = FyersTickFeed(
+            redis_client=redis_client,
+            symbols=settings.symbols,
+        )
+        await tick_feed.start()
+        logger.info("Fyers WS tick feed started")
+    except RuntimeError as e:
+        logger.warning(f"Fyers WS tick feed not started — auth missing: {e}")
+    except Exception as e:
+        logger.exception(f"Fyers WS tick feed startup failed: {e}")
 
     # Warm up news cache immediately
     try:
@@ -113,6 +131,11 @@ async def lifespan(app: FastAPI):
     yield
 
     scheduler.shutdown(wait=False)
+    if tick_feed is not None:
+        try:
+            await tick_feed.stop()
+        except Exception as e:
+            logger.warning(f"Tick feed shutdown error: {e}")
     await data_client.close_client()
     await redis_client.aclose()
     logger.info("Core engine shutdown complete")
