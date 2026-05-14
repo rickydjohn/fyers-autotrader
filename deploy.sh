@@ -14,20 +14,25 @@ REMOTE_HOST="100.78.91.15"
 REMOTE_PROJECT="/root/Project/src/github.com/rickydjohn/fyers-autotrader"
 SERVICE="${1:-core-engine}"
 
+# Deploy the currently-checked-out branch. Stay on master for normal deploys
+# (rollback path); switch to a feature branch when shipping WIP work that should
+# not land on master yet.
+BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+
 # ── 1. Push local commits to GitHub ──────────────────────────────────────────
-echo "==> Pushing to origin..."
-git push
+echo "==> Pushing branch ${BRANCH} to origin..."
+git push -u origin "${BRANCH}"
 
 # ── 2. Pull on remote and rebuild ────────────────────────────────────────────
-echo "==> Deploying to ${REMOTE_HOST} (service: ${SERVICE})..."
+echo "==> Deploying to ${REMOTE_HOST} (service: ${SERVICE}, branch: ${BRANCH})..."
 
 ssh "${REMOTE_USER}@${REMOTE_HOST}" "sudo bash -s" <<EOF
 set -euo pipefail
 cd "${REMOTE_PROJECT}"
 
-echo "--- git fetch + reset to origin/master ---"
+echo "--- git fetch + reset to origin/${BRANCH} ---"
 git fetch origin
-git reset --hard origin/master
+git reset --hard "origin/${BRANCH}"
 
 echo "--- docker compose rebuild ---"
 if [ "${SERVICE}" = "all" ]; then
