@@ -9,6 +9,7 @@ v2: Persists data to TimescaleDB via data-service.
 import asyncio
 import json
 import logging
+import time
 from datetime import datetime, date, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -505,6 +506,9 @@ async def _fast_position_watcher(redis_client: aioredis.Redis) -> None:
             # Write to ltp:{symbol} (NOT market:{symbol}) so we don't overwrite the
             # full market snapshot (indicators, candles, etc.) that the full scan
             # writes every 300s.  The simulation-engine reads ltp:{symbol} first.
+            # `ts` (epoch_ms) is required for readers (e.g. _fetch_live_ltp) to
+            # judge freshness and to detect out-of-order writes from the WS feed
+            # which writes to the same key.
             q = get_quote(symbol)
             if q and q.get("ltp"):
                 await redis_client.setex(
@@ -512,6 +516,7 @@ async def _fast_position_watcher(redis_client: aioredis.Redis) -> None:
                     30,
                     json.dumps({
                         "ltp":    q["ltp"],
+                        "ts":     int(time.time() * 1000),
                         "symbol": symbol,
                         "high":   q.get("high", 0),
                         "low":    q.get("low", 0),
