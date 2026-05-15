@@ -37,9 +37,14 @@ from fyers.auth import get_valid_token
 logger = logging.getLogger(__name__)
 
 
-# Tunables — modest defaults, tune after a live-market sampling.
+# Tunables — tuned 2026-05-16 after empirical sampling.
 _LTP_REDIS_TTL_S = 30
-_WRITE_THROTTLE_MS = 500  # at most one write per symbol per 500ms
+# 200ms — observed tick interval p50 ≈ 388ms (NIFTY50), 467ms (NIFTYBANK) on
+# 2026-05-15. 500ms had been dropping ~half of writes with up to 17.65pt
+# drift between kept writes on BANKNIFTY — enough to miss an intra-second
+# cross of an EMA/CPR invalidation level. 200ms tracks ticks ~1:1 during
+# active trading at a trivial Redis cost (~5 writes/s/symbol).
+_WRITE_THROTTLE_MS = 200
 _BACKOFF_INITIAL_S = 1.0
 _BACKOFF_MAX_S = 60.0
 
