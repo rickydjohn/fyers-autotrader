@@ -1,0 +1,272 @@
+[
+  {
+    "t": "2026-05-15 13:48:00",
+    "symbol": "NSE:NIFTY50-INDEX",
+    "open": 23714.4,
+    "high": 23715.85,
+    "low": 23711.9,
+    "close": 23711.9,
+    "volume": 0
+  },
+  {
+    "t": "2026-05-15 13:48:00",
+    "symbol": "NSE:NIFTYBANK-INDEX",
+    "open": 54073.15,
+    "high": 54073.15,
+    "low": 54059.05,
+    "close": 54059.05,
+    "volume": 0
+  },
+  {
+    "t": "2026-05-15 13:47:00",
+    "symbol": "NSE:NIFTY50-INDEX",
+    "open": 23736.75,
+    "high": 23737.05,
+    "low": 23733.35,
+    "close": 23733.35,
+    "volume": 0
+  },
+  {
+    "t": "2026-05-15 13:47:00",
+    "symbol": "NSE:NIFTYBANK-INDEX",
+    "open": 54138.2,
+    "high": 54140.15,
+    "low": 54127.35,
+    "close": 54127.35,
+    "volume": 0
+  },
+  {
+    "t": "2026-05-15 13:46:00",
+    "symbol": "NSE:NIFTY50-INDEX",
+    "open": 23746.55,
+    "high": 23749.5,
+    "low": 23746.35,
+    "close": 23747.55,
+    "volume": 0
+  },
+  {
+    "t": "2026-05-15 13:46:00",
+    "symbol": "NSE:NIFTYBANK-INDEX",
+    "open": 54167.75,
+    "high": 54171.75,
+    "low": 54167.55,
+    "close": 54169.2,
+    "volume": 0
+  },
+  {
+    "t": "2026-05-15 13:45:00",
+    "symbol": "NSE:NIFTY50-INDEX",
+    "open": 23739.2,
+    "high": 23741.25,
+    "low": 23738.8,
+    "close": 23739.8,
+    "volume": 0
+  },
+  {
+    "t": "2026-05-15 13:45:00",
+    "symbol": "NSE:NIFTYBANK-INDEX",
+    "open": 54135.75,
+    "high": 54147.0,
+    "low": 54135.75,
+    "close": 54141.45,
+    "volume": 0
+  },
+  {
+    "t": "2026-05-15 13:44:00",
+    "symbol": "NSE:NIFTY50-INDEX",
+    "open": 23736.9,
+    "high": 23739.6,
+    "low": 23732.0,
+    "close": 23739.2,
+    "volume": 658956
+  },
+  {
+    "t": "2026-05-15 13:44:00",
+    "symbol": "NSE:NIFTYBANK-INDEX",
+    "open": 54132.15,
+    "high": 54137.65,
+    "low": 54113.85,
+    "close": 54135.75,
+    "volume": 223560
+  },
+  {
+    "t": "2026-05-15 13:43:00",
+    "symbol": "NSE:NIFTY50-INDEX",
+    "open": 23735.65,
+    "high": 23737.2,
+    "low": 23735.3,
+    "close": 23737.2,
+    "volume": 0
+  },
+  {
+    "t": "2026-05-15 13:43:00",
+    "symbol": "NSE:NIFTYBANK-INDEX",
+    "open": 54109.05,
+    "high": 54112.2,
+    "low": 54107.1,
+    "close": 54112.15,
+    "volume": 0
+  },
+  {
+    "t": "2026-05-15 13:42:00",
+    "symbol": "NSE:NIFTY50-INDEX",
+    "open": 23737.7,
+    "high": 23739.55,
+    "low": 23737.7,
+    "close": 23738.8,
+    "volume": 0
+  },
+  {
+    "t": "2026-05-15 13:42:00",
+    "symbol": "NSE:NIFTYBANK-INDEX",
+    "open": 54104.8,
+    "high": 54111.4,
+    "low": 54104.8,
+    "close": 54107.7,
+    "volume": 0
+  },
+  {
+    "t": "2026-05-15 13:41:00",
+    "symbol": "NSE:NIFTY50-INDEX",
+    "open": 23732.95,
+    "high": 23734.2,
+    "low": 23732.7,
+    "close": 23732.7,
+    "volume": 0
+  },
+  {
+    "t": "2026-05-15 13:41:00",
+    "symbol": "NSE:NIFTYBANK-INDEX",
+    "open": 54102.35,
+    "high": 54102.35,
+    "low": 54095.05,
+    "close": 54095.65,
+    "volume": 0
+  },
+  {
+    "t": "2026-05-15 13:40:00",
+    "symbol": "NSE:NIFTY50-INDEX",
+    "open": 23739.7,
+    "high": 23741.5,
+    "low": 23735.25,
+    "close": 23735.25,
+    "volume": 0
+  },
+  {
+    "t": "2026-05-15 13:40:00",
+    "symbol": "NSE:NIFTYBANK-INDEX",
+    "open": 54149.7,
+    "high": 54151.85,
+    "low": 54132.25,
+    "close": 54132.75,
+    "volume": 0
+  },
+  {
+    "t": "2026-05-15 13:39:00",
+    "symbol": "NSE:NIFTY50-INDEX",
+    "open": 23739.85,
+    "high": 23741.9,
+    "low": 23737.0,
+    "close": 23739.7,
+    "volume": 994014
+  },
+  {
+    "t": "2026-05-15 13:39:00",
+    "symbol": "NSE:NIFTYBANK-INDEX",
+    "open": 54127.45,
+    "high": 54151.65,
+    "low": 54126.85,
+    "close": 54149.7,
+    "volume": 527992
+  },
+  {
+    "t": "2026-05-15 13:38:00",
+    "symbol": "NSE:NIFTY50-INDEX",
+    "open": 23750.65,
+    "high": 23752.65,
+    "low": 23750.65,
+    "close": 23751.85,
+    "volume": 0
+  },
+  {
+    "t": "2026-05-15 13:38:00",
+    "symbol": "NSE:NIFTYBANK-INDEX",
+    "open": 54160.85,
+    "high": 54163.9,
+    "low": 54157.6,
+    "close": 54157.6,
+    "volume": 0
+  },
+  {
+    "t": "2026-05-15 13:37:00",
+    "symbol": "NSE:NIFTY50-INDEX",
+    "open": 23758.15,
+    "high": 23760.3,
+    "low": 23758.15,
+    "close": 23758.75,
+    "volume": 0
+  },
+  {
+    "t": "2026-05-15 13:37:00",
+    "symbol": "NSE:NIFTYBANK-INDEX",
+    "open": 54194.55,
+    "high": 54197.55,
+    "low": 54194.45,
+    "close": 54196.6,
+    "volume": 0
+  },
+  {
+    "t": "2026-05-15 13:36:00",
+    "symbol": "NSE:NIFTY50-INDEX",
+    "open": 23767.45,
+    "high": 23769.5,
+    "low": 23767.45,
+    "close": 23768.7,
+    "volume": 0
+  },
+  {
+    "t": "2026-05-15 13:36:00",
+    "symbol": "NSE:NIFTYBANK-INDEX",
+    "open": 54233.7,
+    "high": 54244.75,
+    "low": 54233.7,
+    "close": 54243.8,
+    "volume": 0
+  },
+  {
+    "t": "2026-05-15 13:35:00",
+    "symbol": "NSE:NIFTY50-INDEX",
+    "open": 23761.55,
+    "high": 23762.3,
+    "low": 23759.5,
+    "close": 23759.6,
+    "volume": 0
+  },
+  {
+    "t": "2026-05-15 13:35:00",
+    "symbol": "NSE:NIFTYBANK-INDEX",
+    "open": 54233.25,
+    "high": 54238.45,
+    "low": 54221.35,
+    "close": 54221.35,
+    "volume": 0
+  },
+  {
+    "t": "2026-05-15 13:34:00",
+    "symbol": "NSE:NIFTY50-INDEX",
+    "open": 23762.15,
+    "high": 23768.95,
+    "low": 23758.9,
+    "close": 23761.55,
+    "volume": 666899
+  },
+  {
+    "t": "2026-05-15 13:34:00",
+    "symbol": "NSE:NIFTYBANK-INDEX",
+    "open": 54232.95,
+    "high": 54252.9,
+    "low": 54231.7,
+    "close": 54233.25,
+    "volume": 199061
+  }
+]
