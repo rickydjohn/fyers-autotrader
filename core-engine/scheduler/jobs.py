@@ -36,6 +36,7 @@ from indicators.technicals import (
     format_candles_for_prompt,
 )
 from indicators.historical_sr import compute_sr_levels, format_sr_for_prompt
+from scheduler.candle_filter import select_candles_to_persist
 from llm.decision import make_decision
 from llm.prompts import compute_forming_bar_signal, format_sector_breadth_block
 from models.schemas import MarketSnapshot, NewsSentiment, TechnicalIndicators
@@ -298,13 +299,14 @@ async def _process_symbol(
     # ── Persist to TimescaleDB via data-service ───────────────────────────────
     # 1. Write all new 1m candles since the last persisted timestamp.
     #    Tracking via Redis prevents gaps when Ollama delays push scans past 60s.
+    #    See _select_candles_to_persist for why we use `>=` (not `>`).
     if candles_1m:
         redis_ts_key = f"last_candle_ts:{symbol}"
         last_ts_raw = await redis_client.get(redis_ts_key)
         if last_ts_raw:
             from datetime import timezone as _tz
             last_ts = datetime.fromisoformat(last_ts_raw).astimezone(_tz.utc)
-            new_candles = [c for c in candles_1m if c.timestamp.astimezone(_tz.utc) > last_ts]
+            new_candles = select_candles_to_persist(candles_1m, last_ts)
         else:
             new_candles = candles_1m[-1:]
 
