@@ -56,3 +56,34 @@ async def list_symbols(redis_client: aioredis.Redis = Depends(get_redis)):
     keys = await redis_client.keys("market:*")
     symbols = [k.replace("market:", "") for k in keys]
     return ApiResponse.ok({"symbols": symbols})
+
+
+@router.get("/forming-bar")
+async def get_forming_bar(
+    symbol: str = Query(..., example="NSE:NIFTY50-INDEX"),
+    redis_client: aioredis.Redis = Depends(get_redis),
+):
+    """The in-progress 1m bar accumulated from WS ticks.
+
+    Polled by the chart (~1Hz) to make the latest candle move tick-by-tick
+    instead of only updating once per 60s scan. Outside market hours the
+    forming-bar key has expired (90s TTL) and this returns 404.
+
+    Also returns the just-finalised previous bar in `last_bar` if available
+    (120s TTL) — gives the chart continuity across the ~60s window between
+    minute-rollover and the next REST history pull updating market_candles.
+    """
+    forming_raw = await redis_client.get(f"forming_bar:{symbol}")
+    last_raw    = await redis_client.get(f"last_bar:{symbol}")
+
+    if not forming_raw and not last_raw:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No forming bar for {symbol} (market closed or feed unavailable)",
+        )
+
+    return ApiResponse.ok({
+        "symbol":      symbol,
+        "forming_bar": json.loads(forming_raw) if forming_raw else None,
+        "last_bar":    json.loads(last_raw)    if last_raw    else None,
+    })

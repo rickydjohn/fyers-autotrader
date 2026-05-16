@@ -45,6 +45,13 @@ _LTP_REDIS_TTL_S = 30
 # cross of an EMA/CPR invalidation level. 200ms tracks ticks ~1:1 during
 # active trading at a trivial Redis cost (~5 writes/s/symbol).
 _WRITE_THROTTLE_MS = 200
+# forming_bar:{symbol} — should always be refreshed within a minute by the
+# next tick, but TTL 90s lets the chart show "stale forming bar" briefly
+# rather than going blank during a brief pause in ticks.
+_FORMING_BAR_TTL_S = 90
+# last_bar:{symbol} — held for 120s after a minute rolls over so the chart
+# has continuity in the 60s gap before the next REST history pull catches up.
+_LAST_BAR_TTL_S = 120
 _BACKOFF_INITIAL_S = 1.0
 _BACKOFF_MAX_S = 60.0
 
@@ -63,6 +70,16 @@ class FyersTickFeed:
         self._loop = loop or asyncio.get_event_loop()
         # latest tick per symbol — overwritten by each new tick from the SDK thread
         self._latest: dict[str, dict] = {}
+        # in-progress 1m bar per symbol, accumulated from ticks (open=first tick
+        # of minute, high/low=running extremes, close=latest). Mutated from the
+        # SDK thread; consumer reads + writes to Redis. dict ops are atomic in
+        # CPython so no lock is needed.
+        self._forming_bars: dict[str, dict] = {}
+        # Stash just-finalised bars when the minute rolls over so the consumer
+        # can persist them with a short TTL (last_bar:{symbol}, 120s) — gives
+        # the chart a fallback for the 60s window between minute close and
+        # the next Fyers REST history pull catching up.
+        self._finalized_bars: dict[str, dict] = {}
         self._tick_event: Optional[asyncio.Event] = None
         self._last_write_ms: dict[str, int] = {}
         self._fyers = None
@@ -170,16 +187,40 @@ class FyersTickFeed:
             if msg_type not in ("if", "sf"):
                 return
             symbol = msg.get("symbol")
-            ltp = msg.get("ltp")
-            if not symbol or ltp is None:
+            ltp_raw = msg.get("ltp")
+            if not symbol or ltp_raw is None:
                 return
+            ltp = float(ltp_raw)
+            exch_ts = msg.get("exch_feed_time")
+
             # Overwrite the latest tick for this symbol — older intermediate
             # ticks are intentionally dropped; we only care about the most
             # recent price when the consumer next wakes up.
-            self._latest[symbol] = {
-                "ltp": float(ltp),
-                "exch_ts": msg.get("exch_feed_time"),
-            }
+            self._latest[symbol] = {"ltp": ltp, "exch_ts": exch_ts}
+
+            # Maintain an in-progress 1m bar from ticks. Minute boundary is
+            # derived from exch_feed_time (epoch seconds) so the bar lines
+            # up with Fyers' authoritative bars rather than our wall clock.
+            if exch_ts:
+                bar_min = (int(exch_ts) // 60) * 60
+                fb = self._forming_bars.get(symbol)
+                if fb is None or fb["bar_min"] != bar_min:
+                    # Minute rollover (or first tick for this symbol). Hand the
+                    # previous (now-finalised) bar to the consumer for a short-
+                    # TTL stash, then start fresh on this tick.
+                    if fb is not None:
+                        self._finalized_bars[symbol] = fb
+                    self._forming_bars[symbol] = {
+                        "bar_min": bar_min,
+                        "open":  ltp, "high": ltp, "low": ltp, "close": ltp,
+                        "n":     1,
+                    }
+                else:
+                    if ltp > fb["high"]: fb["high"] = ltp
+                    if ltp < fb["low"]:  fb["low"]  = ltp
+                    fb["close"] = ltp
+                    fb["n"] += 1
+
             # Signal the consumer (thread-safe; the Event was created on the
             # event loop).
             if self._tick_event is not None:
@@ -190,12 +231,37 @@ class FyersTickFeed:
     # ── Async consumer ───────────────────────────────────────────────────────
 
     async def _consume(self) -> None:
-        """Drain the latest-per-symbol dict and write to Redis with throttling."""
+        """Drain the latest-per-symbol dict and write to Redis with throttling.
+
+        Also persists the in-progress 1m bar to forming_bar:{symbol} (subject
+        to the same throttle) so the chart can show ticks moving the current
+        candle. Any bar that just finalised (minute rollover) is written to
+        last_bar:{symbol} with a 120s TTL so the chart has continuity across
+        the 60s window between minute close and the next Fyers REST history
+        pull.
+        """
         assert self._tick_event is not None
         while not self._stopped:
             try:
                 await self._tick_event.wait()
                 self._tick_event.clear()
+
+                # ── Finalised bars (minute rollover) → last_bar:* ─────────
+                # Process these before forming bars so a brief race never
+                # ends with a stale forming bar shadowing a fresher last bar.
+                for symbol in list(self._finalized_bars.keys()):
+                    fb = self._finalized_bars.pop(symbol, None)
+                    if fb is None:
+                        continue
+                    payload = json.dumps(_bar_to_payload(fb))
+                    try:
+                        await self._redis.setex(
+                            f"last_bar:{symbol}", _LAST_BAR_TTL_S, payload
+                        )
+                    except Exception:
+                        logger.exception(f"Failed to write last_bar:{symbol}")
+
+                # ── Latest tick + in-progress bar → ltp:* and forming_bar:* ─
                 # Snapshot symbols with new data. dict.pop is atomic in CPython
                 # so we don't race against the SDK thread overwriting entries.
                 for symbol in list(self._latest.keys()):
@@ -221,9 +287,42 @@ class FyersTickFeed:
                         )
                     except Exception:
                         logger.exception(f"Failed to write ltp:{symbol} to Redis")
+
+                    # Also persist the forming bar at the same cadence. Read
+                    # the current value just-in-time (SDK may have updated it
+                    # between throttle check and now — that's desirable; we
+                    # publish the freshest available).
+                    fb = self._forming_bars.get(symbol)
+                    if fb is not None:
+                        fb_payload = json.dumps(_bar_to_payload(fb))
+                        try:
+                            await self._redis.setex(
+                                f"forming_bar:{symbol}", _FORMING_BAR_TTL_S, fb_payload
+                            )
+                        except Exception:
+                            logger.exception(
+                                f"Failed to write forming_bar:{symbol}"
+                            )
             except asyncio.CancelledError:
                 break
             except Exception:
                 logger.exception("FyersTickFeed consumer error — continuing")
                 # Avoid a tight error loop if something is fundamentally broken.
                 await asyncio.sleep(1)
+
+
+def _bar_to_payload(fb: dict) -> dict:
+    """Convert an internal forming-bar dict to the wire shape consumers expect.
+    Time is ISO8601 UTC at the minute boundary (matches /historical-data)."""
+    from datetime import datetime, timezone
+    t = datetime.fromtimestamp(fb["bar_min"], tz=timezone.utc).isoformat()
+    return {
+        "time":   t,
+        "open":   fb["open"],
+        "high":   fb["high"],
+        "low":    fb["low"],
+        "close":  fb["close"],
+        "volume": 0,            # indices: no volume in the feed
+        "n_ticks": fb.get("n", 0),
+        "ts":     int(time.time() * 1000),
+    }

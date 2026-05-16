@@ -78,6 +78,12 @@ def _msg(symbol: str, ltp: float, msg_type: str = "if", exch_ts: int = 177876770
     }
 
 
+# Same minute boundary as exch_ts=1778767700 (which is 2026-05-14 19:38:20 UTC).
+# Minute floor: 1778767680.
+_MIN_A = 1778767680     # bar at 19:38 UTC
+_MIN_B = 1778767740     # bar at 19:39 UTC
+
+
 def _setex_calls(redis_mock):
     """Return list of (key, ttl, payload_dict) tuples from setex calls."""
     out = []
@@ -285,4 +291,156 @@ class TestThrottle:
             keys = sorted(c[0] for c in _setex_calls(redis))
             assert keys == ["ltp:NSE:NIFTY50-INDEX", "ltp:NSE:NIFTYBANK-INDEX"]
 
+        asyncio.get_event_loop().run_until_complete(_run())
+
+
+# ── Forming-bar accumulation ─────────────────────────────────────────────────
+
+class TestFormingBarAccumulation:
+    """Per-minute OHLC accumulator: open=first tick, high/low=running extremes,
+    close=latest tick. Minute boundary derived from exch_feed_time (epoch s)."""
+
+    def test_first_tick_of_minute_sets_ohlc_to_ltp(self):
+        async def _run():
+            redis = _make_redis()
+            feed = FyersTickFeed(redis, ["NSE:NIFTY50-INDEX"])
+            feed._tick_event = asyncio.Event()
+            feed._on_message(_msg("NSE:NIFTY50-INDEX", 23700.5, exch_ts=_MIN_A + 10))
+            fb = feed._forming_bars["NSE:NIFTY50-INDEX"]
+            assert fb["bar_min"] == _MIN_A
+            assert fb["open"] == fb["high"] == fb["low"] == fb["close"] == 23700.5
+            assert fb["n"] == 1
+        asyncio.get_event_loop().run_until_complete(_run())
+
+    def test_subsequent_ticks_update_hlc_only(self):
+        async def _run():
+            redis = _make_redis()
+            feed = FyersTickFeed(redis, ["NSE:NIFTY50-INDEX"])
+            feed._tick_event = asyncio.Event()
+            feed._on_message(_msg("NSE:NIFTY50-INDEX", 23700.0, exch_ts=_MIN_A + 5))
+            feed._on_message(_msg("NSE:NIFTY50-INDEX", 23705.0, exch_ts=_MIN_A + 20))   # new high
+            feed._on_message(_msg("NSE:NIFTY50-INDEX", 23695.0, exch_ts=_MIN_A + 40))   # new low
+            feed._on_message(_msg("NSE:NIFTY50-INDEX", 23702.5, exch_ts=_MIN_A + 55))   # close
+            fb = feed._forming_bars["NSE:NIFTY50-INDEX"]
+            assert fb["bar_min"] == _MIN_A
+            assert fb["open"]  == 23700.0
+            assert fb["high"]  == 23705.0
+            assert fb["low"]   == 23695.0
+            assert fb["close"] == 23702.5
+            assert fb["n"]     == 4
+        asyncio.get_event_loop().run_until_complete(_run())
+
+    def test_minute_rollover_finalises_previous_starts_new(self):
+        async def _run():
+            redis = _make_redis()
+            feed = FyersTickFeed(redis, ["NSE:NIFTY50-INDEX"])
+            feed._tick_event = asyncio.Event()
+            feed._on_message(_msg("NSE:NIFTY50-INDEX", 23700.0, exch_ts=_MIN_A + 30))
+            feed._on_message(_msg("NSE:NIFTY50-INDEX", 23705.0, exch_ts=_MIN_A + 50))
+            feed._on_message(_msg("NSE:NIFTY50-INDEX", 23708.0, exch_ts=_MIN_B + 1))    # rollover
+            # Previous bar should be in _finalized_bars and removed-but-replaced in _forming_bars
+            assert "NSE:NIFTY50-INDEX" in feed._finalized_bars
+            done = feed._finalized_bars["NSE:NIFTY50-INDEX"]
+            assert done["bar_min"] == _MIN_A
+            assert done["open"]  == 23700.0
+            assert done["high"]  == 23705.0
+            assert done["low"]   == 23700.0
+            assert done["close"] == 23705.0
+            assert done["n"]     == 2
+            new_fb = feed._forming_bars["NSE:NIFTY50-INDEX"]
+            assert new_fb["bar_min"] == _MIN_B
+            assert new_fb["open"] == 23708.0
+            assert new_fb["n"] == 1
+        asyncio.get_event_loop().run_until_complete(_run())
+
+    def test_independent_symbols_each_track_their_own_bar(self):
+        async def _run():
+            redis = _make_redis()
+            feed = FyersTickFeed(redis, ["NSE:NIFTY50-INDEX", "NSE:NIFTYBANK-INDEX"])
+            feed._tick_event = asyncio.Event()
+            feed._on_message(_msg("NSE:NIFTY50-INDEX",    23700.0, exch_ts=_MIN_A + 10))
+            feed._on_message(_msg("NSE:NIFTYBANK-INDEX",  54100.0, exch_ts=_MIN_A + 10))
+            feed._on_message(_msg("NSE:NIFTY50-INDEX",    23710.0, exch_ts=_MIN_A + 30))
+            assert feed._forming_bars["NSE:NIFTY50-INDEX"]["high"] == 23710.0
+            assert feed._forming_bars["NSE:NIFTYBANK-INDEX"]["high"] == 54100.0
+        asyncio.get_event_loop().run_until_complete(_run())
+
+    def test_missing_exch_ts_skips_forming_bar(self):
+        """Without exch_feed_time we have no reliable minute boundary, so the
+        bar logic skips that tick (ltp:* is still updated)."""
+        async def _run():
+            redis = _make_redis()
+            feed = FyersTickFeed(redis, ["NSE:NIFTY50-INDEX"])
+            feed._tick_event = asyncio.Event()
+            msg = _msg("NSE:NIFTY50-INDEX", 23700.0)
+            msg.pop("exch_feed_time")
+            feed._on_message(msg)
+            assert feed._forming_bars == {}
+            assert feed._latest["NSE:NIFTY50-INDEX"]["ltp"] == 23700.0
+        asyncio.get_event_loop().run_until_complete(_run())
+
+
+# ── Consumer persists forming-bar + last-bar to Redis ────────────────────────
+
+class TestFormingBarPersistence:
+
+    def test_consumer_writes_forming_bar_key(self):
+        async def _run():
+            redis = _make_redis()
+            feed = FyersTickFeed(redis, ["NSE:NIFTY50-INDEX"])
+            feed._tick_event = asyncio.Event()
+            feed._latest["NSE:NIFTY50-INDEX"] = {"ltp": 23700.0, "exch_ts": _MIN_A + 10}
+            feed._forming_bars["NSE:NIFTY50-INDEX"] = {
+                "bar_min": _MIN_A, "open": 23700, "high": 23705,
+                "low": 23700, "close": 23703, "n": 5,
+            }
+            feed._tick_event.set()
+            task = asyncio.create_task(feed._consume())
+            await asyncio.sleep(0.05)
+            feed._stopped = True
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            keys = {c[0] for c in _setex_calls(redis)}
+            assert "forming_bar:NSE:NIFTY50-INDEX" in keys
+            # Find the forming-bar payload and verify shape
+            for key, ttl, payload in _setex_calls(redis):
+                if key == "forming_bar:NSE:NIFTY50-INDEX":
+                    assert payload["open"]  == 23700
+                    assert payload["high"]  == 23705
+                    assert payload["close"] == 23703
+                    assert payload["n_ticks"] == 5
+                    assert payload["time"].endswith("+00:00")  # UTC ISO
+                    assert ttl == 90
+                    break
+        asyncio.get_event_loop().run_until_complete(_run())
+
+    def test_consumer_writes_last_bar_on_rollover(self):
+        async def _run():
+            redis = _make_redis()
+            feed = FyersTickFeed(redis, ["NSE:NIFTY50-INDEX"])
+            feed._tick_event = asyncio.Event()
+            # Simulate a just-finalised previous bar
+            feed._finalized_bars["NSE:NIFTY50-INDEX"] = {
+                "bar_min": _MIN_A, "open": 23690, "high": 23700,
+                "low": 23685, "close": 23698, "n": 12,
+            }
+            feed._tick_event.set()
+            task = asyncio.create_task(feed._consume())
+            await asyncio.sleep(0.05)
+            feed._stopped = True
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            keys = {c[0] for c in _setex_calls(redis)}
+            assert "last_bar:NSE:NIFTY50-INDEX" in keys
+            for key, ttl, payload in _setex_calls(redis):
+                if key == "last_bar:NSE:NIFTY50-INDEX":
+                    assert payload["close"] == 23698
+                    assert ttl == 120
+                    break
         asyncio.get_event_loop().run_until_complete(_run())

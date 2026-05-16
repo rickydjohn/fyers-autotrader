@@ -17,7 +17,7 @@ import { fetchDecisions } from './api/decisionLog'
 import { fetchTrades } from './api/trades'
 import { fetchPositions } from './api/positions'
 import { fetchSymbols } from './api/marketData'
-import { fetchHistoricalData, fetchAggregatedView, fetchContextSnapshot, fetchDecisionHistory, fetchOptionsChain } from './api/historical'
+import { fetchHistoricalData, fetchAggregatedView, fetchContextSnapshot, fetchDecisionHistory, fetchOptionsChain, fetchFormingBar } from './api/historical'
 import type { Timeframe, HistoricalCandle, ContextSnapshot, OptionsChain, Decision } from './types'
 import { parseDate } from './utils/date'
 
@@ -108,6 +108,45 @@ export default function App() {
     }
     load()
     return () => { cancelled = true }
+  }, [selectedSymbol, timeframe])
+
+  // Tick-driven forming-bar overlay: poll /market-data/forming-bar every 1s
+  // and splice the current in-progress 1m candle onto the chart's tail. Only
+  // active for 1m timeframe (higher timeframes show aggregated candles where
+  // a sub-minute update would not visibly change the bar).
+  useEffect(() => {
+    if (timeframe !== '1m') return
+    let cancelled = false
+    const tick = async () => {
+      const { forming_bar, last_bar } = await fetchFormingBar(selectedSymbol)
+      if (cancelled) return
+      if (!forming_bar && !last_bar) return
+      setHistoricalCandles((prev) => {
+        let next = prev
+        // Patch the just-finalised minute first (if the chart hasn't already
+        // received it from a historical refresh) — keeps the chart contiguous
+        // across the brief window between minute-rollover and the next REST
+        // history pull catching up.
+        if (last_bar) {
+          const idx = next.findIndex((c) => c.time === last_bar.time)
+          if (idx === -1) next = [...next, last_bar]
+          else if (next[idx].close !== last_bar.close) {
+            next = [...next.slice(0, idx), last_bar, ...next.slice(idx + 1)]
+          }
+        }
+        // Then the current forming bar — replace the matching last candle or
+        // append a fresh entry for the new minute.
+        if (forming_bar) {
+          const idx = next.findIndex((c) => c.time === forming_bar.time)
+          if (idx === -1) next = [...next, forming_bar]
+          else next = [...next.slice(0, idx), forming_bar, ...next.slice(idx + 1)]
+        }
+        return next
+      })
+    }
+    tick()
+    const id = setInterval(tick, 1000)
+    return () => { cancelled = true; clearInterval(id) }
   }, [selectedSymbol, timeframe])
 
   // Load context snapshot when symbol changes

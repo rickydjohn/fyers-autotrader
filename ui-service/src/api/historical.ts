@@ -12,6 +12,31 @@ export async function fetchHistoricalData(
   return res.data.candles
 }
 
+/**
+ * Fetches the in-progress 1m bar accumulated from WS ticks, plus the just-
+ * finalised previous bar (if any). Returns nulls when the market is closed
+ * or the feed is unavailable — the chart should treat those as "no update"
+ * rather than clearing existing data.
+ */
+export interface FormingBarResponse {
+  forming_bar: HistoricalCandle | null
+  last_bar: HistoricalCandle | null
+}
+
+export async function fetchFormingBar(symbol: string): Promise<FormingBarResponse> {
+  try {
+    const res = await apiClient.get('/market-data/forming-bar', { params: { symbol } })
+    const data = res.data?.data ?? res.data
+    return {
+      forming_bar: data?.forming_bar ?? null,
+      last_bar:    data?.last_bar    ?? null,
+    }
+  } catch {
+    // 404 (market closed) or any transport error — silently report "no data".
+    return { forming_bar: null, last_bar: null }
+  }
+}
+
 export async function fetchAggregatedView(
   symbol: string,
   interval: Timeframe,
