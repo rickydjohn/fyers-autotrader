@@ -110,38 +110,70 @@ export default function App() {
     return () => { cancelled = true }
   }, [selectedSymbol, timeframe])
 
-  // Tick-driven forming-bar overlay: poll /market-data/forming-bar every 1s
-  // and splice the current in-progress 1m candle onto the chart's tail. Only
-  // active for 1m timeframe (higher timeframes show aggregated candles where
-  // a sub-minute update would not visibly change the bar).
+  // Forming-bar overlay — 1Hz, applies to every timeframe.
+  //
+  // The poll itself is the consolidation: WS ticks arrive ~5/s, the backend
+  // throttles forming_bar:* writes to ~5/s, and we sample once per second.
+  // The chart never receives more than one OHLC update per second per symbol.
+  //
+  // 1m timeframe   — splice the forming bar as its own candle (replace or append).
+  // 5m+ timeframes — the last candle in the chart is the in-progress aggregated
+  //                  bar. Patch its close from the forming 1m bar and extend its
+  //                  high/low if the latest 1m tick has pushed them. Also widen
+  //                  with last_bar so the just-finalised 1m's range lands in the
+  //                  aggregated bar before the next /aggregated-view refresh
+  //                  picks it up.
   useEffect(() => {
-    if (timeframe !== '1m') return
     let cancelled = false
     const tick = async () => {
       const { forming_bar, last_bar } = await fetchFormingBar(selectedSymbol)
       if (cancelled) return
       if (!forming_bar && !last_bar) return
       setHistoricalCandles((prev) => {
+        if (prev.length === 0) return prev
         let next = prev
-        // Patch the just-finalised minute first (if the chart hasn't already
-        // received it from a historical refresh) — keeps the chart contiguous
-        // across the brief window between minute-rollover and the next REST
-        // history pull catching up.
-        if (last_bar) {
-          const idx = next.findIndex((c) => c.time === last_bar.time)
-          if (idx === -1) next = [...next, last_bar]
-          else if (next[idx].close !== last_bar.close) {
-            next = [...next.slice(0, idx), last_bar, ...next.slice(idx + 1)]
+
+        if (timeframe === '1m') {
+          // 1m: splice the just-finalised previous minute (if any) so the
+          // chart is contiguous across the 60s gap between minute close and
+          // the next REST history refresh.
+          if (last_bar) {
+            const idx = next.findIndex((c) => c.time === last_bar.time)
+            if (idx === -1) next = [...next, last_bar]
+            else if (next[idx].close !== last_bar.close) {
+              next = [...next.slice(0, idx), last_bar, ...next.slice(idx + 1)]
+            }
           }
+          // 1m: splice the current forming bar.
+          if (forming_bar) {
+            const idx = next.findIndex((c) => c.time === forming_bar.time)
+            if (idx === -1) next = [...next, forming_bar]
+            else next = [...next.slice(0, idx), forming_bar, ...next.slice(idx + 1)]
+          }
+          return next
         }
-        // Then the current forming bar — replace the matching last candle or
-        // append a fresh entry for the new minute.
+
+        // Higher timeframes (5m / 15m / 1h / etc): update the LAST aggregated
+        // candle. We never add a new candle here — the aggregated-view fetch
+        // owns the bar-boundary lifecycle for these timeframes.
+        const lastIdx = next.length - 1
+        const last    = next[lastIdx]
+        let high  = last.high
+        let low   = last.low
+        let close = last.close
+        if (last_bar) {
+          if (last_bar.high > high) high = last_bar.high
+          if (last_bar.low  < low ) low  = last_bar.low
+        }
         if (forming_bar) {
-          const idx = next.findIndex((c) => c.time === forming_bar.time)
-          if (idx === -1) next = [...next, forming_bar]
-          else next = [...next.slice(0, idx), forming_bar, ...next.slice(idx + 1)]
+          if (forming_bar.high > high) high = forming_bar.high
+          if (forming_bar.low  < low ) low  = forming_bar.low
+          close = forming_bar.close
         }
-        return next
+        if (close === last.close && high === last.high && low === last.low) {
+          return next  // nothing changed — skip the re-render
+        }
+        return [...next.slice(0, lastIdx), { ...last, high, low, close }]
       })
     }
     tick()
