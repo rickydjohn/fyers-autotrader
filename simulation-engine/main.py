@@ -21,6 +21,7 @@ from analytics.pnl import compute_pnl_summary, get_all_trades, get_open_position
 from config import settings
 from execution import mock_broker, live_broker
 from execution.exit_rules import check_exit, PREMIUM_SL_PCT, FIRST_MILESTONE_PCT
+from execution.invalidation_exit import check_invalidation_exit
 from models.schemas import Position
 from portfolio.budget import initialize_budget, load_budget, reconcile_invested
 import data_client
@@ -527,6 +528,26 @@ async def _handle_decision(data: dict) -> None:
             )
             return
 
+    # Snapshot the index levels the LLM's thesis was built on. These get
+    # frozen onto the position so the tick-driven invalidation-exit watcher
+    # can detect when price has crossed back through them and the thesis is
+    # broken. Coerced to float / None to keep the Pydantic dict[str,float]
+    # contract clean.
+    def _f(key: str) -> float | None:
+        v = ind_dict.get(key)
+        try:
+            return float(v) if v is not None else None
+        except (TypeError, ValueError):
+            return None
+    invalidation_levels = {
+        k: v for k, v in {
+            "vwap":   _f("vwap"),
+            "ema_21": _f("ema_21"),
+            "cpr_tc": _f("cpr_tc"),
+            "cpr_bc": _f("cpr_bc"),
+        }.items() if v is not None
+    } or None
+
     if decision == "BUY":
         existing = await redis_client.hget("positions:open", symbol)
         if existing:
@@ -547,6 +568,7 @@ async def _handle_decision(data: dict) -> None:
             option_type=option_type, option_expiry=option_expiry,
             option_price=option_price, option_lot_size=option_lot_size,
             day_type=day_type, dte=dte,
+            invalidation_levels=invalidation_levels,
         )
 
     elif decision == "SELL":
@@ -569,6 +591,7 @@ async def _handle_decision(data: dict) -> None:
             option_type=option_type, option_expiry=option_expiry,
             option_price=option_price, option_lot_size=option_lot_size,
             day_type=day_type, dte=dte,
+            invalidation_levels=invalidation_levels,
         )
 
     elif decision == "HOLD":
@@ -696,6 +719,28 @@ async def _check_stop_targets() -> None:
             if option_ltp and option_ltp > pos.peak_option_price:
                 pos.peak_option_price = option_ltp
                 peak_updated = True
+
+            # ── Tick-driven invalidation exit ────────────────────────────────
+            # Check this BEFORE the cost-based stops in check_exit. The trade's
+            # thesis was built on price being on one side of VWAP/EMA21/CPR;
+            # once price crosses back through, the thesis is broken and the
+            # right action is to flatten regardless of where the option
+            # premium is. Catches the 2026-05-14 BANKNIFTY53300PE pattern
+            # where EMA21 was crossed 4 minutes before the option-SL hit.
+            inv_reason = check_invalidation_exit(pos, underlying_ltp)
+            if inv_reason:
+                # Use option_ltp as exit price when holding an option, else
+                # the underlying. Matches check_exit's exit_price logic.
+                exit_px = option_ltp if (pos.option_symbol and option_ltp) else underlying_ltp
+                logger.info(
+                    f"[EXIT] {inv_reason} — {pos.symbol}: underlying ₹{underlying_ltp:.2f} "
+                    f"crossed back through {inv_reason.split('_', 1)[1].lower()}"
+                )
+                await broker.close_position(
+                    redis_client, symbol, exit_px,
+                    status="STOPPED", exit_reason=inv_reason,
+                )
+                continue
 
             should_exit, reason, exit_price, new_milestone = check_exit(
                 pos, underlying_ltp, option_ltp, greeks, indicators, now, market_context

@@ -28,7 +28,8 @@ from datetime import date as _date
 IST        = pytz.timezone("Asia/Kolkata")
 DB_DSN     = "postgresql://trading:trading@timescaledb:5432/trading"
 REDIS_URL  = "redis://trading-redis:6379"
-ORB_BUFFER = 0.002   # 0.20% — data-derived buffer from 141 days of history
+import os
+ORB_BUFFER = float(os.environ.get("ORB_BUFFER", "0.002"))   # default 0.20% — tunable via env for sweeps
 
 
 # ── Symbol helpers ────────────────────────────────────────────────────────────

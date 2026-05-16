@@ -103,6 +103,7 @@ async def open_position(
     option_lot_size: Optional[int] = None,
     day_type: Optional[str] = None,
     dte: int = 99,
+    invalidation_levels: Optional[dict] = None,
 ) -> Optional[Trade]:
     """Place a live Fyers order and record the position in Redis + data-service."""
     # ── Gate 1: No new positions at or after session close ────────────────────
@@ -218,6 +219,7 @@ async def open_position(
         entry_option_price=actual_entry_price,
         day_type=day_type,
         num_lots=1,
+        invalidation_levels=invalidation_levels,
     )
     # Capture entry IV from Redis if already populated by fast position watcher
     if option_symbol:

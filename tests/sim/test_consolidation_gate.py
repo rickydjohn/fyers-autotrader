@@ -91,6 +91,8 @@ _stub("execution.mock_broker",
 _stub("execution.live_broker",
       open_position=AsyncMock(return_value=None),
       close_position=AsyncMock(return_value=None))
+_stub("execution.invalidation_exit",
+      check_invalidation_exit=MagicMock(return_value=None))
 _stub("execution.exit_rules",
       check_exit=MagicMock(return_value=(False, "", 0.0, 0)),
       PREMIUM_SL_PCT=0.10,

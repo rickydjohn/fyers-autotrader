@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field, computed_field
-from typing import Optional, Literal
+from typing import Optional, Literal, Dict
 from datetime import datetime
 
 
@@ -23,6 +23,11 @@ class Position(BaseModel):
     milestone_count: int = 0               # trail milestone counter (0 = pre-trail; increments at each +10%)
     day_type: Optional[str] = None         # "RANGING" or "TRENDING" — set at entry from CPR width
     num_lots: int = 1                      # number of lots traded (used for per-lot PA exit threshold)
+    # Tick-driven invalidation exits — snapshot of the decision-time index levels
+    # that the thesis was built on. Keys: vwap, ema_21, cpr_tc, cpr_bc.
+    # When the underlying crosses BACK through any of these in the direction
+    # opposite the trade, the thesis is invalidated and we exit immediately.
+    invalidation_levels: Optional[Dict[str, float]] = None
 
 
 class Trade(BaseModel):

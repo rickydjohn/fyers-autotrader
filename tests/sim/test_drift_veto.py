@@ -80,6 +80,8 @@ _stub("execution.exit_rules",
       PREMIUM_SL_PCT=0.10,
       FIRST_MILESTONE_PCT=0.20,
       RANGING_MILESTONE_PCT=0.10)
+_stub("execution.invalidation_exit",
+      check_invalidation_exit=MagicMock(return_value=None))
 _stub("execution")
 _stub("fyers.auth", get_fyers_client=MagicMock())
 _stub("fyers.market_data", get_quote=MagicMock(return_value=None))
