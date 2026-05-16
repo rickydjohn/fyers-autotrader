@@ -1,46 +1,55 @@
 # Trading Intelligence System
 
-NSE intraday autotrader using Fyers API, TimescaleDB, and a pluggable LLM backend (Ollama or Claude).
+NSE intraday autotrader using Fyers (REST + WebSocket), TimescaleDB, and a pluggable LLM backend (Ollama gpt-oss:120b-cloud or Claude Haiku 4.5).
 
 ## Architecture
 
 ```
 ┌────────────────────────────────────────────────────────────┐
 │                        HOST MACHINE                         │
-│  Ollama :11434 (optional)     Browser → localhost:3000      │
+│  Ollama proxy :11434 (local)     Browser → :3000            │
 └─────────────────────┬──────────────────────────────────────┘
-                      │ host.docker.internal
-    ┌─────────────────┴──────────────────────────────────┐
-    │               trading-net (Docker bridge)           │
-    │                                                     │
-    │  core-engine:8001 ──XADD──► Redis:6379             │
-    │  (Fyers + indicators + LLM)        │                │
-    │                           ◄─XREAD─┘                │
-    │  simulation-engine:8002                             │
-    │  (trade execution, exits, P&L)                      │
-    │                                                     │
-    │  data-service:8003                                  │
-    │  (TimescaleDB ORM, S/R levels, context builder)     │
-    │                                                     │
-    │  api-service:8000                                   │
-    │  (REST + SSE gateway)                               │
-    │       ▲                                             │
-    │  ui-service:3000                                    │
-    │  (React dashboard)                                  │
-    │                                                     │
-    │  TimescaleDB:5432                                   │
-    └─────────────────────────────────────────────────────┘
+                      │
+   ┌─────────────────┴──────────────────────────────────────┐
+   │               trading-net (Docker bridge)              │
+   │                                                        │
+   │  core-engine:8001                                      │
+   │  ├─ Fyers REST (quotes/history)   via Squid proxy      │
+   │  ├─ Fyers WebSocket (ticks)       direct (Cloudflare)  │
+   │  ├─ FyersTickFeed → Redis ltp:* / forming_bar:*        │
+   │  ├─ Scheduler (60s scan, 5s position watcher)          │
+   │  └─ LLM call (Ollama 120b cloud or Claude Haiku)       │
+   │                                                        │
+   │  simulation-engine:8002                                │
+   │  ├─ Decision consumer (XREAD)                          │
+   │  ├─ Drift veto + ORB/CPR/consolidation/proximity gates │
+   │  ├─ Tick-driven invalidation exits                     │
+   │  └─ Premium SL / milestone trail (exit_rules)          │
+   │                                                        │
+   │  api-service:8000  REST + SSE; /market-data overlays   │
+   │                    WS-fresh ltp; /forming-bar @ 1Hz    │
+   │                                                        │
+   │  data-service:8003  SQLAlchemy → TimescaleDB           │
+   │                                                        │
+   │  ui-service:3000   React chart, polls /forming-bar 1Hz │
+   │                                                        │
+   │  TimescaleDB:5432    Redis:6379                        │
+   └────────────────────────────────────────────────────────┘
 ```
+
+A **single Fyers WebSocket** subscribes to all configured symbols at once (`FyersDataSocket.subscribe(symbols=[…])`); the SDK multiplexes them over one TLS connection. There is no per-symbol WS.
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for sequence diagrams, the entry/exit pipelines, and the full Redis keyspace.
 
 ## Services
 
 | Service | Port | Role |
 |---|---|---|
-| [core-engine](core-engine/README.md) | 8001 | Market data, indicators, LLM decisions, Fyers OAuth |
-| [simulation-engine](simulation-engine/README.md) | 8002 | Trade execution (sim or live), exits, P&L, reconciliation |
-| [data-service](data-service/README.md) | 8003 | TimescaleDB ORM, historical context, S/R levels, volume profile |
-| [api-service](api-service/README.md) | 8000 | REST + SSE gateway |
-| [ui-service](ui-service/README.md) | 3000 | React dashboard |
+| [core-engine](core-engine/README.md) | 8001 | Fyers REST + WebSocket, indicators, LLM decisions |
+| [simulation-engine](simulation-engine/README.md) | 8002 | Decision consumer, entry gates, drift veto, invalidation + premium exits |
+| [data-service](data-service/README.md) | 8003 | TimescaleDB ORM, historical context, S/R levels |
+| [api-service](api-service/README.md) | 8000 | REST + SSE gateway, live-LTP overlay, forming-bar endpoint |
+| [ui-service](ui-service/README.md) | 3000 | React dashboard, tick-consolidated chart |
 
 ## Setup
 
@@ -48,35 +57,32 @@ NSE intraday autotrader using Fyers API, TimescaleDB, and a pluggable LLM backen
 
 - Docker + Docker Compose
 - Fyers account with API credentials
-- Anthropic API key **or** Ollama running locally
+- Ollama (local with cloud-hosted model) **or** Anthropic API key
 
-### 2. LLM Provider
+### 2. LLM provider
 
-**Option A — Claude (recommended, no local GPU needed)**
+**Option A — Ollama gpt-oss:120b-cloud (current production default)**
 
-Set in `.env`:
+```bash
+ollama pull gpt-oss:120b-cloud
+ollama serve   # port 11434
+```
+```
+LLM_PROVIDER=ollama
+OLLAMA_MODEL=gpt-oss:120b-cloud
+OLLAMA_ENDPOINT=http://host.docker.internal:11434
+OLLAMA_TIMEOUT=120
+```
+
+**Option B — Claude Haiku 4.5 (faster, costs ≈ $0.33 per backtest run)**
 ```
 LLM_PROVIDER=claude
 CLAUDE_API_KEY=sk-ant-...
 CLAUDE_MODEL=claude-haiku-4-5-20251001
 ```
 
-**Option B — Ollama (local, no API cost)**
-
-```bash
-ollama pull gemma4:latest
-ollama serve   # port 11434
-```
-
-Set in `.env`:
-```
-LLM_PROVIDER=ollama
-OLLAMA_MODEL=gemma4:latest
-```
-
 ### 3. Configure credentials
 
-Edit `.env`:
 ```
 FYERS_CLIENT_ID=xxxxxxxxxxx100
 FYERS_SECRET_KEY=xxxxxxxxxx
@@ -86,6 +92,7 @@ INITIAL_BUDGET=100000
 SCAN_INTERVAL_SECONDS=60
 CANDLE_INTERVAL=1m
 MIN_BAR_POSITION=2
+DRIFT_VETO_PCT=0.0010
 ```
 
 ### 4. Start all services
@@ -96,11 +103,10 @@ docker compose up --build
 
 ### 5. Authenticate with Fyers (daily)
 
-Open your browser and complete the OAuth flow:
 ```
 http://localhost:8001/fyers/auth
 ```
-The token is saved to a Docker volume and reused across restarts. It expires at 6 AM IST the next day.
+Token persists in a Docker volume and is reused; it expires at 6 AM IST the next day.
 
 ### 6. Open the dashboard
 
@@ -110,75 +116,81 @@ http://localhost:3000
 
 ## Trading Logic
 
-Decisions go through three layers before a trade executes.
-
-### Gate 1 — ORB (Opening Range Breakout)
-No trades before **09:30 IST**. The first 15 minutes form the opening range; trading is blocked until the range is established.
-
-### Gate 2 — Cross-Symbol Gate (NIFTY → BANK NIFTY)
-NIFTY is the lead symbol. Within a 15-minute window:
-- Conflicting NIFTY decision **blocks** the dependent symbol's trade.
-- Aligned direction **boosts** confidence by +0.08.
-
-### Gate 3 — Entry Proximity Gate
-- Block BUY if price is within **0.25%** of day high, prev-day high, or nearest resistance.
-- Block SELL if price is within **0.25%** of day low, prev-day low, or nearest support.
-
-### Confidence Floor
-A signal must reach **≥ 0.70 confidence** to execute. Anything below is treated as HOLD.
-
-### Three-Layer LLM Decision Framework
+A decision goes through these layers in order before a trade executes:
 
 ```
-Layer 1 — Daily Context:
-  12-session candle block → macro trend, key daily S/R, CPR position
-
-Layer 2 — Intraday Technicals:
-  RSI gates (BUY: 45–70, SELL: 30–55), MACD, VWAP, CPR bands,
-  candle patterns (rejection wicks, engulfing, exhaustion),
-  volume reversal triggers
-
-Layer 3 — Forming Bar:
-  Current incomplete 5m bar read → confidence delta applied (−0.22 to +0.22)
-
-LLM outputs:
-  { decision, confidence, reasoning, stop_loss, target, risk_reward,
-    candle_summary, session_bias }
-
-Confidence floor applied → trade executes or HOLD
+LLM → confidence ≥ 0.70 → drift veto → ORB → CPR → consolidation → proximity → broker
 ```
+
+### Confidence floor
+`confidence < 0.70` becomes HOLD.
+
+### Drift veto (entry-side staleness check, runs BEFORE the gates)
+Right after the confidence floor, fetch a live LTP. If it has moved more than `DRIFT_VETO_PCT` (default 0.10%) against the signal direction since the LLM snapshot, abort. When the drift is acceptable, the gates below also see the fresh price — they used to evaluate against the scan-time snapshot, which was minutes stale on Ollama 120b runs.
+
+### ORB gate
+No trades before 09:30 IST. After that, BUY requires price > `orb_high × (1 + ORB_BUFFER)`, SELL requires the symmetric break below `orb_low`. Default buffer 0.20%.
+
+### CPR gate
+BUY requires price > max(TC, BC) × 1.002. SELL requires price < min(TC, BC) × 0.998. Handles inverted CPR (BC > TC) symmetrically.
+
+### Consolidation gate
+Block all entries when the symbol is inside a tight consolidation range and the LLM hasn't claimed a breakout.
+
+### Entry-proximity gate
+Block BUY if the nearest static resistance (PDH / CPR / pivots; **not** running day extremes) is within 0.25%. Symmetric for SELL.
+
+### Tick-driven invalidation exits (exit-side)
+At position open, the indicator levels the LLM's thesis was built on (`vwap`, `ema_21`, `cpr_tc`, `cpr_bc`) are frozen onto the Position. On every consumer tick (~5s, the underlying read from the WS-fed `ltp:` cache), the helper checks whether the underlying has crossed back through any of those levels in the direction opposite the trade. If yes, exit immediately with `INVALIDATION_<LEVEL>`. Catches "thesis broken" cases minutes before the option's −10% premium SL fires.
+
+## Chart updates
+
+The forming-bar pipeline (added 2026-05-16) consolidates WS ticks into a 1Hz chart update for every timeframe:
+
+- **Backend** (core-engine): the tick feed accumulates per-minute OHLC and writes `forming_bar:{symbol}` to Redis (~200ms throttle); a just-finalised bar is written to `last_bar:{symbol}` (120s TTL).
+- **API**: `GET /api/v1/market-data/forming-bar?symbol=…` returns both.
+- **UI**: polls every 1s for every timeframe. On 1m it splices the forming bar as its own candle; on 5m / 15m / 1h it patches the LAST aggregated candle's close and extends its high/low. React skips the re-render when nothing changed.
+
+The 200ms backend cadence is decoupled from the 1s UI cadence on purpose — drift veto and invalidation exits benefit from sub-second freshness, while the chart never flickers tick-by-tick.
 
 ## Backtesting
 
+All backtests run inside the trading-data container (they use asyncpg against the live TimescaleDB):
+
 ```bash
-# LLM decision backtest on historical candles
-python tests/backtests/backtest_candles.py
-
-# Measure cross-symbol gate impact on trade history
-python tests/backtests/backtest_cross_symbol_gate.py
-
-# Test rule changes against candle data
-python tests/backtests/backtest_new_rules.py
-
-# Range breakout logic validation
-python tests/backtests/backtest_range_breakout.py
+docker cp tests/backtests/backtest_cpr_gate.py trading-data:/tmp/ && \
+docker exec trading-data python /tmp/backtest_cpr_gate.py
 ```
 
-Historical data is fetched via:
+Available:
+
+| Script | What it answers |
+|---|---|
+| `backtest_cpr_gate.py` | How many historical trades would the CPR gate have blocked, and what was their P&L? |
+| `backtest_orb_gate.py` | Same for the ORB gate (supports `ORB_BUFFER` env override for buffer sweeps) |
+| `backtest_cross_symbol_gate.py` | Win-rate delta from the NIFTY → BANKNIFTY confidence gate |
+| `backtest_new_rules.py` | Apply an alternate rule set to historical `ai_decisions` |
+| `backtest_range_breakout.py` | Validate the intraday consolidation-breakout rule |
+| `backtest_candles.py` | LLM decision replay on historical candles (runs inside trading-core) |
+
+Refresh today's bars from Fyers history:
 ```bash
 curl -X POST http://localhost:8001/historical/backfill
 ```
 
-## API Endpoints
+## API endpoints
 
 Base URL: `http://localhost:8000/api/v1`
 
-| Endpoint | Method | Description |
+| Endpoint | Method | Notes |
 |---|---|---|
-| `/market-data?symbol=NSE:NIFTY50-INDEX` | GET | Live market data + indicators |
+| `/market-data?symbol=…` | GET | Snapshot + WS-fresh `ltp` overlay when available |
+| `/market-data/forming-bar?symbol=…` | GET | In-progress 1m bar from ticks (1Hz UI poll) |
+| `/historical-data?symbol=…&interval=…&limit=…` | GET | Historical OHLC from `market_candles` |
+| `/aggregated-view?symbol=…&interval=…` | GET | 5m / 15m / 1h aggregations from 1m |
 | `/trades` | GET | Trade history |
-| `/positions` | GET | Open positions |
-| `/pnl` | GET | P&L summary |
+| `/positions` | GET | Open positions (with `invalidation_levels` on each) |
+| `/pnl?period=today\|week\|month` | GET | P&L summary |
 | `/decision-log` | GET | LLM decision history |
 | `/decision-log/stream` | GET (SSE) | Live decision stream |
 
@@ -187,53 +199,57 @@ Manual scan trigger:
 curl -X POST http://localhost:8001/scan/trigger
 ```
 
-## Environment Variables
+## Environment variables
 
 ### Required
 
 | Variable | Description |
 |---|---|
-| `FYERS_CLIENT_ID` | Fyers API client ID |
-| `FYERS_SECRET_KEY` | Fyers API secret |
-| `FYERS_REDIRECT_URI` | OAuth callback URL |
-| `LLM_PROVIDER` | `claude` or `ollama` |
-| `CLAUDE_API_KEY` | Required when `LLM_PROVIDER=claude` |
+| `FYERS_CLIENT_ID`, `FYERS_SECRET_KEY`, `FYERS_REDIRECT_URI` | Fyers OAuth |
+| `LLM_PROVIDER` | `ollama` or `claude` |
+| `OLLAMA_MODEL` or `CLAUDE_API_KEY` | Per provider |
+| `PROXY_IP`, `PROXY_PORT`, `PROXY_USER`, `PROXY_PASSWORD` | Squid proxy for Fyers REST (WS bypasses) |
 
-### LLM
-
-| Variable | Default | Description |
-|---|---|---|
-| `CLAUDE_MODEL` | `claude-haiku-4-5-20251001` | Claude model ID |
-| `CLAUDE_TIMEOUT` | `30` | Request timeout (s) |
-| `OLLAMA_ENDPOINT` | `http://host.docker.internal:11434` | Ollama base URL |
-| `OLLAMA_MODEL` | `gemma4:latest` | Ollama model tag |
-| `OLLAMA_TIMEOUT` | `45` | Request timeout (s) |
-
-### Trading
+### Common tuning
 
 | Variable | Default | Description |
 |---|---|---|
-| `CANDLE_INTERVAL` | `1m` | `1m` (fetch 1m, aggregate to 5m) or `5m` (fetch 5m directly) |
-| `MIN_BAR_POSITION` | `2` | Minutes into current 5m bar before LLM runs (0–4). Combine with `CANDLE_INTERVAL=5m` and set to `4` to replicate pre-1m behaviour. |
-| `SCAN_INTERVAL_SECONDS` | `60` | How often to scan |
-| `INITIAL_BUDGET` | `100000` | Virtual capital (INR) |
+| `CANDLE_INTERVAL` | `1m` | `1m` (fetch 1m, aggregate to 5m) or `5m` |
+| `MIN_BAR_POSITION` | `2` | Minute into 5m bar before LLM runs |
+| `SCAN_INTERVAL_SECONDS` | `60` | Periodic scan cadence |
+| `DRIFT_VETO_PCT` | `0.0010` | Adverse drift threshold (snapshot → live LTP) before entry is skipped |
+| `OLLAMA_TIMEOUT` | `120` | LLM hard timeout (120s for gpt-oss:120b) |
+| `INITIAL_BUDGET` | `100000` | Virtual capital (INR, sim mode) |
 | `MAX_POSITION_SIZE_PCT` | `10` | Max % of budget per trade |
-| `SLIPPAGE_PCT` | `0.05` | Entry/exit slippage |
-| `COMMISSION_FLAT` | `20` | Min commission per trade (INR) |
-| `MIN_OPTION_PREMIUM` | `30` | Skip option strikes below this premium (₹) |
-| `SL_COOLDOWN_MINUTES` | `15` | Block re-entry on underlying after stop-loss |
+| `MAX_LOTS` | `5` | Hard cap on lots/trade (DTE-based stricter caps for 0/1/2DTE) |
+| `MIN_OPTION_PREMIUM` | `30` | Skip strikes below this premium (₹) |
+| `SL_COOLDOWN_MINUTES` | `15` | Block re-entry on underlying after STOP_LOSS / TRAIL_STOP |
 
-### Proxy (optional)
-
-Set all four to route Fyers traffic through a proxy (IPv4-forced):
-```
-PROXY_IP, PROXY_PORT, PROXY_USER, PROXY_PASSWORD
-```
-
-## Logs
+## Diagnostics
 
 ```bash
-docker compose logs -f core-engine
-docker compose logs -f simulation-engine
-docker compose logs -f data-service
+docker compose logs -f core-engine          # WS connect/disconnect, scan cycle, LLM calls
+docker compose logs -f simulation-engine    # decision consumer, gate blocks, exits
+docker exec trading-redis redis-cli         # inspect ltp:* / forming_bar:* directly
+
+# Validate the WS path (run during market hours, inside trading-core)
+docker cp tests/fyers_sdk_ws_path_check.py trading-core:/tmp/
+docker exec trading-core python /tmp/fyers_sdk_ws_path_check.py
+
+# Compare WS-fed ltp:* vs a parallel REST quote
+docker cp tests/ws_rest_shadow_compare.py trading-core:/tmp/
+docker exec -d trading-core python /tmp/ws_rest_shadow_compare.py --interval 5 --duration 1800
 ```
+
+## Deployment
+
+Deploy any service from the currently-checked-out branch:
+```bash
+./deploy.sh core-engine
+./deploy.sh simulation-engine
+./deploy.sh api-service
+./deploy.sh ui-service
+./deploy.sh all
+```
+
+`deploy.sh` pushes the current local branch and runs `git checkout -B <branch> origin/<branch>` on the remote — so the remote `git branch` reports the active deployed branch. Rollback is `git checkout master && ./deploy.sh <service>`.
