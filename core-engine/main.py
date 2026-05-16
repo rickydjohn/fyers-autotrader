@@ -13,6 +13,7 @@ def _ipv4_only_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
     return _orig_getaddrinfo(host, port, _socket.AF_INET, type, proto, flags)
 _socket.getaddrinfo = _ipv4_only_getaddrinfo
 
+import asyncio
 import logging
 import sys
 from contextlib import asynccontextmanager
@@ -106,7 +107,6 @@ async def lifespan(app: FastAPI):
         logger.warning(f"Initial news fetch failed: {e}")
 
     # Bootstrap historical candles from Fyers for all symbols (non-blocking)
-    import asyncio
     async def _do_bootstrap():
         # 1. Intraday multi-timeframe candles (market_candles, 90-day retention)
         for symbol in settings.symbols:
