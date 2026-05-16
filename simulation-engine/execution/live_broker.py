@@ -19,6 +19,7 @@ from models.schemas import Position, Trade
 from notifications.slack import notify_trade_opened, notify_trade_closed
 import data_client
 from execution.exit_rules import PREMIUM_SL_PCT, FIRST_MILESTONE_PCT, RANGING_MILESTONE_PCT
+from execution import ws_control
 
 logger = logging.getLogger(__name__)
 IST = pytz.timezone("Asia/Kolkata")
@@ -279,6 +280,11 @@ async def open_position(
     fill_note = f"filled=₹{actual_entry_price:.2f}" if fill.get("status") == "TRADED" else "price=decision (timeout)"
     logger.info(f"LIVE OPENED {side} {quantity}x{label} | {fill_note} | order_id={broker_order_id}")
 
+    # Attach the Fyers WS to this option's symbol so its LTP flows sub-second.
+    # Best-effort — periodic reconcile in core-engine picks up missed subs.
+    if option_symbol:
+        await ws_control.subscribe(option_symbol)
+
     notify_trade_opened(
         mode="live",
         symbol=symbol,
@@ -401,6 +407,10 @@ async def close_position(
     existing_total = float(await redis_client.get("pnl:realized:total") or 0)
     await redis_client.set("pnl:realized:total", str(existing_total + net_pnl))
 
+    # Detach the Fyers WS from the now-closed option.
+    if pos.option_symbol:
+        await ws_control.unsubscribe(pos.option_symbol)
+
     logger.info(
         f"LIVE CLOSED {pos.side} {pos.quantity}x{symbol} "
         f"@ ₹{actual_exit_price:.2f} P&L=₹{net_pnl:+.2f} ({status})"
@@ -501,6 +511,10 @@ async def record_external_close(
     await redis_client.hdel("positions:open", symbol)
     existing_total = float(await redis_client.get("pnl:realized:total") or 0)
     await redis_client.set("pnl:realized:total", str(existing_total + net_pnl))
+
+    # Detach the Fyers WS from the now-closed option.
+    if pos.option_symbol:
+        await ws_control.unsubscribe(pos.option_symbol)
 
     logger.info(
         f"EXTERNAL CLOSE recorded: {pos.side} {pos.quantity}x{symbol} "

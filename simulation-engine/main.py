@@ -276,7 +276,12 @@ async def _resolve_close_price(pos: Position, underlying_ltp: float) -> float:
     if not pos.option_symbol:
         return underlying_ltp
 
-    opt_raw = await redis_client.get(f"market:{pos.option_symbol}")
+    # Prefer WS-fed ltp:{option_symbol} (sub-second freshness); fall back to
+    # the REST fast-watcher's market:{option_symbol}; then live Fyers fetch.
+    opt_raw = (
+        await redis_client.get(f"ltp:{pos.option_symbol}")
+        or await redis_client.get(f"market:{pos.option_symbol}")
+    )
     if opt_raw:
         ltp = json.loads(opt_raw).get("ltp")
         if ltp:
@@ -675,11 +680,16 @@ async def _check_stop_targets() -> None:
                     logger.error(f"[SL-CHECK] Could not obtain LTP for {symbol} — skipping tick")
                     continue
 
-            # Option LTP and Greeks (populated by fast_position_watcher)
+            # Option LTP — prefer the WS-fed ltp:{option_symbol} (sub-second),
+            # fall back to the REST fast-watcher's market:{option_symbol} (5s),
+            # and as a last resort hit Fyers directly via _fetch_live_ltp.
+            # Greeks remain REST-only (Fyers WS doesn't push them).
             option_ltp: float | None = None
             greeks: dict | None = None
             if pos.option_symbol:
-                opt_raw = await redis_client.get(f"market:{pos.option_symbol}")
+                opt_raw = await redis_client.get(f"ltp:{pos.option_symbol}")
+                if not opt_raw:
+                    opt_raw = await redis_client.get(f"market:{pos.option_symbol}")
                 if opt_raw:
                     option_ltp = json.loads(opt_raw).get("ltp")
                 greeks_raw = await redis_client.get(f"greeks:{pos.option_symbol}")

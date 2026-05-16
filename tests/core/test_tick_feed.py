@@ -444,3 +444,82 @@ class TestFormingBarPersistence:
                     assert ttl == 120
                     break
         asyncio.get_event_loop().run_until_complete(_run())
+
+
+# ── Dynamic subscribe / unsubscribe / reconcile ──────────────────────────────
+
+class TestDynamicSubscription:
+    """subscribe_symbol / unsubscribe_symbol / reconcile_subscriptions —
+    the surface that simulation-engine's open_position/close_position calls
+    via the /ws/subscribe and /ws/unsubscribe endpoints."""
+
+    def test_initial_subscribed_set_is_underlyings_only(self):
+        feed = FyersTickFeed(_make_redis(), ["NSE:NIFTY50-INDEX", "NSE:NIFTYBANK-INDEX"])
+        assert feed._subscribed == {"NSE:NIFTY50-INDEX", "NSE:NIFTYBANK-INDEX"}
+
+    def test_subscribe_symbol_adds(self):
+        feed = FyersTickFeed(_make_redis(), ["NSE:NIFTY50-INDEX"])
+        added = feed.subscribe_symbol("NSE:NIFTY26MAY24300CE")
+        assert added is True
+        assert "NSE:NIFTY26MAY24300CE" in feed._subscribed
+
+    def test_subscribe_symbol_is_idempotent(self):
+        feed = FyersTickFeed(_make_redis(), ["NSE:NIFTY50-INDEX"])
+        feed.subscribe_symbol("NSE:NIFTY26MAY24300CE")
+        added_again = feed.subscribe_symbol("NSE:NIFTY26MAY24300CE")
+        assert added_again is False  # already present
+        assert len([s for s in feed._subscribed if "24300CE" in s]) == 1
+
+    def test_unsubscribe_symbol_removes_option(self):
+        feed = FyersTickFeed(_make_redis(), ["NSE:NIFTY50-INDEX"])
+        feed.subscribe_symbol("NSE:NIFTY26MAY24300CE")
+        removed = feed.unsubscribe_symbol("NSE:NIFTY26MAY24300CE")
+        assert removed is True
+        assert "NSE:NIFTY26MAY24300CE" not in feed._subscribed
+
+    def test_unsubscribe_refuses_to_remove_underlying(self):
+        """Underlyings are required by the scan + forming-bar and must
+        survive any unsubscribe call."""
+        feed = FyersTickFeed(_make_redis(), ["NSE:NIFTY50-INDEX"])
+        removed = feed.unsubscribe_symbol("NSE:NIFTY50-INDEX")
+        assert removed is False
+        assert "NSE:NIFTY50-INDEX" in feed._subscribed
+
+    def test_unsubscribe_unknown_symbol_is_noop(self):
+        feed = FyersTickFeed(_make_redis(), ["NSE:NIFTY50-INDEX"])
+        assert feed.unsubscribe_symbol("NSE:DOES-NOT-EXIST") is False
+
+    def test_reconcile_subscribes_missing_options(self):
+        """When the periodic reconcile sees positions:open contains an
+        option we haven't subscribed to, add it."""
+        feed = FyersTickFeed(_make_redis(), ["NSE:NIFTY50-INDEX"])
+        result = feed.reconcile_subscriptions(["NSE:NIFTY26MAY24300CE"])
+        assert "NSE:NIFTY26MAY24300CE" in feed._subscribed
+        assert result["added"] == ["NSE:NIFTY26MAY24300CE"]
+        assert result["removed"] == []
+
+    def test_reconcile_unsubscribes_stale_options(self):
+        """A position closed but unsubscribe didn't reach us — the next
+        reconcile should drop the orphan subscription."""
+        feed = FyersTickFeed(_make_redis(), ["NSE:NIFTY50-INDEX"])
+        feed.subscribe_symbol("NSE:NIFTY26MAY24300CE")    # an open position
+        feed.subscribe_symbol("NSE:NIFTY26MAY24200PE")    # another open position
+        # Now positions:open shows only the CE — the PE was closed.
+        result = feed.reconcile_subscriptions(["NSE:NIFTY26MAY24300CE"])
+        assert "NSE:NIFTY26MAY24200PE" not in feed._subscribed
+        assert result["removed"] == ["NSE:NIFTY26MAY24200PE"]
+        assert result["added"] == []
+
+    def test_reconcile_preserves_underlyings(self):
+        feed = FyersTickFeed(_make_redis(), ["NSE:NIFTY50-INDEX", "NSE:NIFTYBANK-INDEX"])
+        feed.subscribe_symbol("NSE:NIFTY26MAY24300CE")
+        feed.reconcile_subscriptions([])   # no open positions
+        assert feed._subscribed == {"NSE:NIFTY50-INDEX", "NSE:NIFTYBANK-INDEX"}
+
+    def test_reconcile_empty_target_set(self):
+        """Edge case: reconcile to ∅ — underlyings should still survive."""
+        feed = FyersTickFeed(_make_redis(), ["NSE:NIFTY50-INDEX"])
+        feed.subscribe_symbol("NSE:NIFTY26MAY24300CE")
+        result = feed.reconcile_subscriptions([])
+        assert feed._subscribed == {"NSE:NIFTY50-INDEX"}
+        assert result["removed"] == ["NSE:NIFTY26MAY24300CE"]

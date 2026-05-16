@@ -73,6 +73,27 @@ async def lifespan(app: FastAPI):
         )
         await tick_feed.start()
         logger.info("Fyers WS tick feed started")
+
+        # Reconcile WS subscriptions against any open positions left over from
+        # a previous core-engine run. Source priority: Redis positions:open
+        # first; if empty, fall back to Fyers REST positions. Catches the case
+        # where Redis was also wiped (full cluster restart mid-session).
+        await asyncio.sleep(2)  # give the SDK time to actually open the WS
+        try:
+            await _reconcile_option_subscriptions()
+        except Exception as e:
+            logger.warning(f"Initial WS subscription reconcile failed: {e}")
+
+        # Periodic safety-net reconcile every 5 minutes. Catches any sub call
+        # that was missed (eg. sim-engine couldn't reach core-engine briefly)
+        # and removes options whose positions have closed but unsubscribe
+        # didn't reach us.
+        scheduler.add_job(
+            _reconcile_option_subscriptions,
+            "interval",
+            minutes=5,
+            id="ws_subscription_reconcile",
+        )
     except RuntimeError as e:
         logger.warning(f"Fyers WS tick feed not started — auth missing: {e}")
     except Exception as e:
@@ -253,6 +274,90 @@ async def fyers_positions_endpoint():
         return {"status": "ok", "positions": positions}
     except RuntimeError as e:
         raise HTTPException(status_code=401, detail=str(e))
+
+
+# ── WS subscription control ──────────────────────────────────────────────────
+# These endpoints let simulation-engine attach the Fyers WebSocket to an option
+# symbol the moment a position opens, and detach when it closes — so the
+# option's LTP flows into Redis at sub-second resolution instead of via the
+# REST fast-watcher's 5s poll. Idempotent both sides.
+
+@app.post("/ws/subscribe")
+async def ws_subscribe(symbol: str = Query(...)):
+    if tick_feed is None:
+        raise HTTPException(status_code=503, detail="Tick feed not running")
+    added = tick_feed.subscribe_symbol(symbol)
+    return {"status": "ok", "symbol": symbol, "newly_added": added}
+
+
+@app.post("/ws/unsubscribe")
+async def ws_unsubscribe(symbol: str = Query(...)):
+    if tick_feed is None:
+        raise HTTPException(status_code=503, detail="Tick feed not running")
+    removed = tick_feed.unsubscribe_symbol(symbol)
+    return {"status": "ok", "symbol": symbol, "removed": removed}
+
+
+@app.post("/ws/reconcile")
+async def ws_reconcile():
+    """Manually trigger the open-positions → WS-subscription reconcile.
+    Useful after an outage. Runs automatically on startup and every 5 minutes."""
+    if tick_feed is None:
+        raise HTTPException(status_code=503, detail="Tick feed not running")
+    result = await _reconcile_option_subscriptions()
+    return {"status": "ok", **result}
+
+
+async def _reconcile_option_subscriptions() -> dict:
+    """Walk open positions and make sure the WS is subscribed to each one's
+    option symbol. Source priority:
+      1. Redis HGETALL positions:open  — fast, simulation-engine writes here.
+      2. Fyers REST /positions         — fallback when Redis is also empty
+                                          (full cluster restart mid-session).
+    Returns the reconcile summary from FyersTickFeed.reconcile_subscriptions.
+    """
+    if tick_feed is None:
+        return {"status": "no_tick_feed"}
+
+    import json as _json
+    option_symbols: list[str] = []
+    source = "redis"
+
+    try:
+        positions_raw = await redis_client.hgetall("positions:open")
+    except Exception:
+        positions_raw = {}
+
+    if positions_raw:
+        for _sym, raw in positions_raw.items():
+            try:
+                pos = _json.loads(raw)
+                opt = pos.get("option_symbol")
+                if opt:
+                    option_symbols.append(opt)
+            except Exception:
+                continue
+    else:
+        # Fall back to Fyers REST — covers the redis-and-core-engine-both-restarted case.
+        source = "fyers_rest"
+        try:
+            fyers_positions = get_fyers_positions() or []
+        except Exception as e:
+            logger.warning(f"Fyers positions fetch failed during WS reconcile: {e}")
+            fyers_positions = []
+        for p in fyers_positions:
+            sym = p.get("symbol") or p.get("symbolTicker") or ""
+            # Fyers position symbols ARE the option symbols (e.g. NSE:BANKNIFTY26MAY53300PE)
+            if sym and any(tag in sym for tag in ("CE", "PE", "C-E", "P-E")):
+                option_symbols.append(sym)
+
+    result = tick_feed.reconcile_subscriptions(option_symbols)
+    result["source"] = source
+    logger.info(
+        f"WS reconcile via {source}: added={result['added']}, "
+        f"removed={result['removed']}, total subscribed={result['total']}"
+    )
+    return result
 
 
 @app.post("/fyers/orders/place")

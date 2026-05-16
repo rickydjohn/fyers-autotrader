@@ -123,7 +123,10 @@ async def test_noop_when_no_positions():
 
 
 @pytest.mark.asyncio
-async def test_refreshes_underlying_with_30s_ttl():
+async def test_does_not_refresh_underlying_ltp():
+    """Underlying LTP is now owned by the WS tick feed (200ms cadence).
+    The fast watcher no longer writes ltp:{underlying} — that would be a
+    stale-clobber risk against the sub-second WS write."""
     r = _redis({UNDERLYING: OPEN_POSITION})
     with (
         patch.object(_jobs, "_is_market_open", return_value=True),
@@ -131,11 +134,8 @@ async def test_refreshes_underlying_with_30s_ttl():
         patch.object(_jobs, "get_option_quote_with_greeks", return_value=GOOD_GREEKS),
     ):
         await _fast_position_watcher(r)
-    calls = {c.args[0]: c.args for c in r.setex.call_args_list}
-    # fast watcher writes to ltp:{symbol} to avoid overwriting the full market snapshot
-    assert f"ltp:{UNDERLYING}" in calls
-    _, ttl, _ = calls[f"ltp:{UNDERLYING}"]
-    assert ttl == 30
+    keys = {c.args[0] for c in r.setex.call_args_list}
+    assert f"ltp:{UNDERLYING}" not in keys
 
 
 @pytest.mark.asyncio
@@ -166,7 +166,7 @@ async def test_skips_option_refresh_when_greeks_returns_none():
     ):
         await _fast_position_watcher(r)
     keys = {c.args[0] for c in r.setex.call_args_list}
-    assert f"ltp:{UNDERLYING}" in keys          # underlying written to ltp: key
+    assert f"ltp:{UNDERLYING}" not in keys      # underlying never written by fast watcher
     assert f"market:{OPTION_SYM}" not in keys   # option skipped (no greeks)
     assert f"greeks:{OPTION_SYM}" not in keys
 
@@ -186,25 +186,35 @@ async def test_position_without_option_skips_greeks():
 
 @pytest.mark.asyncio
 async def test_error_in_one_position_does_not_abort_loop():
+    """One position's Greeks fetch raising must not stop us from processing
+    the next position. The fast watcher only calls get_option_quote_with_greeks
+    per position now (underlying LTP comes from the WS tick feed)."""
+    OPTION_A = "NSE:NIFTY26MAY24300CE"
+    OPTION_B = "NSE:BANKNIFTY26MAY53300PE"
     r = _redis({
-        UNDERLYING:            OPEN_POSITION,
+        UNDERLYING: {**OPEN_POSITION, "option_symbol": OPTION_A},
         "NSE:NIFTYBANK-INDEX": {"symbol": "NSE:NIFTYBANK-INDEX",
-                                "side": "SELL", "option_symbol": None},
+                                "side": "SELL", "option_symbol": OPTION_B},
     })
-    call_count = 0
+    seen = []
 
-    def _side(symbol):
-        nonlocal call_count
-        call_count += 1
-        if symbol == UNDERLYING:
-            raise RuntimeError("simulated Fyers error")
-        return {"ltp": 49500.0}
+    def _greeks_side(opt_sym):
+        seen.append(opt_sym)
+        if opt_sym == OPTION_A:
+            raise RuntimeError("simulated Fyers greeks error")
+        return {"symbol": opt_sym, "ltp": 250.0, "delta": 0.5, "iv": 18.0}
 
     with (
         patch.object(_jobs, "_is_market_open", return_value=True),
-        patch.object(_jobs, "get_quote", side_effect=_side),
-        patch.object(_jobs, "get_option_quote_with_greeks", return_value=None),
+        patch.object(_jobs, "get_option_quote_with_greeks", side_effect=_greeks_side),
     ):
         await _fast_position_watcher(r)
 
-    assert call_count == 2
+    # Both options had get_option_quote_with_greeks attempted — the error on A
+    # did not prevent B from being processed.
+    assert OPTION_A in seen
+    assert OPTION_B in seen
+    # B's writes landed despite A's failure.
+    keys = {c.args[0] for c in r.setex.call_args_list}
+    assert f"market:{OPTION_B}" in keys
+    assert f"greeks:{OPTION_B}" in keys

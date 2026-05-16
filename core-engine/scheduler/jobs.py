@@ -504,28 +504,18 @@ async def _fast_position_watcher(redis_client: aioredis.Redis) -> None:
         try:
             pos = json.loads(pos_data)
 
-            # 1. Refresh underlying LTP with short TTL.
-            # Write to ltp:{symbol} (NOT market:{symbol}) so we don't overwrite the
-            # full market snapshot (indicators, candles, etc.) that the full scan
-            # writes every 300s.  The simulation-engine reads ltp:{symbol} first.
-            # `ts` (epoch_ms) is required for readers (e.g. _fetch_live_ltp) to
-            # judge freshness and to detect out-of-order writes from the WS feed
-            # which writes to the same key.
-            q = get_quote(symbol)
-            if q and q.get("ltp"):
-                await redis_client.setex(
-                    f"ltp:{symbol}",
-                    30,
-                    json.dumps({
-                        "ltp":    q["ltp"],
-                        "ts":     int(time.time() * 1000),
-                        "symbol": symbol,
-                        "high":   q.get("high", 0),
-                        "low":    q.get("low", 0),
-                    }),
-                )
+            # NOTE: the underlying-LTP poll used to live here. It was removed
+            # when the WS tick feed went live — `ltp:{underlying}` is now
+            # refreshed by FyersTickFeed every ~200ms, making the 5s REST poll
+            # strictly redundant. The fast watcher is kept for Greeks (and as a
+            # final safety net for option LTP via REST if the WS for that
+            # option drops); see project memory project_fast_watcher_ws.md.
 
-            # 2. Refresh option LTP + Greeks with short TTL
+            # Refresh option LTP + Greeks. The option LTP write here doubles
+            # as a fallback for any window where the WS subscription for the
+            # option is mid-handshake or briefly disconnected — readers prefer
+            # `ltp:{option_symbol}` (WS-fed) and fall through to
+            # `market:{option_symbol}` (this write).
             opt_sym = pos.get("option_symbol")
             if opt_sym:
                 gq = get_option_quote_with_greeks(opt_sym)

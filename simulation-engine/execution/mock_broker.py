@@ -21,6 +21,7 @@ from portfolio.budget import allocate, get_max_position_value, release
 from notifications.slack import notify_trade_opened, notify_trade_closed
 import data_client
 from execution.exit_rules import PREMIUM_SL_PCT, FIRST_MILESTONE_PCT, RANGING_MILESTONE_PCT
+from execution import ws_control
 
 logger = logging.getLogger(__name__)
 IST = pytz.timezone("Asia/Kolkata")
@@ -224,6 +225,12 @@ async def open_position(
     if decision_id:
         await data_client.mark_decision_acted(decision_id, trade_id)
 
+    # Attach the Fyers WS to this option so its LTP flows into ltp:{option_symbol}
+    # every ~200ms instead of waiting on the 5s REST fast-watcher. Best-effort —
+    # if core-engine is briefly unreachable the periodic reconcile picks it up.
+    if option_symbol:
+        await ws_control.subscribe(option_symbol)
+
     label = f"{option_symbol} (strike ₹{option_strike})" if option_symbol else trade_symbol
     logger.info(
         f"OPENED {side} {num_lots} lot(s) × {lot_size} = {quantity}x{label} @ ₹{entry_price:.2f} "
@@ -337,6 +344,11 @@ async def close_position(
     await release(redis_client, invested_amount, budget_pnl)
     await redis_client.hdel("positions:open", symbol)
     await _record_pnl_snapshot(redis_client, budget_pnl)
+
+    # Detach the Fyers WS from the closed option. Best-effort; periodic
+    # reconcile in core-engine will prune any orphaned subscription.
+    if pos.option_symbol:
+        await ws_control.unsubscribe(pos.option_symbol)
 
     logger.info(
         f"CLOSED {pos.side} {pos.quantity}x{symbol} @ ₹{exit_price_with_slip:.2f} "

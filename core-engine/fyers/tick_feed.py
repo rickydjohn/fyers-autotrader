@@ -66,8 +66,13 @@ class FyersTickFeed:
         loop: Optional[asyncio.AbstractEventLoop] = None,
     ) -> None:
         self._redis = redis_client
-        self._symbols = list(symbols)
+        self._symbols = list(symbols)  # always-on underlyings (never unsubscribed)
         self._loop = loop or asyncio.get_event_loop()
+        # Currently-subscribed symbol set. Underlyings are baked in; options are
+        # added/removed by subscribe_symbol/unsubscribe_symbol as positions open
+        # and close. Re-applied to the SDK in _on_open() so a reconnect doesn't
+        # lose option subscriptions.
+        self._subscribed: set[str] = set(self._symbols)
         # latest tick per symbol — overwritten by each new tick from the SDK thread
         self._latest: dict[str, dict] = {}
         # in-progress 1m bar per symbol, accumulated from ticks (open=first tick
@@ -161,12 +166,74 @@ class FyersTickFeed:
     # ── SDK callbacks (run on SDK thread) ────────────────────────────────────
 
     def _on_open(self) -> None:
-        logger.info(f"Fyers WS connected, subscribing to {self._symbols}")
+        # Re-apply the FULL subscription set on every connect (initial and on
+        # reconnect). The SDK has reconnect=True but its subscribe state is
+        # not durable across reconnects, so we re-send the list ourselves.
+        symbols = sorted(self._subscribed)
+        logger.info(f"Fyers WS connected, subscribing to {symbols}")
         try:
-            if self._fyers is not None:
-                self._fyers.subscribe(symbols=self._symbols, data_type="SymbolUpdate")
+            if self._fyers is not None and symbols:
+                self._fyers.subscribe(symbols=symbols, data_type="SymbolUpdate")
         except Exception:
             logger.exception("Fyers WS subscribe failed")
+
+    # ── Dynamic subscription management ──────────────────────────────────────
+    # Used by the /ws/subscribe and /ws/unsubscribe HTTP endpoints in main.py
+    # so simulation-engine can attach/detach option symbols as positions open
+    # and close. Idempotent; safe to call from any thread.
+
+    def subscribe_symbol(self, symbol: str) -> bool:
+        """Add `symbol` to the WS subscription. Returns True if newly added,
+        False if it was already subscribed. Safe to call before the WS is up
+        — the symbol will be picked up by the next _on_open."""
+        if symbol in self._subscribed:
+            return False
+        self._subscribed.add(symbol)
+        if self._fyers is not None:
+            try:
+                self._fyers.subscribe(symbols=[symbol], data_type="SymbolUpdate")
+                logger.info(f"WS subscribed: {symbol}")
+            except Exception:
+                logger.exception(f"WS subscribe failed for {symbol}")
+        return True
+
+    def unsubscribe_symbol(self, symbol: str) -> bool:
+        """Remove `symbol` from the WS subscription. Underlyings are never
+        unsubscribed (they're needed by the scan + forming-bar). Returns True
+        if removed, False if not subscribed or refused."""
+        if symbol in self._symbols:
+            logger.debug(f"WS unsubscribe refused for underlying {symbol}")
+            return False
+        if symbol not in self._subscribed:
+            return False
+        self._subscribed.discard(symbol)
+        if self._fyers is not None:
+            try:
+                self._fyers.unsubscribe(symbols=[symbol])
+                logger.info(f"WS unsubscribed: {symbol}")
+            except Exception:
+                logger.exception(f"WS unsubscribe failed for {symbol}")
+        return True
+
+    def reconcile_subscriptions(self, option_symbols: list[str]) -> dict:
+        """Make the subscription set equal to {underlyings} ∪ option_symbols.
+        Used at startup and on a periodic safety-net interval to ensure the
+        WS state matches positions:open even if a sub call was missed (eg.
+        sim-engine couldn't reach core-engine momentarily).
+
+        Returns a small summary dict for logging.
+        """
+        want = set(self._symbols) | set(option_symbols)
+        to_add    = want - self._subscribed
+        to_remove = self._subscribed - want
+        for sym in to_add:
+            self.subscribe_symbol(sym)
+        for sym in to_remove:
+            # Underlyings are excluded by subscribe set construction (want
+            # includes them) — only stray options can be removed here.
+            self.unsubscribe_symbol(sym)
+        return {"added": sorted(to_add), "removed": sorted(to_remove),
+                "total": len(self._subscribed)}
 
     def _on_close(self, *args) -> None:
         logger.info(f"Fyers WS closed: {args}")
