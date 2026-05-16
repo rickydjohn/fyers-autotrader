@@ -10,7 +10,9 @@ Consumes trading decisions from the Redis stream, manages virtual or live trade 
 - Option strike selection (ATM CE/PE based on LLM decision direction)
 - Order placement — simulation (mock broker) or live (Fyers broker)
 - Exit rule enforcement: stop-loss, trailing stop, target, PA exits, time-based close
-- Position watcher loop (runs every `POSITION_WATCHER_INTERVAL_SECONDS`)
+- Position-exit checker (runs on each consumer loop tick; underlying + option
+  prices are WS-fed sub-second by FyersTickFeed in core-engine, Greeks are
+  REST-polled every `GREEKS_POLL_INTERVAL_SECONDS`)
 - Budget tracking and trade persistence to data-service
 
 ## Key environment variables
@@ -24,7 +26,7 @@ Consumes trading decisions from the Redis stream, manages virtual or live trade 
 | `COMMISSION_FLAT` | `20` | Minimum commission per trade (INR) |
 | `MIN_OPTION_PREMIUM` | `30` | Skip strikes where premium is below this (₹) |
 | `SL_COOLDOWN_MINUTES` | `15` | Block re-entry on an underlying after a stop-loss |
-| `POSITION_WATCHER_INTERVAL_SECONDS` | `5` | How often to check open positions for exits |
+| `GREEKS_POLL_INTERVAL_SECONDS` | `5` | Cadence of the Greeks REST poll in core-engine (delta/gamma/theta/vega/IV). Renamed from `POSITION_WATCHER_INTERVAL_SECONDS` post-WS-migration — price polling is now WS-driven. |
 
 See [`EXAMPLE.env`](../EXAMPLE.env) for the full variable list.
 

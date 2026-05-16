@@ -35,8 +35,8 @@ _stub("apscheduler")
 
 # config
 _stub("config", settings=SimpleNamespace(
-    scan_interval_seconds=300,
-    position_watcher_interval_seconds=10,
+    llm_decision_interval_seconds=60,
+    greeks_poll_interval_seconds=5,
     symbols=["NSE:NIFTY50-INDEX"],
     market_open="09:15",
     market_close="15:30",

@@ -89,7 +89,8 @@ FYERS_SECRET_KEY=xxxxxxxxxx
 FYERS_REDIRECT_URI=http://localhost:8001/fyers/callback
 
 INITIAL_BUDGET=100000
-SCAN_INTERVAL_SECONDS=60
+LLM_DECISION_INTERVAL_SECONDS=60
+GREEKS_POLL_INTERVAL_SECONDS=5
 CANDLE_INTERVAL=1m
 MIN_BAR_POSITION=2
 DRIFT_VETO_PCT=0.0010
@@ -216,7 +217,8 @@ curl -X POST http://localhost:8001/scan/trigger
 |---|---|---|
 | `CANDLE_INTERVAL` | `1m` | `1m` (fetch 1m, aggregate to 5m) or `5m` |
 | `MIN_BAR_POSITION` | `2` | Minute into 5m bar before LLM runs |
-| `SCAN_INTERVAL_SECONDS` | `60` | Periodic scan cadence |
+| `LLM_DECISION_INTERVAL_SECONDS` | `60` | Cadence of the LLM decision cycle (fetch + indicators + LLM call ~29s + persist). <60s queues behind the LLM. Was `SCAN_INTERVAL_SECONDS` pre-WS-migration. |
+| `GREEKS_POLL_INTERVAL_SECONDS` | `5` | Cadence of the Greeks (delta/gamma/theta/vega/IV) REST poll for open option positions. Underlying + option *prices* are now WS-fed and don't depend on this. Was `POSITION_WATCHER_INTERVAL_SECONDS` pre-WS-migration. |
 | `DRIFT_VETO_PCT` | `0.0010` | Adverse drift threshold (snapshot → live LTP) before entry is skipped |
 | `OLLAMA_TIMEOUT` | `120` | LLM hard timeout (120s for gpt-oss:120b) |
 | `INITIAL_BUDGET` | `100000` | Virtual capital (INR, sim mode) |

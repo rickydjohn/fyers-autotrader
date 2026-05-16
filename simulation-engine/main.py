@@ -647,8 +647,9 @@ async def _fetch_live_ltp(symbol: str) -> float | None:
 async def _check_stop_targets() -> None:
     """
     Evaluate exit conditions for all open positions.
-    Runs on every consumer loop tick (~5s).  Prices are kept fresh by the
-    fast_position_watcher in core-engine (every POSITION_WATCHER_INTERVAL_SECONDS).
+    Runs on every consumer loop tick (~5s). Underlying + option prices are
+    kept fresh by FyersTickFeed in core-engine (~200ms WS cadence); Greeks
+    are refreshed by _fast_position_watcher (every GREEKS_POLL_INTERVAL_SECONDS).
     """
     positions_raw = await redis_client.hgetall("positions:open")
     if not positions_raw:
@@ -662,9 +663,9 @@ async def _check_stop_targets() -> None:
         try:
             pos = Position(**json.loads(pos_data))
 
-            # Underlying LTP — prefer the fast-watcher key (ltp:{symbol}, 30s TTL)
-            # which is refreshed every POSITION_WATCHER_INTERVAL_SECONDS; fall back
-            # to the full market snapshot written by the slower scan job.
+            # Underlying LTP — prefer ltp:{symbol} (WS-fed, ~200ms cadence,
+            # 30s TTL); fall back to the full market: snapshot the LLM scan
+            # writes every LLM_DECISION_INTERVAL_SECONDS.
             ltp_raw = await redis_client.get(f"ltp:{symbol}") or await redis_client.get(f"market:{symbol}")
             if ltp_raw:
                 underlying_ltp = json.loads(ltp_raw).get("ltp", 0)

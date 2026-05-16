@@ -575,11 +575,10 @@ def test_underlying_derivation(option_sym, expected_underlying):
 # 4. Core-engine config — watcher default
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_position_watcher_default_is_5s():
-    """position_watcher_interval_seconds default must be 5 after the config change."""
-    import importlib, types
-
-    # Read the config source directly without importing (avoids needing Fyers env vars)
+def test_greeks_poll_default_is_5s():
+    """greeks_poll_interval_seconds default must be 5 after the rename.
+    (Was position_watcher_interval_seconds prior to the WS migration; the
+    watcher's price-polling responsibility moved to FyersTickFeed.)"""
     import ast, pathlib
     src = pathlib.Path("/app/../core-engine/config.py")
     if not src.exists():
@@ -591,13 +590,13 @@ def test_position_watcher_default_is_5s():
     tree = ast.parse(src.read_text())
     for node in ast.walk(tree):
         if isinstance(node, ast.AnnAssign):
-            if isinstance(node.target, ast.Name) and node.target.id == "position_watcher_interval_seconds":
+            if isinstance(node.target, ast.Name) and node.target.id == "greeks_poll_interval_seconds":
                 # The default is the first arg to Field(...)
                 if isinstance(node.value, ast.Call):
                     first_arg = node.value.args[0] if node.value.args else None
                     if first_arg and isinstance(first_arg, ast.Constant):
                         assert first_arg.value == 5, (
-                            f"Expected position_watcher_interval_seconds default=5, got {first_arg.value}"
+                            f"Expected greeks_poll_interval_seconds default=5, got {first_arg.value}"
                         )
                         return
-    pytest.fail("Could not find position_watcher_interval_seconds in core-engine/config.py")
+    pytest.fail("Could not find greeks_poll_interval_seconds in core-engine/config.py")

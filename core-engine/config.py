@@ -33,8 +33,18 @@ class Settings(BaseSettings):
     session_close_hour: int = Field(15, env="SESSION_CLOSE_HOUR")
     session_close_minute: int = Field(15, env="SESSION_CLOSE_MINUTE")
     timezone: str = "Asia/Kolkata"
-    scan_interval_seconds: int = Field(300, env="SCAN_INTERVAL_SECONDS")
-    position_watcher_interval_seconds: int = Field(5, env="POSITION_WATCHER_INTERVAL_SECONDS")
+    # Cadence of the full LLM decision cycle: data fetch + indicators + prompt
+    # + LLM call (~29s on Ollama 120b) + decision publish. Setting <60s queues
+    # scans behind the LLM call (apscheduler will coalesce). 60s is the
+    # natural minimum given the LLM dominates.
+    llm_decision_interval_seconds: int = Field(60, env="LLM_DECISION_INTERVAL_SECONDS")
+
+    # Cadence of the Greeks poll (delta, gamma, theta, vega, IV) for any open
+    # option positions. Greeks are NOT pushed over the Fyers WebSocket — they
+    # only exist behind a REST endpoint, so this is the one thing the fast
+    # watcher still has to do. Underlying + option LTP are WS-fed, so this
+    # interval no longer affects price freshness.
+    greeks_poll_interval_seconds: int = Field(5, env="GREEKS_POLL_INTERVAL_SECONDS")
 
     # Candle resolution fetched from Fyers.
     # "1m" — fetch 1-minute bars and aggregate to 5m in-process (default).

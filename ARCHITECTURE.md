@@ -61,7 +61,7 @@ sequenceDiagram
     Note over C: on minute rollover
     C->>R: SETEX last_bar:{symbol} (120s TTL)
 
-    Note over F,S: Scan cycle — every SCAN_INTERVAL_SECONDS
+    Note over F,S: LLM decision cycle — every LLM_DECISION_INTERVAL_SECONDS
     C->>F: GET /quotes + /history (via Squid)
     F-->>C: snapshot + 1m candles
     C->>C: indicators (CPR, RSI, EMA, VWAP, MACD)

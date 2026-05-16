@@ -485,13 +485,17 @@ async def _refresh_open_option_prices(redis_client: aioredis.Redis) -> None:
 
 async def _fast_position_watcher(redis_client: aioredis.Redis) -> None:
     """
-    High-frequency price + Greeks refresh for open positions.
-    Runs every POSITION_WATCHER_INTERVAL_SECONDS (default 10s).
-    No-op when the market is closed or no positions are open — zero overhead.
+    Greeks poll for open option positions.
+    Runs every GREEKS_POLL_INTERVAL_SECONDS (default 5s).
 
-    Writes underlying and option prices with a 30s TTL so stale data is never
-    silently used by the simulation-engine exit checker.  Greeks are stored
-    separately under greeks:{option_symbol} for the exit-rules engine.
+    Underlying and option *prices* are now WS-fed (FyersTickFeed writes
+    ltp:{symbol} every ~200ms), so this job no longer touches price data.
+    Its sole remaining job is to refresh the Greeks (delta, gamma, theta,
+    vega, IV) which Fyers does NOT push over the WebSocket. The option-LTP
+    write here is a fallback for the brief window when an option's WS
+    subscription is mid-handshake; readers prefer ltp:{option_symbol}.
+
+    No-op when the market is closed or no positions are open.
     """
     if not _is_market_open():
         return
@@ -976,7 +980,7 @@ def create_scheduler(redis_client: aioredis.Redis) -> AsyncIOScheduler:
     scheduler.add_job(
         run_market_scan,
         "interval",
-        seconds=settings.scan_interval_seconds,
+        seconds=settings.llm_decision_interval_seconds,
         args=[redis_client],
         id="market_scan",
     )
@@ -984,7 +988,7 @@ def create_scheduler(redis_client: aioredis.Redis) -> AsyncIOScheduler:
     scheduler.add_job(
         _fast_position_watcher,
         "interval",
-        seconds=settings.position_watcher_interval_seconds,
+        seconds=settings.greeks_poll_interval_seconds,
         args=[redis_client],
         id="fast_position_watcher",
     )
