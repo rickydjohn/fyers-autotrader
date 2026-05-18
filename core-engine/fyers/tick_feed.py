@@ -45,6 +45,27 @@ _LTP_REDIS_TTL_S = 30
 # cross of an EMA/CPR invalidation level. 200ms tracks ticks ~1:1 during
 # active trading at a trivial Redis cost (~5 writes/s/symbol).
 _WRITE_THROTTLE_MS = 200
+
+# Health-check cadence — how often the supervisor checks tick-feed freshness.
+_HEALTH_CHECK_INTERVAL_S = 15
+# Threshold — if no ticks for this long during market hours, force re-init.
+# Real p99 inter-tick is ~940ms, so 60s of silence is unambiguously stuck.
+# Added 2026-05-18 after the SDK's internal reconnect gave up overnight on a
+# Cloudflare 502 burst and we sat dead for 36 hours.
+_STALE_TICK_THRESHOLD_S = 60
+
+
+def _is_market_hours() -> bool:
+    """True if the NSE cash market should be open right now (IST, Mon-Fri,
+    09:15-15:30). Module-level so it can be unit-tested independently of the
+    FyersTickFeed instance."""
+    from datetime import datetime
+    import pytz
+    now = datetime.now(pytz.timezone("Asia/Kolkata"))
+    if now.weekday() >= 5:   # Sat=5, Sun=6
+        return False
+    hm = now.hour * 60 + now.minute
+    return 9 * 60 + 15 <= hm <= 15 * 60 + 30
 # forming_bar:{symbol} — should always be refreshed within a minute by the
 # next tick, but TTL 90s lets the chart show "stale forming bar" briefly
 # rather than going blank during a brief pause in ticks.
@@ -87,6 +108,10 @@ class FyersTickFeed:
         self._finalized_bars: dict[str, dict] = {}
         self._tick_event: Optional[asyncio.Event] = None
         self._last_write_ms: dict[str, int] = {}
+        # Monotonic seconds at the most recent tick (any symbol). Used by the
+        # supervisor's health check to detect a stuck SDK and force re-init.
+        # Initialised to now so we don't trip the threshold during startup.
+        self._last_msg_monotonic: float = time.monotonic()
         self._fyers = None
         self._consumer_task: Optional[asyncio.Task] = None
         self._supervisor_task: Optional[asyncio.Task] = None
@@ -115,20 +140,46 @@ class FyersTickFeed:
     # ── SDK lifecycle ────────────────────────────────────────────────────────
 
     async def _supervise(self) -> None:
-        """Keep the SDK connection alive across restarts with capped backoff."""
+        """Keep the SDK connection alive across restarts with capped backoff.
+
+        After the initial connect the SDK runs its own WS thread; the SDK's
+        own reconnect=True flag handles transient drops. But the SDK can
+        give up silently (observed 2026-05-16: ~50 Cloudflare 502 handshake
+        rejections in a 30s burst, after which the internal reconnect stopped
+        attempting and the feed sat dead for 36 hours). To catch that, the
+        supervisor now runs a tick-freshness health check every
+        _HEALTH_CHECK_INTERVAL_S. If no tick has arrived in
+        _STALE_TICK_THRESHOLD_S during likely-market-open hours, we tear
+        down the SDK and re-enter the outer loop which calls
+        _connect_blocking again — that creates a fresh FyersDataSocket and
+        a fresh WS connection.
+        """
         backoff_s = _BACKOFF_INITIAL_S
         while not self._stopped:
             try:
                 await asyncio.to_thread(self._connect_blocking)
-                # If we get here, connect() returned (SDK sleeps 2s and exits).
-                # The actual WS lives in a daemon thread inside the SDK; we
-                # only need to keep the supervisor alive so we can detect
-                # disconnects via on_close.
+                # Reset on successful connect. Also reset the heartbeat so a
+                # stale value from before the reconnect doesn't immediately
+                # re-trip the threshold.
                 backoff_s = _BACKOFF_INITIAL_S
-                # Idle wait — the SDK thread runs in the background. We sleep
-                # and rely on the SDK's internal reconnect logic for now.
+                self._last_msg_monotonic = time.monotonic()
+
+                # Health-check loop: monitor tick freshness; force a full
+                # SDK re-init if no ticks arrive during market hours.
                 while not self._stopped:
-                    await asyncio.sleep(30)
+                    await asyncio.sleep(_HEALTH_CHECK_INTERVAL_S)
+                    if not _is_market_hours():
+                        # Outside market hours, no ticks expected — keep
+                        # the SDK alive but don't treat silence as failure.
+                        continue
+                    age_s = time.monotonic() - self._last_msg_monotonic
+                    if age_s > _STALE_TICK_THRESHOLD_S:
+                        logger.warning(
+                            f"FyersTickFeed: no ticks for {age_s:.0f}s during "
+                            f"market hours — tearing down SDK and reconnecting"
+                        )
+                        self._tear_down_sdk()
+                        break  # exit inner loop; outer loop re-enters _connect_blocking
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -138,6 +189,18 @@ class FyersTickFeed:
                 )
                 await asyncio.sleep(backoff_s)
                 backoff_s = min(backoff_s * 2, _BACKOFF_MAX_S)
+
+    def _tear_down_sdk(self) -> None:
+        """Close the existing FyersDataSocket so the next _connect_blocking
+        call creates a fresh one. Best-effort: any error is swallowed because
+        the next connect() will replace state anyway."""
+        if self._fyers is None:
+            return
+        try:
+            self._fyers.close_connection()
+        except Exception as e:
+            logger.debug(f"close_connection raised during tear-down: {e!r}")
+        self._fyers = None
 
     def _connect_blocking(self) -> None:
         """Build the SDK and call connect() — runs in a worker thread.
@@ -264,6 +327,9 @@ class FyersTickFeed:
             # ticks are intentionally dropped; we only care about the most
             # recent price when the consumer next wakes up.
             self._latest[symbol] = {"ltp": ltp, "exch_ts": exch_ts}
+            # Heartbeat for the supervisor's stuck-feed detector. Any tick on
+            # any subscribed symbol counts as proof the WS is alive.
+            self._last_msg_monotonic = time.monotonic()
 
             # Maintain an in-progress 1m bar from ticks. Minute boundary is
             # derived from exch_feed_time (epoch seconds) so the bar lines
