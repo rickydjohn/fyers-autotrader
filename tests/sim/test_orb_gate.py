@@ -316,3 +316,132 @@ class TestOrbGateSkipped:
         data = _make_decision(decision="HOLD")
         result = asyncio.get_event_loop().run_until_complete(_run(data, ltp=24200.0))
         result.assert_not_called()
+
+
+# ── Tests: ORB-after-break relaxation ─────────────────────────────────────────
+
+
+def _clear_orb_cache():
+    """Reset the per-session 'ORB broken' cache between tests."""
+    sim_main._orb_broken_today.clear()
+
+
+def _historical_candles_response(session_high: float, session_low: float):
+    """Build a fake /historical-data response with a high/low pair embedded."""
+    candles = [
+        {"time": "2026-05-12T04:00:00+00:00", "open": 24300, "high": session_high,
+         "low": 24300, "close": 24300, "volume": 1000},
+        {"time": "2026-05-12T04:01:00+00:00", "open": 24300, "high": 24300,
+         "low": session_low, "close": 24300, "volume": 1000},
+    ]
+    return MagicMock(status_code=200, json=lambda: {"candles": candles})
+
+
+class TestOrbAfterBreakRelaxation:
+    """
+    Once ORB is broken (either direction) at any point today, the gate is
+    disabled for the rest of the session. Backtest of 147 days shows ~75% of
+    break-days have material follow-through in some direction; only ~10-14%
+    are true false-breakout mean reversions.
+    """
+
+    def setup_method(self):
+        _clear_orb_cache()
+
+    # ── fast path: live price itself outside threshold ──
+
+    def test_buy_passes_when_live_price_above_threshold(self):
+        """Live price > orb_high × 1.002 — break confirmed by live LTP itself."""
+        data = _make_decision(decision="BUY")
+        # 24600 > 24549.0 (threshold). Fast path sets the cache.
+        result = asyncio.get_event_loop().run_until_complete(_run(data, ltp=24600.0))
+        result.assert_called_once()
+        # cache populated by the fast path
+        assert sim_main._orb_broken_today  # non-empty
+
+    def test_buy_passes_inside_orb_after_break_was_cached(self):
+        """
+        After a prior break (cached), a new BUY signal at a price *inside* ORB
+        is still allowed — the gate is disabled for the rest of the day.
+        """
+        # Manually populate cache as if break already happened earlier
+        today = _FAKE_NOW.date()
+        sim_main._orb_broken_today[(SYMBOL, today)] = True
+
+        data = _make_decision(decision="BUY")
+        # ltp 24350 is inside ORB — would normally be blocked
+        result = asyncio.get_event_loop().run_until_complete(_run(data, ltp=24350.0))
+        result.assert_called_once()
+
+    def test_sell_passes_inside_orb_after_break_was_cached(self):
+        """Same idea for the SELL side."""
+        today = _FAKE_NOW.date()
+        sim_main._orb_broken_today[(SYMBOL, today)] = True
+
+        data = _make_decision(decision="SELL")
+        result = asyncio.get_event_loop().run_until_complete(_run(data, ltp=24350.0))
+        result.assert_called_once()
+
+    # ── slow path: data-service reports the break already happened ──
+
+    def test_buy_passes_when_data_service_reports_prior_high_break(self):
+        """
+        Live price is inside ORB now, but data-service reports today's
+        session high already crossed the upper threshold earlier → gate is
+        disabled and BUY passes.
+        """
+        # Session high 24600 > th_high (24549), session_low inside ORB
+        fake_resp = _historical_candles_response(session_high=24600.0, session_low=24300.0)
+        ac_instance = AsyncMock()
+        ac_instance.get = AsyncMock(return_value=fake_resp)
+        ac_ctx = AsyncMock()
+        ac_ctx.__aenter__.return_value = ac_instance
+
+        data = _make_decision(decision="BUY")
+        with patch("main.httpx.AsyncClient", return_value=ac_ctx):
+            result = asyncio.get_event_loop().run_until_complete(_run(data, ltp=24350.0))
+        result.assert_called_once()
+
+    def test_sell_passes_when_data_service_reports_prior_low_break(self):
+        """Symmetric to above: prior session low broke down → gate disabled."""
+        fake_resp = _historical_candles_response(session_high=24400.0, session_low=24100.0)
+        ac_instance = AsyncMock()
+        ac_instance.get = AsyncMock(return_value=fake_resp)
+        ac_ctx = AsyncMock()
+        ac_ctx.__aenter__.return_value = ac_instance
+
+        data = _make_decision(decision="SELL")
+        with patch("main.httpx.AsyncClient", return_value=ac_ctx):
+            result = asyncio.get_event_loop().run_until_complete(_run(data, ltp=24350.0))
+        result.assert_called_once()
+
+    # ── gate still blocks when no break has happened today ──
+
+    def test_buy_still_blocked_when_no_break_today(self):
+        """Data-service reports no break; live price is inside ORB → gate blocks."""
+        fake_resp = _historical_candles_response(session_high=24500.0, session_low=24200.0)
+        ac_instance = AsyncMock()
+        ac_instance.get = AsyncMock(return_value=fake_resp)
+        ac_ctx = AsyncMock()
+        ac_ctx.__aenter__.return_value = ac_instance
+
+        data = _make_decision(decision="BUY")
+        with patch("main.httpx.AsyncClient", return_value=ac_ctx):
+            result = asyncio.get_event_loop().run_until_complete(_run(data, ltp=24350.0))
+        result.assert_not_called()
+
+    def test_data_service_failure_fails_open_to_gate(self):
+        """
+        If data-service errors / times out, the helper fails open (returns False)
+        and the original gate logic applies. A BUY at a price inside ORB is
+        therefore blocked as normal.
+        """
+        ac_instance = AsyncMock()
+        ac_instance.get = AsyncMock(side_effect=Exception("boom"))
+        ac_ctx = AsyncMock()
+        ac_ctx.__aenter__.return_value = ac_instance
+
+        data = _make_decision(decision="BUY")
+        with patch("main.httpx.AsyncClient", return_value=ac_ctx):
+            result = asyncio.get_event_loop().run_until_complete(_run(data, ltp=24350.0))
+        result.assert_not_called()

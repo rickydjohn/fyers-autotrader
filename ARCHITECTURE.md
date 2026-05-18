@@ -94,6 +94,9 @@ LLM decision
    │                       (gates evaluate against the actual market, not the
    │                        scan-time snapshot which may be tens of seconds stale)
    ├─ ORB gate    — price must clear 09:15–09:30 range by ORB_BUFFER
+   │                (gate is disabled for the rest of the session once price
+   │                 has crossed either threshold today — backtest shows
+   │                 ~75% of break-days have material follow-through)
    ├─ CPR gate    — price must be outside the CPR band by CPR_BUFFER
    ├─ Consolidation gate — block when inside a tight consolidation
    ├─ Entry proximity   — block if next level is within PA_PROXIMITY

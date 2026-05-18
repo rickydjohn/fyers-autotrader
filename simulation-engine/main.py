@@ -9,7 +9,8 @@ import sys
 import time
 from contextlib import asynccontextmanager
 
-from datetime import datetime
+from datetime import datetime, date as _date, time as _dtime
+from typing import Dict, Tuple
 
 import httpx
 import pytz
@@ -27,6 +28,17 @@ from portfolio.budget import initialize_budget, load_budget, reconcile_invested
 import data_client
 
 IST = pytz.timezone("Asia/Kolkata")
+
+# ORB gate buffer — price must clear the 09:15-09:30 range by 0.20% to confirm
+# a breakout (data-derived inflection point for ~80% continuation across 141
+# days of NIFTY/BANKNIFTY history).
+ORB_BUFFER = 0.002
+
+# Per-session cache: True once today's ORB has been broken (either direction).
+# Keyed by (symbol, today's date IST). Backtest of 147 days shows ~74-75% of
+# break-days have material follow-through after the first cross — so we relax
+# the ORB gate for the rest of the day once a break is observed.
+_orb_broken_today: Dict[Tuple[str, _date], bool] = {}
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -329,7 +341,6 @@ async def _handle_decision(data: dict) -> None:
         dte = int(float(data.get("dte", -1) or -1))
         if dte < 0:
             if option_expiry:
-                from datetime import date as _date
                 dte = max(0, (_date.fromisoformat(option_expiry) - _date.today()).days)
             else:
                 dte = 99
@@ -419,16 +430,22 @@ async def _handle_decision(data: dict) -> None:
 
     # ORB breakout gate — block entries when price is still inside the opening range.
     # The 09:15–09:30 high/low define the session's opening range.  A trade in the direction
-    # of the signal is only valid once price has cleared that range by 0.20% (data-derived
-    # buffer from 141 days of NIFTY/BANKNIFTY history — inflection point for ~80% continuation).
+    # of the signal is only valid once price has cleared that range by ORB_BUFFER (0.20%,
+    # data-derived buffer from 141 days of NIFTY/BANKNIFTY history).
     # BUY requires price > orb_high × 1.002 (bullish breakout above range)
     # SELL requires price < orb_low  × 0.998 (bearish breakdown below range)
+    #
+    # Relaxation: once ORB has been broken in EITHER direction at any point today,
+    # the gate is disabled for the rest of the session. Backtest of 147 days shows
+    # ~74-75% of break-days have material follow-through (in either direction) —
+    # only ~10-14% are true false-breakout mean reversions.
     if decision in ("BUY", "SELL"):
         orb_high = float(ind_dict.get("orb_high") or 0)
         orb_low  = float(ind_dict.get("orb_low")  or 0)
-        ORB_BUFFER = 0.002
         if orb_high > 0 and orb_low > 0:
-            if decision == "BUY" and current_price <= orb_high * (1 + ORB_BUFFER):
+            if await _is_orb_broken_today(symbol, orb_high, orb_low, current_price):
+                pass  # gate disabled for the rest of the day
+            elif decision == "BUY" and current_price <= orb_high * (1 + ORB_BUFFER):
                 logger.info(
                     f"[ORB GATE] BUY {symbol}: price ₹{current_price:.2f} not above "
                     f"ORB high ₹{orb_high:.2f} +{ORB_BUFFER*100:.2f}% — no breakout confirmed, skipped"
@@ -584,6 +601,76 @@ async def _handle_decision(data: dict) -> None:
 
     elif decision == "HOLD":
         pass
+
+
+async def _is_orb_broken_today(
+    symbol: str, orb_high: float, orb_low: float, current_price: float
+) -> bool:
+    """
+    Return True if today's session has crossed either ORB threshold (±0.20%)
+    at any point since 09:30 IST.
+
+    Once True for a (symbol, date), the result is cached — subsequent calls
+    short-circuit without hitting data-service.
+
+    Fast path: if the live price we already have (current_price) is itself
+    outside the threshold, the break is confirmed now.
+    Slow path: query data-service for today's 1m bars since 09:30 IST and
+    test session high/low.
+
+    Fail-open on data-service errors — we don't want a flaky query to disable
+    the gate prematurely.
+    """
+    if orb_high <= 0 or orb_low <= 0:
+        return False
+
+    today = datetime.now(IST).date()
+    cache_key = (symbol, today)
+    if _orb_broken_today.get(cache_key):
+        return True
+
+    th_high = orb_high * (1 + ORB_BUFFER)
+    th_low  = orb_low  * (1 - ORB_BUFFER)
+
+    # Fast path: live LTP itself is outside threshold
+    if current_price > th_high or current_price < th_low:
+        _orb_broken_today[cache_key] = True
+        logger.info(
+            f"[ORB GATE] {symbol}: ORB threshold crossed by live price ₹{current_price:.2f} "
+            f"(th_high={th_high:.2f}, th_low={th_low:.2f}) — gate disabled for rest of day"
+        )
+        return True
+
+    # Slow path: query session bars
+    try:
+        since_iso = datetime.combine(today, _dtime(9, 30), tzinfo=IST).isoformat()
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get(
+                f"{settings.data_service_url}/api/v1/historical-data",
+                params={"symbol": symbol, "interval": "1m", "limit": 400, "since": since_iso},
+            )
+            if resp.status_code != 200:
+                return False
+            candles = resp.json().get("candles", [])
+    except Exception as e:
+        logger.debug(f"ORB-broken check: data-service query failed for {symbol}: {e}")
+        return False
+
+    if not candles:
+        return False
+
+    session_high = max(float(c["high"]) for c in candles)
+    session_low  = min(float(c["low"])  for c in candles)
+    if session_high > th_high or session_low < th_low:
+        _orb_broken_today[cache_key] = True
+        logger.info(
+            f"[ORB GATE] {symbol}: ORB threshold previously crossed today "
+            f"(session_high={session_high:.2f}, session_low={session_low:.2f}, "
+            f"th_high={th_high:.2f}, th_low={th_low:.2f}) — gate disabled for rest of day"
+        )
+        return True
+
+    return False
 
 
 async def _fetch_live_ltp(symbol: str) -> float | None:

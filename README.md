@@ -131,6 +131,8 @@ Right after the confidence floor, fetch a live LTP. The downstream gates evaluat
 ### ORB gate
 No trades before 09:30 IST. After that, BUY requires price > `orb_high × (1 + ORB_BUFFER)`, SELL requires the symmetric break below `orb_low`. Default buffer 0.20%.
 
+**ORB-after-break relaxation:** once price has crossed either threshold today, the gate is disabled for the rest of the session — both directions become tradable regardless of where current price sits in the ORB. A 7-month backtest of 147 days showed ~75% of break-days produce material follow-through in some direction (clean continuation, whipsaw-then-trend, or reversal); only ~10–14% are true false-breakout mean reversions. Lazily re-checked from data-service on first signal after a sim restart.
+
 ### CPR gate
 BUY requires price > max(TC, BC) × 1.002. SELL requires price < min(TC, BC) × 0.998. Handles inverted CPR (BC > TC) symmetrically.
 
