@@ -90,9 +90,9 @@ sequenceDiagram
 LLM decision
    │
    ├─ Confidence floor (≥ 0.70)
-   ├─ Drift veto  — fetch live ltp; abort if drift > drift_veto_pct against signal
-   │              (also overwrites current_price with the fresh value so downstream
-   │               gates evaluate against the actual market, not the scan-time snapshot)
+   ├─ Fresh-price refresh — fetch live ltp and use it for the downstream gates
+   │                       (gates evaluate against the actual market, not the
+   │                        scan-time snapshot which may be tens of seconds stale)
    ├─ ORB gate    — price must clear 09:15–09:30 range by ORB_BUFFER
    ├─ CPR gate    — price must be outside the CPR band by CPR_BUFFER
    ├─ Consolidation gate — block when inside a tight consolidation

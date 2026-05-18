@@ -382,43 +382,26 @@ async def _handle_decision(data: dict) -> None:
         )
         return
 
-    # Drift veto + fresh-price refresh — runs BEFORE the other gates.
+    # Fresh-price refresh — runs BEFORE the other gates.
     # The market:{symbol} snapshot price reflects scan-time and may be tens of
     # seconds (or minutes on Ollama gpt-oss:120b) stale by the time we get here.
-    # 1. If price drifted >drift_veto_pct AGAINST the signal between snapshot and now,
-    #    skip the trade — the LLM's view is no longer the market's view.
-    # 2. Otherwise, replace current_price with the live LTP so the downstream
-    #    gates (ORB / CPR / consolidation / entry proximity) evaluate the
-    #    *actual* market state at order time, not the stale scan-time view.
-    #    A 2026-05-14 BANKNIFTY trade demonstrated the bug: CPR-TC threshold was
-    #    53,413 but the scan-time price was 53,341 (gate passed); the real price
-    #    at order fire was ~53,415 (gate would have blocked).
+    # Replace current_price with the live LTP so the downstream gates
+    # (ORB / CPR / consolidation / entry proximity) evaluate the *actual*
+    # market state at order time, not the stale scan-time view.
+    # A 2026-05-14 BANKNIFTY trade demonstrated the bug: CPR-TC threshold was
+    # 53,413 but the scan-time price was 53,341 (gate passed); the real price
+    # at order fire was ~53,415 (gate would have blocked).
     # Fail-open on quote failure so a flaky Fyers call doesn't introduce a new outage mode.
     if decision in ("BUY", "SELL"):
-        snapshot_price = float(ind_dict.get("price") or 0)
-        if snapshot_price > 0:
-            live_ltp = await _fetch_live_ltp(symbol)
-            if live_ltp:
-                drift = (live_ltp - snapshot_price) / snapshot_price
-                threshold = settings.drift_veto_pct
-                adverse = (
-                    (decision == "BUY"  and drift < -threshold) or
-                    (decision == "SELL" and drift >  threshold)
+        live_ltp = await _fetch_live_ltp(symbol)
+        if live_ltp:
+            if abs(live_ltp - current_price) > 0.01:
+                logger.info(
+                    f"[FRESH PRICE] {decision} {symbol}: snapshot ₹{current_price:.2f} → "
+                    f"live ₹{live_ltp:.2f} (Δ {(live_ltp-current_price)/current_price*100:+.3f}%); "
+                    f"gates will use the live price"
                 )
-                if adverse:
-                    logger.info(
-                        f"[DRIFT VETO] {decision} {symbol}: snapshot ₹{snapshot_price:.2f} "
-                        f"→ live ₹{live_ltp:.2f} ({drift*100:+.3f}%) — adverse drift exceeds "
-                        f"{threshold*100:.2f}%, skipped"
-                    )
-                    return
-                if abs(live_ltp - current_price) > 0.01:
-                    logger.info(
-                        f"[FRESH PRICE] {decision} {symbol}: snapshot ₹{current_price:.2f} → "
-                        f"live ₹{live_ltp:.2f} (Δ {(live_ltp-current_price)/current_price*100:+.3f}%); "
-                        f"gates will use the live price"
-                    )
-                current_price = live_ltp
+            current_price = live_ltp
 
     # ORB gate — no trades before 09:30 IST.
     # The opening 15 minutes (09:15–09:30) are used to form the session's range.

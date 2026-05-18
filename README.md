@@ -93,7 +93,6 @@ LLM_DECISION_INTERVAL_SECONDS=60
 GREEKS_POLL_INTERVAL_SECONDS=5
 CANDLE_INTERVAL=1m
 MIN_BAR_POSITION=2
-DRIFT_VETO_PCT=0.0010
 ```
 
 ### 4. Start all services
@@ -120,14 +119,14 @@ http://localhost:3000
 A decision goes through these layers in order before a trade executes:
 
 ```
-LLM → confidence ≥ 0.70 → drift veto → ORB → CPR → consolidation → proximity → broker
+LLM → confidence ≥ 0.70 → fresh-price refresh → ORB → CPR → consolidation → proximity → broker
 ```
 
 ### Confidence floor
 `confidence < 0.70` becomes HOLD.
 
-### Drift veto (entry-side staleness check, runs BEFORE the gates)
-Right after the confidence floor, fetch a live LTP. If it has moved more than `DRIFT_VETO_PCT` (default 0.10%) against the signal direction since the LLM snapshot, abort. When the drift is acceptable, the gates below also see the fresh price — they used to evaluate against the scan-time snapshot, which was minutes stale on Ollama 120b runs.
+### Fresh-price refresh (runs BEFORE the gates)
+Right after the confidence floor, fetch a live LTP. The downstream gates evaluate against this fresh price rather than the scan-time snapshot, which can be tens of seconds (or minutes on Ollama 120b runs) stale.
 
 ### ORB gate
 No trades before 09:30 IST. After that, BUY requires price > `orb_high × (1 + ORB_BUFFER)`, SELL requires the symmetric break below `orb_low`. Default buffer 0.20%.
@@ -219,7 +218,6 @@ curl -X POST http://localhost:8001/scan/trigger
 | `MIN_BAR_POSITION` | `2` | Minute into 5m bar before LLM runs |
 | `LLM_DECISION_INTERVAL_SECONDS` | `60` | Cadence of the LLM decision cycle (fetch + indicators + LLM call ~29s + persist). <60s queues behind the LLM. Was `SCAN_INTERVAL_SECONDS` pre-WS-migration. |
 | `GREEKS_POLL_INTERVAL_SECONDS` | `5` | Cadence of the Greeks (delta/gamma/theta/vega/IV) REST poll for open option positions. Underlying + option *prices* are now WS-fed and don't depend on this. Was `POSITION_WATCHER_INTERVAL_SECONDS` pre-WS-migration. |
-| `DRIFT_VETO_PCT` | `0.0010` | Adverse drift threshold (snapshot → live LTP) before entry is skipped |
 | `OLLAMA_TIMEOUT` | `120` | LLM hard timeout (120s for gpt-oss:120b) |
 | `INITIAL_BUDGET` | `100000` | Virtual capital (INR, sim mode) |
 | `MAX_POSITION_SIZE_PCT` | `10` | Max % of budget per trade |

@@ -45,7 +45,6 @@ _sim_settings = SimpleNamespace(
     commission_pct=0.03,
     initial_capital=100000.0,
     slack_webhook_url="",
-    drift_veto_pct=0.0010,
 )
 _cfg = ModuleType("config")
 _cfg.settings = _sim_settings

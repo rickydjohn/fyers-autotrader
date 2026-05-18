@@ -27,12 +27,6 @@ class Settings(BaseSettings):
     # Minutes to block re-entry on an underlying after a STOP_LOSS or TRAIL_STOP
     sl_cooldown_minutes: int = Field(15, env="SL_COOLDOWN_MINUTES")
 
-    # Drift veto threshold — fraction (e.g. 0.0010 = 0.10%). At order time, if the live
-    # underlying price has drifted by more than this AGAINST the signal direction since
-    # the LLM snapshot, the entry is skipped. Defends against stale signals when LLM
-    # latency makes the decision lag behind the market.
-    drift_veto_pct: float = Field(0.0010, env="DRIFT_VETO_PCT")
-
     class Config:
         env_file = ".env"
         case_sensitive = False
