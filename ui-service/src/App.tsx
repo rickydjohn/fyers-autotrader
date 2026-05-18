@@ -234,12 +234,14 @@ export default function App() {
       .sort((a, b) => parseDate(a.entry_time).getTime() - parseDate(b.entry_time).getTime())
   }, [trades])
 
-  // Use live 5m candles when available, otherwise fall back to historical
-  const liveCandles = currentData?.candles
+  // displayCandles is the chart's source of truth for every timeframe. The
+  // forming-bar useEffect updates historicalCandles every 1s for all
+  // timeframes (1m: splices the forming bar as a new candle; 5m+: patches
+  // the last aggregated candle's close + extends high/low). The earlier
+  // `timeframe === '5m' ? liveCandles : ...` branch was a leftover from
+  // before that pipeline existed — liveCandles only refreshes every ~10s
+  // and would override the per-second updates.
   const displayCandles = useMemo(() => {
-    if (timeframe === '5m' && liveCandles?.length) {
-      return liveCandles
-    }
     return historicalCandles.map((c) => ({
       timestamp: c.time,
       open: c.open,
@@ -248,7 +250,7 @@ export default function App() {
       close: c.close,
       volume: c.volume,
     }))
-  }, [timeframe, liveCandles, historicalCandles])
+  }, [historicalCandles])
 
   if (page === 'report' || page === 'health') {
     return (
