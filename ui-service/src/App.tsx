@@ -117,14 +117,25 @@ export default function App() {
   // The chart never receives more than one OHLC update per second per symbol.
   //
   // 1m timeframe   — splice the forming bar as its own candle (replace or append).
-  // 5m+ timeframes — the last candle in the chart is the in-progress aggregated
-  //                  bar. Patch its close from the forming 1m bar and extend its
-  //                  high/low if the latest 1m tick has pushed them. Also widen
-  //                  with last_bar so the just-finalised 1m's range lands in the
-  //                  aggregated bar before the next /aggregated-view refresh
-  //                  picks it up.
+  // 5m+ timeframes — bucket the forming-bar's timestamp to the active
+  //                  timeframe; if the bucket matches the LAST candle, patch
+  //                  it in place; if the bucket has advanced, APPEND a new
+  //                  aggregated candle so the chart visibly progresses
+  //                  through the boundary without needing a fetch.
   useEffect(() => {
     let cancelled = false
+    const tfMinutes: Record<string, number> = {
+      '1m': 1, '5m': 5, '15m': 15, '1h': 60,
+    }
+    const tfMs = (tfMinutes[timeframe] ?? 1) * 60_000
+
+    const bucketStartMs = (iso: string): number => {
+      const ms = new Date(iso).getTime()
+      return Math.floor(ms / tfMs) * tfMs
+    }
+    const bucketIsoFor = (iso: string): string =>
+      new Date(bucketStartMs(iso)).toISOString().replace(/\.\d{3}Z$/, '+00:00')
+
     const tick = async () => {
       const { forming_bar, last_bar } = await fetchFormingBar(selectedSymbol)
       if (cancelled) return
@@ -153,23 +164,52 @@ export default function App() {
           return next
         }
 
-        // Higher timeframes (5m / 15m / 1h / etc): update the LAST aggregated
-        // candle. We never add a new candle here — the aggregated-view fetch
-        // owns the bar-boundary lifecycle for these timeframes.
+        // Higher timeframes (5m / 15m / 1h):
+        // Compute the bucket the forming 1m bar belongs to. If it's the same
+        // bucket as the last historical candle, patch in place. If it's a new
+        // bucket (timeframe boundary just crossed), append a brand-new bar.
+        if (!forming_bar) return next
         const lastIdx = next.length - 1
         const last    = next[lastIdx]
+        const lastBucketStart    = bucketStartMs(last.time)
+        const formingBucketStart = bucketStartMs(forming_bar.time)
+
+        if (formingBucketStart > lastBucketStart) {
+          // New timeframe bucket — append. Seed from the forming bar; future
+          // polls within this bucket will extend high/low and update close.
+          // Also widen with last_bar if the just-finalised 1m sits inside this
+          // new bucket too (rare; usually last_bar is in the previous bucket).
+          let bHigh = forming_bar.high
+          let bLow  = forming_bar.low
+          let bOpen = forming_bar.open
+          if (last_bar && bucketStartMs(last_bar.time) === formingBucketStart) {
+            if (last_bar.high > bHigh) bHigh = last_bar.high
+            if (last_bar.low  < bLow ) bLow  = last_bar.low
+            // open of the bucket = open of the FIRST 1m in this bucket
+            bOpen = last_bar.open
+          }
+          const newCandle = {
+            time:   bucketIsoFor(forming_bar.time),
+            open:   bOpen,
+            high:   bHigh,
+            low:    bLow,
+            close:  forming_bar.close,
+            volume: 0,
+          }
+          return [...next, newCandle]
+        }
+
+        // Same bucket — patch the last candle in place.
         let high  = last.high
         let low   = last.low
         let close = last.close
-        if (last_bar) {
+        if (last_bar && bucketStartMs(last_bar.time) === lastBucketStart) {
           if (last_bar.high > high) high = last_bar.high
           if (last_bar.low  < low ) low  = last_bar.low
         }
-        if (forming_bar) {
-          if (forming_bar.high > high) high = forming_bar.high
-          if (forming_bar.low  < low ) low  = forming_bar.low
-          close = forming_bar.close
-        }
+        if (forming_bar.high > high) high = forming_bar.high
+        if (forming_bar.low  < low ) low  = forming_bar.low
+        close = forming_bar.close
         if (close === last.close && high === last.high && low === last.low) {
           return next  // nothing changed — skip the re-render
         }
