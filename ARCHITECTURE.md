@@ -97,7 +97,9 @@ LLM decision
    │                (gate is disabled for the rest of the session once price
    │                 has crossed either threshold today — backtest shows
    │                 ~75% of break-days have material follow-through)
-   ├─ CPR gate    — price must be outside the CPR band by CPR_BUFFER
+   ├─ CPR gate    — block when price is inside the [BC × 0.998, TC × 1.002]
+   │                no-trade bracket; outside, direction-agnostic (CPR is a
+   │                level, not a breakout barrier)
    ├─ Consolidation gate — block when inside a tight consolidation
    ├─ Entry proximity   — block if next level is within PA_PROXIMITY
    └─ open_position  (captures invalidation_levels from snapshot)

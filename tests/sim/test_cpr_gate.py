@@ -1,12 +1,13 @@
 """
 Unit tests for the CPR gate in simulation-engine/main.py.
 
-Gate logic:
+Gate logic (no-trade bracket — symmetric, direction-agnostic):
   upper = max(CPR_TC, CPR_BC)   — handles both normal and inverted CPR
   lower = min(CPR_TC, CPR_BC)
+  bracket = [lower * 0.998, upper * 1.002]
 
-  BUY  blocked when price <= upper * 1.002  (not confirmed above band)
-  SELL blocked when price >= lower * 0.998  (not confirmed below band)
+  Inside bracket → block BOTH BUY and SELL (no-trade zone)
+  Outside bracket → no CPR constraint (LLM direction goes through)
 
   Gate skipped when cpr_tc=0 or cpr_bc=0.
 
@@ -178,93 +179,125 @@ async def _run(data: dict, ltp: float):
 
 
 # ── Normal CPR (TC=24300, BC=24200) ──────────────────────────────────────────
-# upper=24300, BUY threshold = 24300 × 1.002 = 24348.6
-# lower=24200, SELL threshold = 24200 × 0.998 = 24151.6
+# upper=TC=24300, lower=BC=24200
+# bracket = [24200 × 0.998, 24300 × 1.002] = [24151.6, 24348.6]
 
-class TestCprGateNormal:
-    """Normal CPR where TC > BC."""
+class TestCprGateNormalBlocksInside:
+    """Inside the no-trade bracket — BOTH BUY and SELL must be blocked."""
 
     def test_buy_blocked_inside_cpr_band(self):
+        """Strictly inside the band [BC, TC] — block."""
         data = _make_decision("BUY", cpr_tc=_TC_NORM, cpr_bc=_BC_NORM)
         result = asyncio.get_event_loop().run_until_complete(_run(data, ltp=24250.0))
         result.assert_not_called()
-
-    def test_buy_blocked_at_exact_upper_boundary(self):
-        data = _make_decision("BUY", cpr_tc=_TC_NORM, cpr_bc=_BC_NORM)
-        result = asyncio.get_event_loop().run_until_complete(_run(data, ltp=_TC_NORM))
-        result.assert_not_called()
-
-    def test_buy_blocked_at_exact_buffer_threshold(self):
-        threshold = round(_TC_NORM * 1.002, 2)
-        data = _make_decision("BUY", cpr_tc=_TC_NORM, cpr_bc=_BC_NORM)
-        result = asyncio.get_event_loop().run_until_complete(_run(data, ltp=threshold))
-        result.assert_not_called()
-
-    def test_buy_passes_just_above_buffer_threshold(self):
-        threshold = _TC_NORM * 1.002
-        data = _make_decision("BUY", cpr_tc=_TC_NORM, cpr_bc=_BC_NORM)
-        result = asyncio.get_event_loop().run_until_complete(_run(data, ltp=threshold + 0.05))
-        result.assert_called_once()
-
-    def test_buy_passes_clearly_above_cpr(self):
-        data = _make_decision("BUY", cpr_tc=_TC_NORM, cpr_bc=_BC_NORM)
-        result = asyncio.get_event_loop().run_until_complete(_run(data, ltp=24500.0))
-        result.assert_called_once()
 
     def test_sell_blocked_inside_cpr_band(self):
         data = _make_decision("SELL", cpr_tc=_TC_NORM, cpr_bc=_BC_NORM)
         result = asyncio.get_event_loop().run_until_complete(_run(data, ltp=24250.0))
         result.assert_not_called()
 
-    def test_sell_blocked_at_exact_lower_boundary(self):
+    def test_buy_blocked_exactly_at_upper_band_edge(self):
+        """price == TC — still inside band."""
+        data = _make_decision("BUY", cpr_tc=_TC_NORM, cpr_bc=_BC_NORM)
+        result = asyncio.get_event_loop().run_until_complete(_run(data, ltp=_TC_NORM))
+        result.assert_not_called()
+
+    def test_sell_blocked_exactly_at_lower_band_edge(self):
         data = _make_decision("SELL", cpr_tc=_TC_NORM, cpr_bc=_BC_NORM)
         result = asyncio.get_event_loop().run_until_complete(_run(data, ltp=_BC_NORM))
         result.assert_not_called()
 
-    def test_sell_blocked_at_exact_buffer_threshold(self):
+    def test_buy_blocked_just_above_band_within_buffer(self):
+        """price just above TC but within +0.20% buffer — still inside bracket."""
+        # 24320 = TC (24300) + 20 < TC × 1.002 (=24348.6)
+        data = _make_decision("BUY", cpr_tc=_TC_NORM, cpr_bc=_BC_NORM)
+        result = asyncio.get_event_loop().run_until_complete(_run(data, ltp=24320.0))
+        result.assert_not_called()
+
+    def test_sell_blocked_just_below_band_within_buffer(self):
+        """price just below BC but within -0.20% buffer — still inside bracket."""
+        data = _make_decision("SELL", cpr_tc=_TC_NORM, cpr_bc=_BC_NORM)
+        result = asyncio.get_event_loop().run_until_complete(_run(data, ltp=24180.0))
+        result.assert_not_called()
+
+    def test_buy_blocked_at_upper_bracket_edge(self):
+        """price == TC × 1.002 — inclusive upper edge of bracket, still blocked."""
+        threshold = round(_TC_NORM * 1.002, 2)
+        data = _make_decision("BUY", cpr_tc=_TC_NORM, cpr_bc=_BC_NORM)
+        result = asyncio.get_event_loop().run_until_complete(_run(data, ltp=threshold))
+        result.assert_not_called()
+
+    def test_sell_blocked_at_lower_bracket_edge(self):
         threshold = round(_BC_NORM * 0.998, 2)
         data = _make_decision("SELL", cpr_tc=_TC_NORM, cpr_bc=_BC_NORM)
         result = asyncio.get_event_loop().run_until_complete(_run(data, ltp=threshold))
         result.assert_not_called()
 
-    def test_sell_passes_just_below_buffer_threshold(self):
+
+class TestCprGateNormalAllowsOutside:
+    """Outside the bracket — direction-agnostic, both BUY and SELL pass."""
+
+    def test_buy_passes_clearly_above_bracket(self):
+        data = _make_decision("BUY", cpr_tc=_TC_NORM, cpr_bc=_BC_NORM)
+        result = asyncio.get_event_loop().run_until_complete(_run(data, ltp=24500.0))
+        result.assert_called_once()
+
+    def test_sell_passes_clearly_above_bracket(self):
+        """NEW: SELL above CPR bracket is allowed (was blocked under old gate)."""
+        data = _make_decision("SELL", cpr_tc=_TC_NORM, cpr_bc=_BC_NORM)
+        result = asyncio.get_event_loop().run_until_complete(_run(data, ltp=24500.0))
+        result.assert_called_once()
+
+    def test_buy_passes_clearly_below_bracket(self):
+        """NEW: BUY below CPR bracket is allowed (was blocked under old gate).
+        This is the 2026-05-18 case the user flagged: price ~57 pts below BC
+        is borderline (0.20% buffer puts it just inside); price clearly below
+        the buffer must pass."""
+        data = _make_decision("BUY", cpr_tc=_TC_NORM, cpr_bc=_BC_NORM)
+        result = asyncio.get_event_loop().run_until_complete(_run(data, ltp=23900.0))
+        result.assert_called_once()
+
+    def test_sell_passes_clearly_below_bracket(self):
+        data = _make_decision("SELL", cpr_tc=_TC_NORM, cpr_bc=_BC_NORM)
+        result = asyncio.get_event_loop().run_until_complete(_run(data, ltp=23900.0))
+        result.assert_called_once()
+
+    def test_buy_passes_just_above_upper_bracket_edge(self):
+        threshold = _TC_NORM * 1.002
+        data = _make_decision("BUY", cpr_tc=_TC_NORM, cpr_bc=_BC_NORM)
+        result = asyncio.get_event_loop().run_until_complete(_run(data, ltp=threshold + 0.05))
+        result.assert_called_once()
+
+    def test_sell_passes_just_below_lower_bracket_edge(self):
         threshold = _BC_NORM * 0.998
         data = _make_decision("SELL", cpr_tc=_TC_NORM, cpr_bc=_BC_NORM)
         result = asyncio.get_event_loop().run_until_complete(_run(data, ltp=threshold - 0.05))
         result.assert_called_once()
 
-    def test_sell_passes_clearly_below_cpr(self):
-        data = _make_decision("SELL", cpr_tc=_TC_NORM, cpr_bc=_BC_NORM)
-        result = asyncio.get_event_loop().run_until_complete(_run(data, ltp=23900.0))
-        result.assert_called_once()
 
-
-# ── Inverted CPR (BC=23553 > TC=23437) — today's scenario ────────────────────
-# upper=BC=23553, BUY threshold = 23553 × 1.002 = 23600.1
-# lower=TC=23437, SELL threshold = 23437 × 0.998 = 23390.1
+# ── Inverted CPR (BC=23553 > TC=23437) ───────────────────────────────────────
+# upper=BC=23553, lower=TC=23437
+# bracket = [23437 × 0.998, 23553 × 1.002] = [23390.1, 23600.1]
 
 class TestCprGateInverted:
-    """Inverted CPR where BC > TC — upper boundary is BC, not TC."""
+    """Inverted CPR where BC > TC — gate logic handles both orderings."""
 
-    def test_buy_blocked_when_only_above_tc_not_bc(self):
-        """Today's scenario: price above TC (lower) but not above BC (upper)."""
-        # price=23500 > TC=23437 but < BC=23553 → still inside band
+    def test_buy_blocked_inside_inverted_band(self):
+        """price=23500 is inside [TC=23437, BC=23553]."""
         data = _make_decision("BUY", cpr_tc=_TC_INV, cpr_bc=_BC_INV)
         result = asyncio.get_event_loop().run_until_complete(_run(data, ltp=23500.0))
         result.assert_not_called()
 
+    def test_sell_blocked_inside_inverted_band(self):
+        data = _make_decision("SELL", cpr_tc=_TC_INV, cpr_bc=_BC_INV)
+        result = asyncio.get_event_loop().run_until_complete(_run(data, ltp=23500.0))
+        result.assert_not_called()
+
     def test_buy_blocked_just_above_bc_within_buffer(self):
-        """Price is 0.07% above BC — the exact today scenario, must be blocked."""
+        """price ~0.07% above BC — within +0.20% buffer, still inside bracket."""
         price = round(_BC_INV * 1.0007, 2)   # ~23569
         data  = _make_decision("BUY", cpr_tc=_TC_INV, cpr_bc=_BC_INV)
         result = asyncio.get_event_loop().run_until_complete(_run(data, ltp=price))
-        result.assert_not_called()
-
-    def test_buy_blocked_at_bc_buffer_threshold(self):
-        # Use the exact float threshold — rounding up would exceed it and pass
-        threshold = _BC_INV * 1.002
-        data = _make_decision("BUY", cpr_tc=_TC_INV, cpr_bc=_BC_INV)
-        result = asyncio.get_event_loop().run_until_complete(_run(data, ltp=threshold))
         result.assert_not_called()
 
     def test_buy_passes_above_bc_buffer(self):
@@ -273,16 +306,23 @@ class TestCprGateInverted:
         result = asyncio.get_event_loop().run_until_complete(_run(data, ltp=threshold + 0.05))
         result.assert_called_once()
 
-    def test_sell_blocked_just_below_tc_within_buffer(self):
-        """SELL: lower boundary is TC=23437; price just barely below TC."""
-        price = round(_TC_INV * 0.9993, 2)
-        data  = _make_decision("SELL", cpr_tc=_TC_INV, cpr_bc=_BC_INV)
-        result = asyncio.get_event_loop().run_until_complete(_run(data, ltp=price))
-        result.assert_not_called()
+    def test_sell_passes_above_bc_buffer(self):
+        """NEW: SELL above the inverted band passes (direction-agnostic)."""
+        threshold = _BC_INV * 1.002
+        data = _make_decision("SELL", cpr_tc=_TC_INV, cpr_bc=_BC_INV)
+        result = asyncio.get_event_loop().run_until_complete(_run(data, ltp=threshold + 0.05))
+        result.assert_called_once()
 
     def test_sell_passes_clearly_below_tc(self):
         threshold = _TC_INV * 0.998
         data = _make_decision("SELL", cpr_tc=_TC_INV, cpr_bc=_BC_INV)
+        result = asyncio.get_event_loop().run_until_complete(_run(data, ltp=threshold - 0.05))
+        result.assert_called_once()
+
+    def test_buy_passes_clearly_below_tc(self):
+        """NEW: BUY below the inverted band passes (direction-agnostic)."""
+        threshold = _TC_INV * 0.998
+        data = _make_decision("BUY", cpr_tc=_TC_INV, cpr_bc=_BC_INV)
         result = asyncio.get_event_loop().run_until_complete(_run(data, ltp=threshold - 0.05))
         result.assert_called_once()
 

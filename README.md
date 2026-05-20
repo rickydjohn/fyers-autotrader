@@ -134,7 +134,7 @@ No trades before 09:30 IST. After that, BUY requires price > `orb_high × (1 + O
 **ORB-after-break relaxation:** once price has crossed either threshold today, the gate is disabled for the rest of the session — both directions become tradable regardless of where current price sits in the ORB. A 7-month backtest of 147 days showed ~75% of break-days produce material follow-through in some direction (clean continuation, whipsaw-then-trend, or reversal); only ~10–14% are true false-breakout mean reversions. Lazily re-checked from data-service on first signal after a sim restart.
 
 ### CPR gate
-BUY requires price > max(TC, BC) × 1.002. SELL requires price < min(TC, BC) × 0.998. Handles inverted CPR (BC > TC) symmetrically.
+Treats CPR as a level (like S1/S2/R1/R2), not as a breakout barrier. Defines a no-trade bracket `[min(TC,BC) × 0.998, max(TC,BC) × 1.002]`. Block both BUY and SELL when current price is inside that bracket. Outside the bracket, no CPR constraint — the LLM's signal direction passes through regardless of which side of CPR price is on. Handles inverted CPR (BC > TC) symmetrically.
 
 ### Consolidation gate
 Block all entries when the symbol is inside a tight consolidation range and the LLM hasn't claimed a breakout.

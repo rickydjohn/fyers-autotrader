@@ -458,12 +458,19 @@ async def _handle_decision(data: dict) -> None:
                 )
                 return
 
-    # CPR gate — price must have cleared the CPR band by 0.20% before entry.
-    # Uses max(TC, BC) as the upper boundary and min(TC, BC) as the lower boundary so
-    # the gate works correctly for both normal CPR (TC > BC) and inverted CPR (BC > TC).
-    # BUY requires price > upper × 1.002 — confirmed breakout above the band.
-    # SELL requires price < lower × 0.998 — confirmed breakdown below the band.
-    # Gate is skipped when either value is zero (CPR not yet computed).
+    # CPR gate — block entries when price is operating inside the CPR no-trade bracket.
+    # CPR is treated as a level (like S1/S2/R1/R2): there is high indecisiveness
+    # when price is inside or right against the central pivot range, and we want
+    # to stay out. Outside the bracket the gate is direction-agnostic — the LLM's
+    # signal direction goes through (CPR no longer acts as a breakout barrier).
+    #
+    # bracket = [min(TC,BC) × 0.998, max(TC,BC) × 1.002]
+    #   inside bracket  → block both BUY and SELL (no-trade zone)
+    #   outside bracket → no CPR constraint
+    #
+    # Uses max(TC, BC) as the upper boundary so the gate works correctly for both
+    # normal CPR (TC > BC) and inverted CPR (BC > TC). Gate is skipped when
+    # either value is zero (CPR not yet computed).
     if decision in ("BUY", "SELL"):
         cpr_tc = float(ind_dict.get("cpr_tc") or 0)
         cpr_bc = float(ind_dict.get("cpr_bc") or 0)
@@ -471,16 +478,13 @@ async def _handle_decision(data: dict) -> None:
         if cpr_tc > 0 and cpr_bc > 0:
             cpr_upper = max(cpr_tc, cpr_bc)
             cpr_lower = min(cpr_tc, cpr_bc)
-            if decision == "BUY" and current_price <= cpr_upper * (1 + CPR_BUFFER):
+            bracket_lo = cpr_lower * (1 - CPR_BUFFER)
+            bracket_hi = cpr_upper * (1 + CPR_BUFFER)
+            if bracket_lo <= current_price <= bracket_hi:
                 logger.info(
-                    f"[CPR GATE] BUY {symbol}: price ₹{current_price:.2f} not above "
-                    f"CPR upper ₹{cpr_upper:.2f} +{CPR_BUFFER*100:.2f}% — no confirmed breakout, skipped"
-                )
-                return
-            elif decision == "SELL" and current_price >= cpr_lower * (1 - CPR_BUFFER):
-                logger.info(
-                    f"[CPR GATE] SELL {symbol}: price ₹{current_price:.2f} not below "
-                    f"CPR lower ₹{cpr_lower:.2f} -{CPR_BUFFER*100:.2f}% — no confirmed breakdown, skipped"
+                    f"[CPR GATE] {decision} {symbol}: price ₹{current_price:.2f} inside "
+                    f"no-trade bracket [{bracket_lo:.2f}, {bracket_hi:.2f}] "
+                    f"(CPR band {cpr_lower:.2f}-{cpr_upper:.2f} ±{CPR_BUFFER*100:.2f}%) — skipped"
                 )
                 return
 
