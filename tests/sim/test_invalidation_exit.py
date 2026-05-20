@@ -14,6 +14,13 @@ from datetime import datetime
 import pytest
 import pytz
 
+# Evict any stubs other test files may have installed for execution.* — we
+# need the real invalidation_exit module here. (Gate test files _stub it at
+# their import time, which leaks via sys.modules.)
+import sys as _sys
+for _k in ("execution.invalidation_exit", "execution"):
+    _sys.modules.pop(_k, None)
+
 from execution.invalidation_exit import check_invalidation_exit
 from models.schemas import Position
 
@@ -150,3 +157,150 @@ class TestRealTrade20260514:
         # Later in the run-up, price hits 53,571 (above CPR-TC and VWAP too).
         # Iteration order returns EMA21 (first crossed in the dict).
         assert check_invalidation_exit(pos, 53_571.0) == "INVALIDATION_EMA_21"
+
+
+# ── Bug-fix coverage (2026-05-20): the new CPR gate allows trades on the
+#    "wrong" side of CPR (SELL above, BUY below). The capture step in
+#    main.py now filters out levels that are not adverse to the trade
+#    direction. The exit check must not iterate hardcoded keys — it must
+#    iterate whatever was captured, and a position with NO captured levels
+#    (empty / None) must never auto-exit. ────────────────────────────────
+
+
+class TestUniformLevelHandling:
+    """All levels are treated the same — CPR's TC and BC are no different
+    from VWAP or EMA21."""
+
+    def test_sell_with_cpr_bc_above_price_invalidates_via_cpr_bc(self):
+        """A SELL captured cpr_bc (because it was above entry price).
+        Price crossing UP through cpr_bc must trigger invalidation just
+        like any other level."""
+        pos = _pos("SELL", {"cpr_bc": 53_600.0})
+        assert check_invalidation_exit(pos, 53_601.0) == "INVALIDATION_CPR_BC"
+
+    def test_buy_with_cpr_tc_below_price_invalidates_via_cpr_tc(self):
+        """A BUY captured cpr_tc (because it was below entry price).
+        Price crossing DOWN through cpr_tc must trigger invalidation."""
+        pos = _pos("BUY", {"cpr_tc": 23_700.0})
+        assert check_invalidation_exit(pos, 23_699.0) == "INVALIDATION_CPR_TC"
+
+    def test_sell_only_vwap_captured_only_vwap_can_invalidate(self):
+        """If capture stage decided only VWAP was adverse, only VWAP
+        invalidation is possible — no hardcoded list of 'expected' keys."""
+        pos = _pos("SELL", {"vwap": 53_589.0})
+        assert check_invalidation_exit(pos, 53_400.0) is None
+        assert check_invalidation_exit(pos, 53_590.0) == "INVALIDATION_VWAP"
+
+    def test_position_with_no_adverse_levels_never_invalidates(self):
+        """A trade taken in a position where no nearby level is adverse
+        (capture returned None) relies on premium SL alone — invalidation
+        check must always return None."""
+        pos_sell = _pos("SELL", None)
+        pos_buy  = _pos("BUY",  None)
+        for price in (10_000.0, 53_500.0, 100_000.0):
+            assert check_invalidation_exit(pos_sell, price) is None
+            assert check_invalidation_exit(pos_buy,  price) is None
+
+
+# ── Capture-side (main._build_invalidation_levels): only levels ADVERSE to
+#    the trade direction at entry get stored. Direct unit tests on the pure
+#    helper. ────────────────────────────────────────────────────────────────
+
+
+class TestInvalidationCapture:
+    """All four levels (vwap, ema_21, cpr_tc, cpr_bc) are filtered uniformly
+    — captured only when adverse to the trade direction at entry time."""
+
+    @staticmethod
+    def _build():
+        # Evict any stub installed by earlier-running gate test files (which
+        # _stub('execution.invalidation_exit', ...) at import time with a
+        # MagicMock for build_invalidation_levels). We need the real helper.
+        import sys
+        for k in ("execution.invalidation_exit", "execution"):
+            sys.modules.pop(k, None)
+        from execution.invalidation_exit import build_invalidation_levels
+        return build_invalidation_levels
+
+    def test_sell_below_all_levels_captures_all(self):
+        """Classic SELL setup — all levels are above entry price."""
+        build = self._build()
+        ind = {"vwap": 53589.0, "ema_21": 53468.0, "cpr_tc": 53520.0, "cpr_bc": 53400.0}
+        result = build("SELL", 53341.0, ind)
+        # cpr_bc 53400 > 53341 → also captured (no special treatment for CPR)
+        assert result == {"vwap": 53589.0, "ema_21": 53468.0, "cpr_tc": 53520.0, "cpr_bc": 53400.0}
+
+    def test_sell_above_all_levels_captures_none(self):
+        """SELL above CPR (new gate allows). No level is adverse — returns None."""
+        build = self._build()
+        ind = {"vwap": 23700.0, "ema_21": 23710.0, "cpr_tc": 23720.0, "cpr_bc": 23680.0}
+        result = build("SELL", 23800.0, ind)
+        assert result is None
+
+    def test_sell_between_levels_captures_only_those_above(self):
+        """SELL with mixed level positions — only adverse subset captured."""
+        build = self._build()
+        # Entry 23530: VWAP 23528 BELOW (not adverse), EMA21 23540 ABOVE,
+        # CPR-TC 23685 ABOVE, CPR-BC 23510 BELOW (not adverse).
+        ind = {"vwap": 23528.0, "ema_21": 23540.0, "cpr_tc": 23685.0, "cpr_bc": 23510.0}
+        result = build("SELL", 23530.0, ind)
+        assert result == {"ema_21": 23540.0, "cpr_tc": 23685.0}
+
+    def test_buy_above_all_levels_captures_all(self):
+        """Classic BUY breakout setup — all levels below entry."""
+        build = self._build()
+        ind = {"vwap": 23800.0, "ema_21": 23850.0, "cpr_tc": 23720.0, "cpr_bc": 23670.0}
+        result = build("BUY", 23900.0, ind)
+        # All four are below 23900 — all captured.
+        assert result == {"vwap": 23800.0, "ema_21": 23850.0, "cpr_tc": 23720.0, "cpr_bc": 23670.0}
+
+    def test_buy_below_all_levels_captures_none(self):
+        """BUY below CPR (new gate allows). No level is adverse — None.
+        Specifically prevents the 'instant CPR_BC invalidation' bug."""
+        build = self._build()
+        ind = {"vwap": 23650.0, "ema_21": 23625.0, "cpr_tc": 23720.0, "cpr_bc": 23670.0}
+        result = build("BUY", 23613.0, ind)
+        assert result is None
+
+    def test_buy_between_levels_captures_only_those_below(self):
+        build = self._build()
+        # Entry 23615: VWAP 23600 BELOW, EMA21 23620 ABOVE (not adverse),
+        # CPR-TC 23700 ABOVE (not adverse), CPR-BC 23590 BELOW.
+        ind = {"vwap": 23600.0, "ema_21": 23620.0, "cpr_tc": 23700.0, "cpr_bc": 23590.0}
+        result = build("BUY", 23615.0, ind)
+        assert result == {"vwap": 23600.0, "cpr_bc": 23590.0}
+
+    def test_hold_captures_none(self):
+        build = self._build()
+        ind = {"vwap": 23528.0, "ema_21": 23540.0, "cpr_tc": 23685.0, "cpr_bc": 23510.0}
+        assert build("HOLD", 23530.0, ind) is None
+
+    def test_missing_levels_treated_as_absent(self):
+        build = self._build()
+        # Only vwap present.
+        ind = {"vwap": 23700.0}
+        result = build("SELL", 23600.0, ind)
+        assert result == {"vwap": 23700.0}
+
+    def test_zero_levels_treated_as_absent(self):
+        """A level set to 0 from the indicators_snapshot must be filtered out
+        before the adverse-direction check, not stored as a zero level."""
+        build = self._build()
+        ind = {"vwap": 0, "ema_21": 23540.0, "cpr_tc": 0, "cpr_bc": 0}
+        result = build("SELL", 23530.0, ind)
+        # 0 is filtered by `v is not None and v > current_price` — 0 is not > 23530.
+        assert result == {"ema_21": 23540.0}
+
+    def test_non_numeric_levels_safely_skipped(self):
+        build = self._build()
+        ind = {"vwap": "not a number", "ema_21": 23540.0, "cpr_tc": None, "cpr_bc": ""}
+        result = build("SELL", 23530.0, ind)
+        assert result == {"ema_21": 23540.0}
+
+    def test_the_2026_05_18_case_captures_none(self):
+        """2026-05-18 13:14 NIFTY BUY @ 23613, CPR-BC ~23670 overhead.
+        Under the OLD capture this captured cpr_bc and fired instant
+        invalidation. Under the new capture, returns None."""
+        build = self._build()
+        ind = {"vwap": 23650.0, "ema_21": 23625.0, "cpr_tc": 23724.80, "cpr_bc": 23670.60}
+        assert build("BUY", 23613.0, ind) is None

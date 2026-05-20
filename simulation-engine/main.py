@@ -22,7 +22,7 @@ from analytics.pnl import compute_pnl_summary, get_all_trades, get_open_position
 from config import settings
 from execution import mock_broker, live_broker
 from execution.exit_rules import check_exit, PREMIUM_SL_PCT, FIRST_MILESTONE_PCT
-from execution.invalidation_exit import check_invalidation_exit
+from execution.invalidation_exit import check_invalidation_exit, build_invalidation_levels
 from models.schemas import Position
 from portfolio.budget import initialize_budget, load_budget, reconcile_invested
 import data_client
@@ -537,25 +537,7 @@ async def _handle_decision(data: dict) -> None:
             )
             return
 
-    # Snapshot the index levels the LLM's thesis was built on. These get
-    # frozen onto the position so the tick-driven invalidation-exit watcher
-    # can detect when price has crossed back through them and the thesis is
-    # broken. Coerced to float / None to keep the Pydantic dict[str,float]
-    # contract clean.
-    def _f(key: str) -> float | None:
-        v = ind_dict.get(key)
-        try:
-            return float(v) if v is not None else None
-        except (TypeError, ValueError):
-            return None
-    invalidation_levels = {
-        k: v for k, v in {
-            "vwap":   _f("vwap"),
-            "ema_21": _f("ema_21"),
-            "cpr_tc": _f("cpr_tc"),
-            "cpr_bc": _f("cpr_bc"),
-        }.items() if v is not None
-    } or None
+    invalidation_levels = build_invalidation_levels(decision, current_price, ind_dict)
 
     if decision == "BUY":
         existing = await redis_client.hget("positions:open", symbol)

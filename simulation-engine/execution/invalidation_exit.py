@@ -34,6 +34,55 @@ from typing import Optional
 from models.schemas import Position
 
 
+def build_invalidation_levels(
+    decision: str, current_price: float, ind_dict: dict
+) -> Optional[dict]:
+    """Snapshot the index levels the LLM's thesis was built on, filtered to
+    only those that are ADVERSE to the trade direction at entry.
+
+    A level is "adverse" if crossing it ends the thesis:
+      - SELL (bearish): adverse = level ABOVE current price (price crossing
+        UP through it invalidates).
+      - BUY (bullish): adverse = level BELOW current price (price crossing
+        DOWN through it invalidates).
+
+    Levels on the trade-favorable side are already past us in the trade
+    direction; including them would cause an instant false-positive exit
+    when `check_invalidation_exit` runs on the first tick.
+
+    All levels are treated uniformly. CPR-TC and CPR-BC are just two more
+    levels — filtered by position relative to current price, not by which
+    "side" of CPR they nominally represent.
+
+    Returns None when no level is adverse (the trade was opened with no
+    nearby barrier in the unfavorable direction — relies on premium SL).
+    """
+    def _f(key: str) -> Optional[float]:
+        v = ind_dict.get(key)
+        try:
+            return float(v) if v is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    candidates = {
+        "vwap":   _f("vwap"),
+        "ema_21": _f("ema_21"),
+        "cpr_tc": _f("cpr_tc"),
+        "cpr_bc": _f("cpr_bc"),
+    }
+    if decision == "SELL":
+        return {
+            k: v for k, v in candidates.items()
+            if v is not None and v > current_price
+        } or None
+    if decision == "BUY":
+        return {
+            k: v for k, v in candidates.items()
+            if v is not None and v < current_price
+        } or None
+    return None
+
+
 # Tunable: how many basis points past the level price has to move before we
 # treat it as a cross. 0 = strict cross. Small positive value avoids exiting
 # on a single tick that grazes the level then immediately retraces.
@@ -42,16 +91,22 @@ INVALIDATION_BUFFER_PCT = 0.0    # set >0 (e.g. 0.0005 = 5bps) if false-cross no
 
 def check_invalidation_exit(pos: Position, underlying_ltp: float) -> Optional[str]:
     """Return an exit reason if the underlying has crossed back through any
-    invalidation level in the direction opposite the trade.
+    captured invalidation level in the direction opposite the trade.
 
-    BUY/CE (bullish thesis) is invalidated when price falls below VWAP /
-    EMA21 / CPR-BC (the supports the thesis relied on).
+    Captured levels are filtered at entry time so that only ADVERSE levels
+    are stored (see `_handle_decision` in main.py). That means:
+      - SELL positions hold levels that were ABOVE entry price.
+        Price crossing UP through any of them invalidates the bearish thesis.
+      - BUY positions hold levels that were BELOW entry price.
+        Price crossing DOWN through any of them invalidates the bullish thesis.
 
-    SELL/PE (bearish thesis) is invalidated when price rises above VWAP /
-    EMA21 / CPR-TC (the resistances the thesis relied on).
+    All captured levels are treated uniformly — CPR's TC and BC are just two
+    of the levels, no different from VWAP or EMA21. We iterate whatever the
+    capture step decided was adverse.
 
-    Returns None if no invalidation has occurred, or if the position has no
-    captured levels (e.g. an old position opened before this feature shipped).
+    Returns None if no invalidation has occurred or if the position has no
+    captured levels (some entries leave the dict empty when no nearby level
+    is adverse — those positions rely on premium SL alone).
     """
     levels = pos.invalidation_levels
     if not levels or underlying_ltp <= 0:
@@ -60,17 +115,15 @@ def check_invalidation_exit(pos: Position, underlying_ltp: float) -> Optional[st
     buf = INVALIDATION_BUFFER_PCT
 
     if pos.side == "SELL":
-        # Bearish thesis — price moving UP through resistance invalidates it.
-        for name in ("vwap", "ema_21", "cpr_tc"):
-            level = levels.get(name)
+        # Captured levels were above price at entry; crossing UP invalidates.
+        for name, level in levels.items():
             if not level or level <= 0:
                 continue
             if underlying_ltp > level * (1.0 + buf):
                 return f"INVALIDATION_{name.upper()}"
     else:
-        # Bullish thesis (BUY) — price moving DOWN through support invalidates it.
-        for name in ("vwap", "ema_21", "cpr_bc"):
-            level = levels.get(name)
+        # Captured levels were below price at entry; crossing DOWN invalidates.
+        for name, level in levels.items():
             if not level or level <= 0:
                 continue
             if underlying_ltp < level * (1.0 - buf):
