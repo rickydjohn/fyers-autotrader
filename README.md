@@ -136,14 +136,17 @@ No trades before 09:30 IST. After that, BUY requires price > `orb_high × (1 + O
 ### CPR gate
 Treats CPR as a level (like S1/S2/R1/R2), not as a breakout barrier. Defines a no-trade bracket `[min(TC,BC) × 0.998, max(TC,BC) × 1.002]`. Block both BUY and SELL when current price is inside that bracket. Outside the bracket, no CPR constraint — the LLM's signal direction passes through regardless of which side of CPR price is on. Handles inverted CPR (BC > TC) symmetrically.
 
+### Late-session cutoff
+No new entries within 15 minutes of `session_close_hour:session_close_minute` (default 15:20). The position-watcher's `SESSION_CLOSE` rule will force-exit anything still open at session close; opening within that window means a round-trip that pays commissions for under 15 minutes of trade time.
+
 ### Consolidation gate
-Block all entries when the symbol is inside a tight consolidation range and the LLM hasn't claimed a breakout.
+Block entries when price is inside a tight consolidation range (`consolidation_pct < 0.40`) AND either no breakout is detected OR the breakout direction conflicts with the signal (e.g. BUY signal but BREAKOUT_LOW detected). Same-direction breakouts pass; wide non-consolidating markets bypass the gate entirely.
 
 ### Entry-proximity gate
 Block BUY if the nearest static resistance (PDH / CPR / pivots; **not** running day extremes) is within 0.25%. Symmetric for SELL.
 
 ### Tick-driven invalidation exits (exit-side)
-At position open, the indicator levels the LLM's thesis was built on (`vwap`, `ema_21`, `cpr_tc`, `cpr_bc`) are frozen onto the Position. On every consumer tick (~5s, the underlying read from the WS-fed `ltp:` cache), the helper checks whether the underlying has crossed back through any of those levels in the direction opposite the trade. If yes, exit immediately with `INVALIDATION_<LEVEL>`. Catches "thesis broken" cases minutes before the option's −10% premium SL fires.
+At position open, the indicator levels the LLM's thesis was built on (`vwap`, `ema_21`, `cpr_tc`, `cpr_bc`) are filtered to only those that are *adverse* to the trade direction at entry (above price for SELL, below price for BUY) and frozen onto the Position. CPR's TC and BC are treated as ordinary levels — no special direction mapping. On every consumer tick (~5s, the underlying read from the WS-fed `ltp:` cache), the helper iterates whatever levels were captured and checks whether the underlying has crossed any of them adversely. If yes, exit immediately with `INVALIDATION_<LEVEL>`. Catches "thesis broken" cases minutes before the option's −10% premium SL fires. Positions opened with no adverse level captured rely on premium SL alone.
 
 ## Chart updates
 

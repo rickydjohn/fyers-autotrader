@@ -9,7 +9,7 @@ import sys
 import time
 from contextlib import asynccontextmanager
 
-from datetime import datetime, date as _date, time as _dtime
+from datetime import datetime, date as _date, time as _dtime, timedelta
 from typing import Dict, Tuple
 
 import httpx
@@ -428,6 +428,25 @@ async def _handle_decision(data: dict) -> None:
             )
             return
 
+    # Late-session cutoff — no new entries within 15 minutes of forced session close.
+    # The position-watcher SESSION_CLOSE rule force-exits positions at session_close.
+    # Opening within that 15-minute window means a round-trip that pays commissions
+    # for ~10 min of trade time before being force-closed — typically a wash or a loss.
+    if decision in ("BUY", "SELL"):
+        session_close = now_ist.replace(
+            hour=settings.session_close_hour,
+            minute=settings.session_close_minute,
+            second=0, microsecond=0,
+        )
+        no_entry_cutoff = session_close - timedelta(minutes=15)
+        if now_ist >= no_entry_cutoff:
+            logger.info(
+                f"[SESSION CUTOFF] {decision} {symbol}: within 15 min of "
+                f"session close ({session_close.strftime('%H:%M')} IST) — "
+                f"no new entries, skipped"
+            )
+            return
+
     # ORB breakout gate — block entries when price is still inside the opening range.
     # The 09:15–09:30 high/low define the session's opening range.  A trade in the direction
     # of the signal is only valid once price has cleared that range by ORB_BUFFER (0.20%,
@@ -488,20 +507,35 @@ async def _handle_decision(data: dict) -> None:
                 )
                 return
 
-    # Consolidation gate — block all entries while price is inside the consolidation range.
-    # range_breakout is BREAKOUT_HIGH or BREAKOUT_LOW when price clears the band with buffer;
-    # NONE means either not consolidating or still inside the range. Only the latter case
-    # (is_consolidating=True AND NONE) should block — wide non-consolidating markets are fine.
+    # Consolidation gate — block entries when price is inside a tight consolidation
+    # range AND the signal direction is not confirmed by a same-direction breakout.
+    #
+    # range_breakout is BREAKOUT_HIGH or BREAKOUT_LOW when price clears the band by
+    # the buffer; NONE means still inside or no breakout detected.
+    #
+    # Block when:
+    #   - consolidating AND no breakout → no directional confirmation
+    #   - consolidating AND BREAKOUT_LOW but BUY signal → fighting bearish breakout
+    #   - consolidating AND BREAKOUT_HIGH but SELL signal → fighting bullish breakout
+    # Allow when wide market (consolidation_pct >= 0.40) or breakout aligns with signal.
     if decision in ("BUY", "SELL"):
         range_breakout = ind_dict.get("range_breakout", "")
         consolidation_pct = float(ind_dict.get("consolidation_pct") or 1.0)
         is_consolidating = consolidation_pct < 0.40
-        if is_consolidating and range_breakout == "NONE":
-            logger.info(
-                f"[CONSOLIDATION GATE] {decision} {symbol}: price inside consolidation range "
-                f"({consolidation_pct:.1%} of ATR) — no breakout confirmed, skipped"
-            )
-            return
+        if is_consolidating:
+            block_reason = None
+            if range_breakout == "NONE":
+                block_reason = "no breakout confirmed"
+            elif decision == "BUY" and range_breakout == "BREAKOUT_LOW":
+                block_reason = f"BUY fights {range_breakout}"
+            elif decision == "SELL" and range_breakout == "BREAKOUT_HIGH":
+                block_reason = f"SELL fights {range_breakout}"
+            if block_reason:
+                logger.info(
+                    f"[CONSOLIDATION GATE] {decision} {symbol}: price inside consolidation "
+                    f"range ({consolidation_pct:.1%} of ATR) — {block_reason}, skipped"
+                )
+                return
 
     # Entry proximity gate — block when the next level in the trade direction is too close.
     # For CE (BUY): if the nearest level above is within 0.25%, there is no room to run.

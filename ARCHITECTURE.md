@@ -90,6 +90,7 @@ sequenceDiagram
 LLM decision
    │
    ├─ Confidence floor (≥ 0.70)
+   ├─ Late-session cutoff — block new entries within 15 min of session_close
    ├─ Fresh-price refresh — fetch live ltp and use it for the downstream gates
    │                       (gates evaluate against the actual market, not the
    │                        scan-time snapshot which may be tens of seconds stale)
@@ -100,7 +101,8 @@ LLM decision
    ├─ CPR gate    — block when price is inside the [BC × 0.998, TC × 1.002]
    │                no-trade bracket; outside, direction-agnostic (CPR is a
    │                level, not a breakout barrier)
-   ├─ Consolidation gate — block when inside a tight consolidation
+   ├─ Consolidation gate — block when inside a tight consolidation AND
+   │                       (no breakout OR breakout direction conflicts with signal)
    ├─ Entry proximity   — block if next level is within PA_PROXIMITY
    └─ open_position  (captures invalidation_levels from snapshot)
 ```

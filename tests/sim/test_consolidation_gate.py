@@ -190,12 +190,12 @@ def _redis(ltp: float = 24200.0) -> AsyncMock:
     return r
 
 
-async def _run(data: dict, ltp: float = 24200.0) -> AsyncMock:
+async def _run(data: dict, ltp: float = 24200.0, when_ist: datetime = None) -> AsyncMock:
     """Drive _handle_decision and return the open_position mock for assertions."""
     sim_main.redis_client = _redis(ltp)
     _mock_open.reset_mock()
     with patch("main.datetime") as mock_dt:
-        mock_dt.now.return_value = _FAKE_NOW
+        mock_dt.now.return_value = when_ist or _FAKE_NOW
         # Keep datetime() constructor working for any other uses
         mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
         await sim_main._handle_decision(data)
@@ -274,4 +274,82 @@ class TestConsolidationGatePasses:
         """HOLD decisions skip all entry gates — open_position is never called."""
         data = _make_decision(decision="HOLD", range_breakout="NONE", consolidation_pct=0.30)
         result = asyncio.get_event_loop().run_until_complete(_run(data))
+        result.assert_not_called()
+
+
+class TestConsolidationGateDirectionMatch:
+    """Direction-mismatch protection: a signal that fights the breakout direction
+    inside a consolidating range is blocked. This prevents e.g. taking a SELL
+    when the consolidation just broke OUT to the upside."""
+
+    def test_buy_blocked_when_breakout_low_in_consolidation(self):
+        """Consolidating + bearish breakout + BUY signal → BUY fights the breakout."""
+        data = _make_decision(decision="BUY", range_breakout="BREAKOUT_LOW", consolidation_pct=0.30)
+        result = asyncio.get_event_loop().run_until_complete(_run(data))
+        result.assert_not_called()
+
+    def test_sell_blocked_when_breakout_high_in_consolidation(self):
+        """Consolidating + bullish breakout + SELL signal → SELL fights the breakout."""
+        data = _make_decision(decision="SELL", range_breakout="BREAKOUT_HIGH", consolidation_pct=0.30)
+        result = asyncio.get_event_loop().run_until_complete(_run(data))
+        result.assert_not_called()
+
+    def test_buy_allowed_when_breakout_low_in_wide_market(self):
+        """consolidation_pct >= 0.40 — gate doesn't fire even on direction mismatch."""
+        data = _make_decision(decision="BUY", range_breakout="BREAKOUT_LOW", consolidation_pct=0.60)
+        result = asyncio.get_event_loop().run_until_complete(_run(data))
+        result.assert_called_once()
+
+    def test_sell_allowed_when_breakout_high_in_wide_market(self):
+        data = _make_decision(decision="SELL", range_breakout="BREAKOUT_HIGH", consolidation_pct=0.60)
+        result = asyncio.get_event_loop().run_until_complete(_run(data))
+        result.assert_called_once()
+
+
+class TestLateSessionCutoff:
+    """No new entries within 15 minutes of forced session close. The position
+    watcher's SESSION_CLOSE rule will close anything still open at
+    session_close_hour:session_close_minute; opening just before that wastes
+    commissions on a sub-15-min round trip.
+
+    Test config: settings.session_close_hour=15, session_close_minute=20.
+    Cutoff = 15:05 IST (= 15:20 - 15 min). Entries at/after 15:05 are blocked.
+    """
+
+    def _at(self, hour: int, minute: int) -> datetime:
+        return IST.localize(datetime(2026, 5, 7, hour, minute, 0))
+
+    def test_entry_allowed_at_10_00(self):
+        data = _make_decision(decision="BUY", range_breakout="BREAKOUT_HIGH", consolidation_pct=0.60)
+        result = asyncio.get_event_loop().run_until_complete(_run(data, when_ist=self._at(10, 0)))
+        result.assert_called_once()
+
+    def test_entry_allowed_at_15_04(self):
+        """One minute before the cutoff — still allowed."""
+        data = _make_decision(decision="BUY", range_breakout="BREAKOUT_HIGH", consolidation_pct=0.60)
+        result = asyncio.get_event_loop().run_until_complete(_run(data, when_ist=self._at(15, 4)))
+        result.assert_called_once()
+
+    def test_entry_blocked_at_15_05(self):
+        """Exactly at the cutoff (session_close - 15 min) — blocked."""
+        data = _make_decision(decision="BUY", range_breakout="BREAKOUT_HIGH", consolidation_pct=0.60)
+        result = asyncio.get_event_loop().run_until_complete(_run(data, when_ist=self._at(15, 5)))
+        result.assert_not_called()
+
+    def test_entry_blocked_at_15_10(self):
+        """Well past the cutoff but before close — still blocked."""
+        data = _make_decision(decision="SELL", range_breakout="BREAKOUT_LOW", consolidation_pct=0.60)
+        result = asyncio.get_event_loop().run_until_complete(_run(data, when_ist=self._at(15, 10)))
+        result.assert_not_called()
+
+    def test_entry_blocked_past_session_close(self):
+        """Past session close itself (rare — schedulers usually stop earlier)."""
+        data = _make_decision(decision="BUY", range_breakout="BREAKOUT_HIGH", consolidation_pct=0.60)
+        result = asyncio.get_event_loop().run_until_complete(_run(data, when_ist=self._at(15, 25)))
+        result.assert_not_called()
+
+    def test_hold_unaffected_by_cutoff(self):
+        """HOLD signals don't hit the cutoff (they don't open anyway)."""
+        data = _make_decision(decision="HOLD", range_breakout="NONE", consolidation_pct=0.30)
+        result = asyncio.get_event_loop().run_until_complete(_run(data, when_ist=self._at(15, 10)))
         result.assert_not_called()
