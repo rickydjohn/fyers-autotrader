@@ -10,9 +10,10 @@ Rule priority:
   2. STOP_LOSS      — option LTP ≤ entry × 0.90  (−10% hard stop)
   3. PA_RESISTANCE  — CE: underlying within 0.25% of nearest resistance / PDH
      PA_SUPPORT     — PE: underlying within ±0.25% of nearest support (band check).
-                      PDL only included when underlying is still above PDL — if market
-                      has already broken below PDL, PDL is skipped as a target.
-                      Only fires when position is currently in profit (locks in gains)
+                      ENGAGES the 5% trail rather than exiting outright (backtest
+                      of 136 PA fires: trailing captures +₹20,592 more than exit).
+                      PDL only included when underlying is still above PDL.
+                      Only fires when in profit and milestone == 0 (trail not yet active).
   4. DELTA_ERODED   — |delta| < 0.20 (option far OTM, premium bleeding pointlessly)
   5. IV_CRUSH       — IV fell >20% from entry (vega working against us)
   6. TRAIL_FLOOR    — option LTP ≤ peak − (entry × 5%), active after trail engaged
@@ -185,61 +186,65 @@ def check_exit(
             )
             return True, "STOP_LOSS", sl_floor, milestone
 
-        # ── Rule 3: Price action — resistance/support level reached ──────────
-        if market_context and option_ltp and option_ltp > pos.entry_option_price:
+        # ── Rule 3: Price action — resistance/support proximity ──────────────
+        # When the underlying is within 0.25% of a S/R level in the trade
+        # direction AND the position is in profit, ENGAGE THE TRAIL instead of
+        # exiting outright. The existing TRAIL_FLOOR rule (Rule 5) then catches
+        # the actual exit when option premium retraces past peak × (1 - 5%).
+        #
+        # Backtest of 136 historical PA fires (2026-04-17 → 2026-05-21) shows
+        # trailing at 5% offset captures +₹20,592 more than outright exit.
+        # Trail wins ~40% of trades (smaller per-trade hit-rate) but the wins
+        # are large enough to dominate — continuation through the level beats
+        # bounce-and-give-back in net expectation.
+        #
+        # Trail engagement = set milestone to 1 (if not already), which
+        # activates Rule 5's TRAIL_FLOOR. peak_option_price is updated by the
+        # position-watcher each tick. We only fire when milestone == 0 to
+        # avoid re-logging on every subsequent tick.
+        if (market_context and option_ltp and milestone == 0
+                and option_ltp > pos.entry_option_price):
             # Only fire when gross gain is large enough to survive exit costs.
-            # Prevents commission-bleeding "profit lock" exits when the option barely
-            # moved (e.g. ₹1.50 gross on a ₹40 round-trip commission = guaranteed loss).
+            # Prevents commission-bleeding "trail engage" when the option barely
+            # moved (e.g. ₹1.50 gross on a ₹40 round-trip commission).
             gross_gain = (option_ltp - pos.entry_option_price) * pos.quantity
             if gross_gain >= PA_MIN_GROSS_PROFIT_PER_LOT * pos.num_lots:
                 is_ce = pos.side == "BUY"
-                # Levels to check: nearest S/R and PDH/PDL only.
-                # day_high/day_low are excluded — they track the running intraday
-                # extreme and always sit just above/below current price during a
-                # trend, causing premature exits. Same reasoning as the entry block.
+                # day_high/day_low are excluded by the pivot calc that produces
+                # nearest_resistance/nearest_support — they track running intraday
+                # extremes and would cause premature engagement during a trend.
                 if is_ce:
-                    # Only nearest_resistance — the pivot calc already assigns PDH as
-                    # nearest_resistance when approaching from below. A separate PDH
-                    # check fires whenever the market is anywhere above PDH * 0.9975,
-                    # which includes gap-up days where PDH is far below the session open.
                     level = market_context.get("nearest_resistance", 0)
                     label = market_context.get("nearest_resistance_label", "level")
                     if (level > 0
                             and level * (1 - PA_RESISTANCE_PROXIMITY) <= underlying_ltp <= level * (1 + PA_RESISTANCE_PROXIMITY)):
                         logger.info(
-                            f"[EXIT] PA_RESISTANCE — {pos.symbol}: "
+                            f"[PA_RESISTANCE TRAIL] {pos.symbol}: "
                             f"underlying ₹{underlying_ltp:.2f} at {label} ₹{level:.2f} "
                             f"(within ±{PA_RESISTANCE_PROXIMITY*100:.2f}%), "
                             f"option ₹{option_ltp:.2f} > entry ₹{pos.entry_option_price:.2f} "
-                            f"gross=₹{gross_gain:.0f}, locking in profit"
+                            f"gross=₹{gross_gain:.0f} — engaging {TRAIL_OFFSET_PCT*100:.0f}% trail"
                         )
-                        return True, "PA_RESISTANCE", option_ltp, milestone
+                        return False, "", 0.0, 1
                 else:
                     support_levels = [
                         (market_context.get("nearest_support", 0),
                          market_context.get("nearest_support_label", "support")),
                     ]
-                    # Only use PDL as exit target if underlying is still above it.
-                    # When the market has already broken below PDL, PDL is no longer
-                    # a support the price needs to "reach" — including it makes the
-                    # condition trivially true and exits every trade in seconds.
+                    # Only use PDL as a level if underlying is still above it.
                     pdl = market_context.get("prev_day_low", 0)
                     if pdl > 0 and underlying_ltp > pdl:
                         support_levels.append((pdl, "PDL"))
                     for level, label in support_levels:
-                        # Fire only when underlying is within ±0.25% of the level.
-                        # The old condition (ltp <= level×1.0025) was always true when
-                        # the market was already below the level (e.g. all day below PDL),
-                        # causing immediate exits before the trade had room to develop.
                         if level > 0 and level * (1 - PA_SUPPORT_PROXIMITY) <= underlying_ltp <= level * (1 + PA_SUPPORT_PROXIMITY):
                             logger.info(
-                                f"[EXIT] PA_SUPPORT — {pos.symbol}: "
+                                f"[PA_SUPPORT TRAIL] {pos.symbol}: "
                                 f"underlying ₹{underlying_ltp:.2f} at {label} ₹{level:.2f} "
                                 f"(within {PA_SUPPORT_PROXIMITY*100:.2f}%), "
                                 f"option ₹{option_ltp:.2f} > entry ₹{pos.entry_option_price:.2f} "
-                                f"gross=₹{gross_gain:.0f}, locking in profit"
+                                f"gross=₹{gross_gain:.0f} — engaging {TRAIL_OFFSET_PCT*100:.0f}% trail"
                             )
-                            return True, "PA_SUPPORT", option_ltp, milestone
+                            return False, "", 0.0, 1
 
         if greeks:
             # ── Rule 4: Delta erosion ─────────────────────────────────────────

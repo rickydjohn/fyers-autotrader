@@ -10,6 +10,14 @@ from datetime import datetime
 import pytz
 import pytest
 
+# Evict any stubs other test files may have installed for execution.exit_rules —
+# gate test files (test_orb_gate, test_cpr_gate, test_consolidation_gate) _stub
+# it at their import time with a minimal subset of attrs, which leaks via
+# sys.modules and breaks our full-symbol import below.
+import sys as _sys
+for _k in ("execution.exit_rules", "execution"):
+    _sys.modules.pop(_k, None)
+
 from execution.exit_rules import (
     check_exit,
     DELTA_EROSION_MIN,
@@ -79,6 +87,19 @@ def _indicators_bearish() -> dict:
 def _indicators_neutral() -> dict:
     """Mixed — only 1 of 3 conditions met for BUY or SELL → not confirmed."""
     return {"rsi": 55, "vwap": 22600.0, "ltp": 22500.0, "macd": 5.0, "macd_signal": 10.0}
+
+
+def _ctx(nearest_resistance=0.0, nearest_resistance_label="R1",
+         nearest_support=0.0, nearest_support_label="S1",
+         prev_day_high=0.0, prev_day_low=0.0) -> dict:
+    return {
+        "nearest_resistance": nearest_resistance,
+        "nearest_resistance_label": nearest_resistance_label,
+        "nearest_support": nearest_support,
+        "nearest_support_label": nearest_support_label,
+        "prev_day_high": prev_day_high,
+        "prev_day_low": prev_day_low,
+    }
 
 
 # ── Rule 1: Session close ─────────────────────────────────────────────────────
@@ -187,7 +208,143 @@ class TestPremiumStopLoss:
         assert not should_exit
 
 
-# ── Rule 3: Delta erosion ─────────────────────────────────────────────────────
+# ── Rule 3 (formerly PA exit): Trail engagement at S/R proximity ──────────────
+# When underlying is within 0.25% of nearest S/R in the trade direction AND
+# the position is in profit AND milestone == 0, engage the trail (set
+# milestone to 1) so the existing TRAIL_FLOOR rule handles the actual exit.
+# Backtest of 136 historical PA fires showed +₹20,592 net improvement over
+# outright exit (commit referencing backtest_pa_exit_vs_trail.py).
+
+class TestPriceActionTrailEngagement:
+    """PA_SUPPORT / PA_RESISTANCE now ENGAGE the trail instead of exiting."""
+
+    # ── CE side: PA_RESISTANCE engages trail ──
+    def test_ce_engages_trail_when_near_resistance_in_profit(self):
+        """BUY/CE with underlying right at resistance and option up → trail engaged, NOT exited."""
+        pos = _pos(side="BUY", entry_option_price=100.0)
+        should_exit, reason, _, new_milestone = check_exit(
+            pos, underlying_ltp=22500.0, option_ltp=120.0, greeks=_greeks(),
+            now=_now(11, 0),
+            market_context=_ctx(nearest_resistance=22500.0, nearest_resistance_label="R1"),
+        )
+        assert should_exit is False           # no exit — trail engaged
+        assert reason == ""
+        assert new_milestone == 1             # trail flag activated
+
+    def test_ce_no_engagement_when_not_in_profit(self):
+        pos = _pos(side="BUY", entry_option_price=100.0)
+        _, _, _, new_milestone = check_exit(
+            pos, underlying_ltp=22500.0, option_ltp=95.0, greeks=_greeks(),
+            now=_now(11, 0),
+            market_context=_ctx(nearest_resistance=22500.0, nearest_resistance_label="R1"),
+        )
+        assert new_milestone == 0             # not in profit → no engagement
+
+    def test_ce_no_engagement_when_underlying_far_from_level(self):
+        pos = _pos(side="BUY", entry_option_price=100.0)
+        # Use a smaller premium gain (+10%) to stay below the +15% TRENDING
+        # milestone — otherwise the milestone fires and confounds the assertion.
+        _, _, _, new_milestone = check_exit(
+            pos, underlying_ltp=22400.0, option_ltp=110.0, greeks=_greeks(),
+            now=_now(11, 0),
+            market_context=_ctx(nearest_resistance=22500.0, nearest_resistance_label="R1"),
+        )
+        # 22400 is ~0.44% below 22500 — outside the 0.25% proximity band
+        assert new_milestone == 0
+
+    # ── PE side: PA_SUPPORT engages trail ──
+    def test_pe_engages_trail_when_near_support_in_profit(self):
+        """SELL/PE with underlying right at support and option up → trail engaged."""
+        pos = _pos(side="SELL", entry_option_price=100.0,
+                   option_symbol="NSE:NIFTY2640322000PE")
+        should_exit, reason, _, new_milestone = check_exit(
+            pos, underlying_ltp=22000.0, option_ltp=120.0, greeks=_greeks(),
+            now=_now(11, 0),
+            market_context=_ctx(nearest_support=22000.0, nearest_support_label="S1"),
+        )
+        assert should_exit is False
+        assert reason == ""
+        assert new_milestone == 1
+
+    def test_pe_engages_via_pdl_when_underlying_above_pdl(self):
+        """PDL only counts as a support level when underlying is still above it."""
+        pos = _pos(side="SELL", entry_option_price=100.0,
+                   option_symbol="NSE:NIFTY2640322000PE")
+        _, _, _, new_milestone = check_exit(
+            pos, underlying_ltp=22050.0, option_ltp=120.0, greeks=_greeks(),
+            now=_now(11, 0),
+            market_context=_ctx(prev_day_low=22000.0, nearest_support=21000.0),
+        )
+        assert new_milestone == 1             # PDL @ 22000, underlying 22050 within 0.25%
+
+    def test_pe_no_engagement_when_pdl_below_and_already_broken(self):
+        """If underlying has broken below PDL, PDL is excluded as a target."""
+        pos = _pos(side="SELL", entry_option_price=100.0,
+                   option_symbol="NSE:NIFTY2640322000PE")
+        # Use +10% premium gain to stay below the TRENDING +15% milestone.
+        _, _, _, new_milestone = check_exit(
+            pos, underlying_ltp=21900.0, option_ltp=110.0, greeks=_greeks(),
+            now=_now(11, 0),
+            market_context=_ctx(prev_day_low=22000.0, nearest_support=21000.0),
+        )
+        # PDL skipped; nearest_support 21000 too far → no engagement
+        assert new_milestone == 0
+
+    # ── Milestone idempotency: don't re-engage if already on trail ──
+    def test_no_re_engagement_when_milestone_already_set(self):
+        """Once milestone > 0 (trail already active via milestone hit), PA stays quiet."""
+        pos = _pos(side="BUY", entry_option_price=100.0, milestone_count=1,
+                   peak_option_price=120.0)
+        # peak below trail floor would exit; pick option_ltp that doesn't trigger trail
+        should_exit, reason, _, new_milestone = check_exit(
+            pos, underlying_ltp=22500.0, option_ltp=120.0, greeks=_greeks(),
+            now=_now(11, 0),
+            market_context=_ctx(nearest_resistance=22500.0, nearest_resistance_label="R1"),
+        )
+        assert new_milestone == 1             # unchanged; PA did not re-fire
+
+    # ── Minimum gross gain — guard against commission-bleeding engagements ──
+    def test_no_engagement_when_gross_gain_below_minimum(self):
+        """Option just barely above entry — gross too small to justify trail."""
+        from execution.exit_rules import PA_MIN_GROSS_PROFIT_PER_LOT
+        pos = _pos(side="BUY", entry_option_price=100.0)
+        # qty=50, 1 lot → minimum gross = PA_MIN * 1 = ₹5.0
+        # option 100.05 → gain 0.05 × 50 = ₹2.5 (below ₹5)
+        _, _, _, new_milestone = check_exit(
+            pos, underlying_ltp=22500.0, option_ltp=100.05, greeks=_greeks(),
+            now=_now(11, 0),
+            market_context=_ctx(nearest_resistance=22500.0, nearest_resistance_label="R1"),
+        )
+        assert new_milestone == 0
+
+    # ── End-to-end: PA engages trail, then TRAIL_FLOOR fires on retracement ──
+    def test_engaged_trail_then_floor_exits_on_retracement(self):
+        """Step 1 — PA engagement sets milestone=1.
+        Step 2 — next tick with option premium below peak × 0.95 → TRAIL_STOP."""
+        # Tick 1: option at peak (120), trail engages
+        pos = _pos(side="BUY", entry_option_price=100.0)
+        should_exit, _, _, new_milestone = check_exit(
+            pos, underlying_ltp=22500.0, option_ltp=120.0, greeks=_greeks(),
+            now=_now(11, 0),
+            market_context=_ctx(nearest_resistance=22500.0, nearest_resistance_label="R1"),
+        )
+        assert should_exit is False and new_milestone == 1
+
+        # Tick 2: simulate the position-watcher state mutation
+        pos.milestone_count = 1
+        pos.peak_option_price = 120.0
+        # Option retraces to 113.50 = 120 × (1 - 5%) - small slip → TRAIL_STOP fires
+        should_exit, reason, exit_px, _ = check_exit(
+            pos, underlying_ltp=22500.0, option_ltp=113.50, greeks=_greeks(),
+            now=_now(11, 1),
+            market_context=_ctx(nearest_resistance=22500.0, nearest_resistance_label="R1"),
+        )
+        assert should_exit
+        assert reason == "TRAIL_STOP"
+        assert exit_px == 113.50
+
+
+# ── Rule 4: Delta erosion ─────────────────────────────────────────────────────
 
 class TestDeltaErosion:
     def test_triggers_below_threshold(self):
@@ -224,7 +381,7 @@ class TestDeltaErosion:
         assert not should_exit
 
 
-# ── Rule 4: IV crush ──────────────────────────────────────────────────────────
+# ── Rule 5: IV crush ──────────────────────────────────────────────────────────
 
 class TestIVCrush:
     def test_triggers_when_iv_drops_below_threshold(self):
@@ -261,7 +418,7 @@ class TestIVCrush:
         assert not should_exit
 
 
-# ── Rule 5: Trail floor ───────────────────────────────────────────────────────
+# ── Rule 6: Trail floor ───────────────────────────────────────────────────────
 
 class TestTrailFloor:
     """
@@ -322,7 +479,7 @@ class TestTrailFloor:
         assert exit_price == below_floor
 
 
-# ── Rule 6: Milestone checks ──────────────────────────────────────────────────
+# ── Rule 7: Milestone checks ──────────────────────────────────────────────────
 
 class TestMilestone:
     """
@@ -414,7 +571,7 @@ class TestMilestone:
         assert reason == "CLOSED"
 
 
-# ── Rules 7 & 8: Non-option (equity / direct index) ──────────────────────────
+# ── Rules 8 & 9: Non-option (equity / direct index) ──────────────────────────
 
 class TestNonOptionSLTarget:
     """When no option is held, falls back to index-level SL/target (equity trades)."""

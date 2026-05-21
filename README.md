@@ -145,6 +145,9 @@ Block entries when price is inside a tight consolidation range (`consolidation_p
 ### Entry-proximity gate
 Block BUY if the nearest static resistance (PDH / CPR / pivots; **not** running day extremes) is within 0.25%. Symmetric for SELL.
 
+### Price-action trail engagement (exit-side)
+When the underlying is within 0.25% of nearest support (for PE positions) or resistance (for CE positions) AND the option is in profit, ENGAGE the 5% trail rather than exiting outright. The existing TRAIL_FLOOR rule then handles the actual exit when premium retraces past `peak × (1 − 5%)`. Backtest of 136 historical PA fires (Apr–May 2026) shows trailing captures **+₹20,592** more than outright exit — continuation through the level beats the bounce-and-give-back pattern in net expectation. Only fires when `milestone == 0` to avoid re-engagement on every tick.
+
 ### Tick-driven invalidation exits (exit-side)
 At position open, the indicator levels the LLM's thesis was built on (`vwap`, `ema_21`, `cpr_tc`, `cpr_bc`) are filtered to only those that are *adverse* to the trade direction at entry (above price for SELL, below price for BUY) and frozen onto the Position. CPR's TC and BC are treated as ordinary levels — no special direction mapping. On every consumer tick (~5s, the underlying read from the WS-fed `ltp:` cache), the helper iterates whatever levels were captured and checks whether the underlying has crossed any of them adversely. If yes, exit immediately with `INVALIDATION_<LEVEL>`. Catches "thesis broken" cases minutes before the option's −10% premium SL fires. Positions opened with no adverse level captured rely on premium SL alone.
 
