@@ -22,12 +22,7 @@ from analytics.pnl import compute_pnl_summary, get_all_trades, get_open_position
 from config import settings
 from execution import mock_broker, live_broker
 from execution.exit_rules import check_exit, PREMIUM_SL_PCT, FIRST_MILESTONE_PCT
-from execution.invalidation_exit import (
-    check_invalidation_exit,
-    build_invalidation_levels,
-    check_cross_symbol_invalidation,
-    build_cross_symbol_invalidation_levels,
-)
+from execution.invalidation_exit import check_invalidation_exit, build_invalidation_levels
 from models.schemas import Position
 from portfolio.budget import initialize_budget, load_budget, reconcile_invested
 import data_client
@@ -38,22 +33,6 @@ IST = pytz.timezone("Asia/Kolkata")
 # a breakout (data-derived inflection point for ~80% continuation across 141
 # days of NIFTY/BANKNIFTY history).
 ORB_BUFFER = 0.002
-
-def _peer_symbol(symbol: str) -> str:
-    """Return the LEADING-indicator peer for cross-symbol invalidation.
-
-    NIFTY leads — BANKNIFTY generally follows NIFTY. So we only run the
-    cross-symbol check for BANKNIFTY positions (which watch NIFTY for an
-    early reversal signal). NIFTY positions have no peer because NIFTY
-    leads itself; looking at BANKNIFTY would be a lagging indicator and
-    just add noise.
-
-    Returns "" when no leading peer is defined for the given symbol.
-    """
-    if symbol == "NSE:NIFTYBANK-INDEX":
-        return "NSE:NIFTY50-INDEX"
-    return ""
-
 
 # Per-session cache: True once today's ORB has been broken (either direction).
 # Keyed by (symbol, today's date IST). Backtest of 147 days shows ~74-75% of
@@ -594,26 +573,6 @@ async def _handle_decision(data: dict) -> None:
 
     invalidation_levels = build_invalidation_levels(decision, current_price, ind_dict)
 
-    # Cross-symbol invalidation — capture the peer index's adverse levels.
-    # NIFTY and NIFTYBANK are highly correlated; a peer reversal at a level
-    # often precedes a sympathetic move in this symbol. Read the peer's market
-    # snapshot from Redis to extract its current price and vwap/ema_21.
-    cross_symbol_invalidation_levels: dict | None = None
-    peer = _peer_symbol(symbol)
-    if peer and decision in ("BUY", "SELL"):
-        try:
-            peer_raw = await redis_client.get(f"market:{peer}")
-            if peer_raw:
-                peer_data = json.loads(peer_raw)
-                peer_price = float(peer_data.get("ltp") or 0)
-                peer_ind = peer_data.get("indicators") or {}
-                if peer_price > 0:
-                    cross_symbol_invalidation_levels = build_cross_symbol_invalidation_levels(
-                        decision, peer_price, peer_ind
-                    )
-        except Exception as e:
-            logger.debug(f"Cross-symbol levels capture failed for peer {peer}: {e}")
-
     # Pre-entry exit simulation — refuse to open a position that would
     # immediately fire an exit rule on tick 1. This is the structural fix
     # for entry/exit gate inconsistencies: any time the exit-side and
@@ -665,7 +624,6 @@ async def _handle_decision(data: dict) -> None:
             option_price=option_price, option_lot_size=option_lot_size,
             day_type=day_type, dte=dte,
             invalidation_levels=invalidation_levels,
-            cross_symbol_invalidation_levels=cross_symbol_invalidation_levels,
         )
 
     elif decision == "SELL":
@@ -689,7 +647,6 @@ async def _handle_decision(data: dict) -> None:
             option_price=option_price, option_lot_size=option_lot_size,
             day_type=day_type, dte=dte,
             invalidation_levels=invalidation_levels,
-            cross_symbol_invalidation_levels=cross_symbol_invalidation_levels,
         )
 
     elif decision == "HOLD":
@@ -996,30 +953,13 @@ async def _check_stop_targets() -> None:
             # premium is. Catches the 2026-05-14 BANKNIFTY53300PE pattern
             # where EMA21 was crossed 4 minutes before the option-SL hit.
             inv_reason = check_invalidation_exit(pos, underlying_ltp)
-
-            # Cross-symbol invalidation — peer-index sympathy check. Fetch the
-            # peer's live LTP and run the same adverse-cross logic against the
-            # peer levels captured at open time. NIFTY and NIFTYBANK move in
-            # sympathy, so a peer reversal at a level often leads our position.
-            if not inv_reason and pos.cross_symbol_invalidation_levels:
-                peer = _peer_symbol(symbol)
-                if peer:
-                    peer_ltp_raw = (
-                        await redis_client.get(f"ltp:{peer}")
-                        or await redis_client.get(f"market:{peer}")
-                    )
-                    if peer_ltp_raw:
-                        peer_ltp = float(json.loads(peer_ltp_raw).get("ltp") or 0)
-                        if peer_ltp > 0:
-                            inv_reason = check_cross_symbol_invalidation(pos, peer_ltp)
-
             if inv_reason:
                 # Use option_ltp as exit price when holding an option, else
                 # the underlying. Matches check_exit's exit_price logic.
                 exit_px = option_ltp if (pos.option_symbol and option_ltp) else underlying_ltp
                 logger.info(
                     f"[EXIT] {inv_reason} — {pos.symbol}: underlying ₹{underlying_ltp:.2f} "
-                    f"crossed back through {inv_reason.split('_', 1)[1].lower() if '_' in inv_reason else inv_reason.lower()}"
+                    f"crossed back through {inv_reason.split('_', 1)[1].lower()}"
                 )
                 await broker.close_position(
                     redis_client, symbol, exit_px,

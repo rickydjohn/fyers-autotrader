@@ -62,7 +62,6 @@ async def open_position(
     day_type: Optional[str] = None,
     dte: int = 99,
     invalidation_levels: Optional[dict] = None,
-    cross_symbol_invalidation_levels: Optional[dict] = None,
 ) -> Optional[Trade]:
     """Open a new simulated position. Trades the option if one is provided."""
     # ── Gate 1: No new positions at or after session close ────────────────────
@@ -162,7 +161,6 @@ async def open_position(
         day_type=day_type,
         num_lots=num_lots,
         invalidation_levels=invalidation_levels,
-        cross_symbol_invalidation_levels=cross_symbol_invalidation_levels,
     )
     # Capture entry IV from Redis if already populated by fast position watcher
     if option_symbol:

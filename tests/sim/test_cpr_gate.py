@@ -78,9 +78,7 @@ _stub("execution.live_broker",
       close_position=AsyncMock(return_value=None))
 _stub("execution.invalidation_exit",
       check_invalidation_exit=MagicMock(return_value=None),
-      build_invalidation_levels=MagicMock(return_value=None),
-      check_cross_symbol_invalidation=MagicMock(return_value=None),
-      build_cross_symbol_invalidation_levels=MagicMock(return_value=None))
+      build_invalidation_levels=MagicMock(return_value=None))
 _stub("execution.exit_rules",
       check_exit=MagicMock(return_value=(False, "", 0.0, 0)),
       PREMIUM_SL_PCT=0.10,

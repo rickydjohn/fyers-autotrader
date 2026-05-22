@@ -113,7 +113,6 @@ LLM decision
 
 **Exit-side enhancements (added 2026-05-22):**
 - **Premium-gain trail trigger** — engages trail at +5% peak with variable offset (3-5%) so floor always ≥ entry
-- **Cross-symbol invalidation** — BANKNIFTY positions also watch NIFTY's VWAP/EMA-21 for sympathy reversals (NIFTY leads, BANKNIFTY follows; not symmetric)
 
 ## Three-Layer Exit Pipeline (per consumer tick)
 
