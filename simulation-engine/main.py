@@ -601,6 +601,31 @@ async def _handle_decision(data: dict) -> None:
                 f"[ENTRY BLOCKED] {decision} {symbol}: hypothetical exit "
                 f"would fire with {exit_reason} on first favorable tick — skipping"
             )
+            # Persist the block for forward-outcome analysis. EOD script reads
+            # this list, queries underlying price at block_time + 30min, and
+            # determines whether the block was correct (would-be loser) or a
+            # missed winner. TTL 7 days = enough for review.
+            try:
+                blocked_record = {
+                    "block_time":       now_ist.isoformat(),
+                    "symbol":           symbol,
+                    "side":             decision,
+                    "underlying_price": current_price,
+                    "option_symbol":    option_symbol,
+                    "option_strike":    option_strike,
+                    "option_type":      option_type,
+                    "option_price":     option_price,
+                    "exit_reason":      exit_reason,
+                    "decision_id":      decision_id,
+                }
+                date_key = now_ist.date().isoformat()
+                await redis_client.lpush(
+                    f"blocked_entries:{date_key}",
+                    json.dumps(blocked_record),
+                )
+                await redis_client.expire(f"blocked_entries:{date_key}", 86400 * 7)
+            except Exception as e:
+                logger.debug(f"Failed to record blocked entry to Redis: {e}")
             return
 
     if decision == "BUY":
