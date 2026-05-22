@@ -304,3 +304,96 @@ class TestInvalidationCapture:
         build = self._build()
         ind = {"vwap": 23650.0, "ema_21": 23625.0, "cpr_tc": 23724.80, "cpr_bc": 23670.60}
         assert build("BUY", 23613.0, ind) is None
+
+
+# ── Cross-symbol invalidation (peer-index sympathy check) ────────────────────
+# NIFTY is the leading indicator; BANKNIFTY follows. When holding a BANKNIFTY
+# position, we capture NIFTY's adverse VWAP/EMA-21 levels and treat a NIFTY
+# cross-back-through as a sympathy invalidation for the BANKNIFTY position.
+
+
+class TestCrossSymbolCapture:
+
+    @staticmethod
+    def _build():
+        import sys
+        for k in ("execution.invalidation_exit", "execution"):
+            sys.modules.pop(k, None)
+        from execution.invalidation_exit import build_cross_symbol_invalidation_levels
+        return build_cross_symbol_invalidation_levels
+
+    def test_sell_captures_peer_levels_above_peer_price(self):
+        """For BANKNIFTY SELL: NIFTY peer levels ABOVE NIFTY price are adverse."""
+        build = self._build()
+        # NIFTY at 23500, VWAP 23600, EMA21 23550 — both above
+        peer_ind = {"vwap": 23600.0, "ema_21": 23550.0}
+        assert build("SELL", 23500.0, peer_ind) == {"vwap": 23600.0, "ema_21": 23550.0}
+
+    def test_buy_captures_peer_levels_below_peer_price(self):
+        build = self._build()
+        # NIFTY at 23700, VWAP 23600, EMA21 23650 — both below
+        peer_ind = {"vwap": 23600.0, "ema_21": 23650.0}
+        assert build("BUY", 23700.0, peer_ind) == {"vwap": 23600.0, "ema_21": 23650.0}
+
+    def test_sell_skips_non_adverse_peer_levels(self):
+        build = self._build()
+        # NIFTY at 23700: VWAP 23600 (below, not adverse), EMA21 23800 (above)
+        peer_ind = {"vwap": 23600.0, "ema_21": 23800.0}
+        assert build("SELL", 23700.0, peer_ind) == {"ema_21": 23800.0}
+
+    def test_no_levels_when_peer_far_past_all(self):
+        build = self._build()
+        # NIFTY way above all candidates → empty for SELL
+        peer_ind = {"vwap": 23500.0, "ema_21": 23550.0}
+        assert build("SELL", 24000.0, peer_ind) is None
+
+    def test_hold_returns_none(self):
+        build = self._build()
+        peer_ind = {"vwap": 23600.0, "ema_21": 23550.0}
+        assert build("HOLD", 23500.0, peer_ind) is None
+
+
+class TestCrossSymbolCheck:
+
+    @staticmethod
+    def _check():
+        import sys
+        for k in ("execution.invalidation_exit", "execution"):
+            sys.modules.pop(k, None)
+        from execution.invalidation_exit import check_cross_symbol_invalidation
+        return check_cross_symbol_invalidation
+
+    def test_sell_fires_when_peer_crosses_up_through_vwap(self):
+        check = self._check()
+        pos = _pos("SELL", levels=None)
+        pos.cross_symbol_invalidation_levels = {"vwap": 23600.0, "ema_21": 23550.0}
+        # NIFTY price now 23601 — crossed above peer VWAP
+        assert check(pos, 23601.0) == "INVALIDATION_PEER_VWAP"
+
+    def test_buy_fires_when_peer_crosses_down_through_ema21(self):
+        check = self._check()
+        pos = _pos("BUY", levels=None)
+        pos.cross_symbol_invalidation_levels = {"vwap": 23700.0, "ema_21": 23650.0}
+        # NIFTY price now 23649 — crossed below peer EMA21 (VWAP not crossed; only first match returns)
+        result = check(pos, 23649.0)
+        assert result in ("INVALIDATION_PEER_VWAP", "INVALIDATION_PEER_EMA_21")
+
+    def test_no_exit_when_peer_levels_not_crossed(self):
+        check = self._check()
+        pos = _pos("SELL", levels=None)
+        pos.cross_symbol_invalidation_levels = {"vwap": 23600.0, "ema_21": 23550.0}
+        # NIFTY still below all peer levels — no invalidation
+        assert check(pos, 23500.0) is None
+
+    def test_no_exit_when_no_cross_symbol_levels(self):
+        check = self._check()
+        pos = _pos("SELL", levels=None)
+        # cross_symbol_invalidation_levels is None on the Position by default
+        assert check(pos, 23900.0) is None
+
+    def test_no_exit_on_zero_peer_ltp(self):
+        check = self._check()
+        pos = _pos("SELL", levels=None)
+        pos.cross_symbol_invalidation_levels = {"vwap": 23600.0}
+        assert check(pos, 0.0) is None
+        assert check(pos, -1.0) is None

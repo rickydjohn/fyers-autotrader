@@ -28,6 +28,13 @@ class Position(BaseModel):
     # When the underlying crosses BACK through any of these in the direction
     # opposite the trade, the thesis is invalidated and we exit immediately.
     invalidation_levels: Optional[Dict[str, float]] = None
+    # Cross-symbol (peer index) invalidation levels — snapshot of the OTHER
+    # index's levels at open. NIFTY and NIFTYBANK are highly correlated;
+    # a reversal signal on the peer often precedes a reversal in this
+    # position's underlying. Keys: vwap, ema_21. Same adverse-side filter
+    # as invalidation_levels — only stores levels that are on the wrong
+    # side of the peer's price at entry.
+    cross_symbol_invalidation_levels: Optional[Dict[str, float]] = None
 
 
 class Trade(BaseModel):

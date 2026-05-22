@@ -418,6 +418,90 @@ class TestIVCrush:
         assert not should_exit
 
 
+# ── Premium-gain trail trigger ────────────────────────────────────────────────
+# Engages the trail at +5% peak gain (before the +15% milestone), with a
+# variable offset so trail floor always sits at-or-above entry. Closes the
+# gap where positions ride +5%-+14% with no protective mechanism active.
+
+class TestPremiumGainTrailTrigger:
+
+    def test_engages_at_plus_5_pct_peak_gain(self):
+        """Peak gain just at +5% threshold engages trail (milestone → 1)."""
+        pos = _pos(entry_option_price=100.0, peak_option_price=105.0)
+        should_exit, _, _, new_milestone = check_exit(
+            pos, underlying_ltp=22500.0, option_ltp=104.0, greeks=_greeks(),
+            now=_now(11, 0),
+        )
+        assert should_exit is False
+        assert new_milestone == 1
+
+    def test_no_engagement_below_5_pct_peak(self):
+        pos = _pos(entry_option_price=100.0, peak_option_price=104.9)
+        _, _, _, new_milestone = check_exit(
+            pos, underlying_ltp=22500.0, option_ltp=104.0, greeks=_greeks(),
+            now=_now(11, 0),
+        )
+        assert new_milestone == 0
+
+    def test_no_re_engagement_when_milestone_already_set(self):
+        """If milestone > 0, the premium-gain trigger stays quiet."""
+        pos = _pos(entry_option_price=100.0, peak_option_price=110.0, milestone_count=1)
+        _, _, _, new_milestone = check_exit(
+            pos, underlying_ltp=22500.0, option_ltp=108.0, greeks=_greeks(),
+            now=_now(11, 0),
+        )
+        assert new_milestone == 1   # unchanged
+
+    def test_variable_offset_at_plus_5_pct_uses_3_pct_offset(self):
+        """At +5% peak gain, offset is 3% → floor = peak × 0.97 (above entry)."""
+        # peak=105, entry=100 → +5% → 3% offset → floor=101.85 (above entry)
+        # Set milestone=1 (already engaged) so TRAIL_FLOOR rule evaluates.
+        pos = _pos(entry_option_price=100.0, peak_option_price=105.0, milestone_count=1)
+        # option_ltp at 101.50 < floor 101.85 → TRAIL_STOP fires
+        should_exit, reason, exit_px, _ = check_exit(
+            pos, underlying_ltp=22500.0, option_ltp=101.50, greeks=_greeks(),
+            now=_now(11, 0),
+        )
+        assert should_exit
+        assert reason == "TRAIL_STOP"
+        assert exit_px == 101.50
+
+    def test_variable_offset_at_plus_10_pct_uses_5_pct(self):
+        """At +10% peak, offset is back to 5% → floor = peak × 0.95."""
+        pos = _pos(entry_option_price=100.0, peak_option_price=110.0, milestone_count=1)
+        # floor = 110 × 0.95 = 104.50
+        # option at 104.49 → fires
+        should_exit, reason, _, _ = check_exit(
+            pos, underlying_ltp=22500.0, option_ltp=104.49, greeks=_greeks(),
+            now=_now(11, 0),
+        )
+        assert should_exit
+        assert reason == "TRAIL_STOP"
+
+    def test_variable_offset_at_plus_7_pct_uses_4_pct(self):
+        """At +7% peak, offset is 4% → floor = peak × 0.96."""
+        pos = _pos(entry_option_price=100.0, peak_option_price=107.0, milestone_count=1)
+        # floor = 107 × 0.96 = 102.72
+        should_exit, reason, _, _ = check_exit(
+            pos, underlying_ltp=22500.0, option_ltp=102.71, greeks=_greeks(),
+            now=_now(11, 0),
+        )
+        assert should_exit
+        assert reason == "TRAIL_STOP"
+
+    def test_trail_floor_stays_above_entry_at_5_pct_peak(self):
+        """The bug this rule fixes: at exactly +5% peak with the old 5%
+        offset, trail floor would be 99.75 (below entry). With variable
+        offset (3% at +5%), floor is 101.85 — above entry. Verify."""
+        pos = _pos(entry_option_price=100.0, peak_option_price=105.0, milestone_count=1)
+        # option just barely above floor 101.85 → no exit
+        should_exit, _, _, _ = check_exit(
+            pos, underlying_ltp=22500.0, option_ltp=102.0, greeks=_greeks(),
+            now=_now(11, 0),
+        )
+        assert should_exit is False
+
+
 # ── Rule 6: Trail floor ───────────────────────────────────────────────────────
 
 class TestTrailFloor:

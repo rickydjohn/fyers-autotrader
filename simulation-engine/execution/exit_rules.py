@@ -55,6 +55,12 @@ RANGING_MILESTONE_PCT: float  = 0.10   # RANGING: exit immediately at +10% gain 
 MILESTONE_STEP_PCT: float     = 0.10   # subsequent milestones every +10% of entry
 TRAIL_OFFSET_PCT: float       = 0.05   # trail floor = peak_price × (1 − 5%)
 
+# Premium-gain trail trigger — engages trail when peak/entry reaches this %
+# even before the +15% milestone fires. Closes the gap where a position rides
+# +5% to +14% with no protective mechanism active. Sized to ensure that with
+# the matching offset table below, trail floor lands at or above entry.
+PREMIUM_TRAIL_TRIGGER_PCT: float = 0.05    # engage trail at +5% peak gain
+
 DELTA_EROSION_MIN: float   = 0.20   # exit if |delta| drops below this
 IV_CRUSH_THRESHOLD: float  = 0.80   # exit if iv < entry_iv × this
 
@@ -65,6 +71,29 @@ PA_SUPPORT_PROXIMITY: float    = 0.0025  # exit PE if underlying within 0.25% of
 # ₹5/lot means a 65-lot position needs ₹325 gross profit before the gate opens,
 # ensuring PA exits lock in meaningful gains rather than firing on noise moves.
 PA_MIN_GROSS_PROFIT_PER_LOT: float = 5.0
+
+
+def _premium_trail_offset(peak: float, entry: float) -> float:
+    """Return the trail offset given the current peak/entry ratio.
+
+    Trail offset tightens at lower profit so trail floor stays at-or-above
+    entry. Without this, a +5% peak with the default 5% offset would put the
+    trail floor BELOW entry (entry × 1.05 × 0.95 = entry × 0.9975), giving
+    back the entire gain on a normal retrace.
+
+        peak gain ≥ 10%   → 5% offset    (floor ≥ entry × 1.045)
+        peak gain ≥ 7%    → 4% offset    (floor ≥ entry × 1.0272)
+        peak gain ≥ 5%    → 3% offset    (floor ≥ entry × 1.0185)
+        otherwise (default)  5% offset    (legacy)
+    """
+    if entry <= 0:
+        return TRAIL_OFFSET_PCT
+    gain = (peak / entry) - 1.0
+    if gain >= 0.10:
+        return 0.05
+    if gain >= 0.07:
+        return 0.04
+    return 0.03
 
 
 def _indicators_confirm(side: str, indicators: dict) -> bool:
@@ -267,14 +296,33 @@ def check_exit(
                 )
                 return True, "IV_CRUSH", option_ltp, milestone
 
-        # ── Rule 5: Trail floor (active only once milestone_count > 0) ───────
+        # ── Premium-gain trail trigger ───────────────────────────────────────
+        # Engages the trail when peak/entry ≥ PREMIUM_TRAIL_TRIGGER_PCT
+        # (default +5%) even before the +15% milestone has fired. Closes the
+        # gap where positions ride +5%-+14% with no protective mechanism
+        # active and then give all gains back. Sized so that trail floor
+        # always sits above entry (see _premium_trail_offset).
+        if (milestone == 0 and pos.peak_option_price > 0 and entry > 0):
+            peak_gain = (pos.peak_option_price / entry) - 1.0
+            if peak_gain >= PREMIUM_TRAIL_TRIGGER_PCT:
+                offset = _premium_trail_offset(pos.peak_option_price, entry)
+                logger.info(
+                    f"[PREMIUM TRAIL ENGAGED] {pos.symbol}: "
+                    f"peak ₹{pos.peak_option_price:.2f} vs entry ₹{entry:.2f} "
+                    f"(+{peak_gain*100:.1f}%) — trail at peak × {(1-offset)*100:.0f}%"
+                )
+                return False, "", 0.0, 1
+
+        # ── Rule 5: Trail floor (active once milestone_count > 0) ────────────
+        # Offset is variable: tighter at lower peak-gains so floor stays ≥ entry.
         if milestone > 0 and pos.peak_option_price > 0:
-            trail_floor = pos.peak_option_price * (1.0 - TRAIL_OFFSET_PCT)
+            offset = _premium_trail_offset(pos.peak_option_price, entry)
+            trail_floor = pos.peak_option_price * (1.0 - offset)
             if option_ltp <= trail_floor:
                 logger.info(
                     f"[EXIT] TRAIL_FLOOR — {pos.symbol}: "
                     f"option ₹{option_ltp:.2f} ≤ floor ₹{trail_floor:.2f} "
-                    f"(peak ₹{pos.peak_option_price:.2f} × {(1 - TRAIL_OFFSET_PCT) * 100:.0f}%)"
+                    f"(peak ₹{pos.peak_option_price:.2f} × {(1 - offset) * 100:.0f}%)"
                 )
                 return True, "TRAIL_STOP", option_ltp, milestone
 

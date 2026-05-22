@@ -151,6 +151,14 @@ Before opening any position, build a hypothetical Position with the same fields 
 ### Price-action trail engagement (exit-side)
 When the underlying is within 0.25% of nearest support (for PE positions) or resistance (for CE positions) AND the option is in profit, ENGAGE the 5% trail rather than exiting outright. The existing TRAIL_FLOOR rule then handles the actual exit when premium retraces past `peak × (1 − 5%)`. Backtest of 136 historical PA fires (Apr–May 2026) shows trailing captures **+₹20,592** more than outright exit — continuation through the level beats the bounce-and-give-back pattern in net expectation. Only fires when `milestone == 0` to avoid re-engagement on every tick.
 
+### Premium-gain trail trigger
+Engages the trail at +5% peak gain (well before the +15% milestone fires). Trail offset is variable so the floor always sits at or above entry: 3% at +5% peak, 4% at +7% peak, 5% at +10%+. This closes the gap where positions ride +5%-+14% with no protective mechanism active and then give all gains back to the -10% premium SL. Today's BANKNIFTY trade (peak +10% premium gain, exited at -10% SL = ~₹9.7k swing) is the bug class this rule fixes.
+
+### Cross-symbol (peer) invalidation
+For BANKNIFTY positions only — NIFTY leads, BANKNIFTY follows. At open, capture NIFTY's adverse-direction VWAP and EMA-21 levels. On each tick, the position-watcher reads NIFTY's live LTP from Redis and runs the same adverse-cross logic against the captured NIFTY levels. If NIFTY reverses through a level against our BANKNIFTY position direction, fire `INVALIDATION_PEER_<LEVEL>` exit. Catches sympathy moves earlier than BANKNIFTY's own levels would.
+
+NIFTY positions have no peer because NIFTY leads itself — using BANKNIFTY would be a lagging indicator.
+
 ### Tick-driven invalidation exits (exit-side)
 At position open, the indicator levels the LLM's thesis was built on (`vwap`, `ema_21`, `cpr_tc`, `cpr_bc`) are filtered to only those that are *adverse* to the trade direction at entry (above price for SELL, below price for BUY) and frozen onto the Position. CPR's TC and BC are treated as ordinary levels — no special direction mapping. On every consumer tick (~5s, the underlying read from the WS-fed `ltp:` cache), the helper iterates whatever levels were captured and checks whether the underlying has crossed any of them adversely. If yes, exit immediately with `INVALIDATION_<LEVEL>`. Catches "thesis broken" cases minutes before the option's −10% premium SL fires. Positions opened with no adverse level captured rely on premium SL alone.
 
