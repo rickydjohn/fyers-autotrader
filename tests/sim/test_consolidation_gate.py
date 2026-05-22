@@ -353,3 +353,59 @@ class TestLateSessionCutoff:
         data = _make_decision(decision="HOLD", range_breakout="NONE", consolidation_pct=0.30)
         result = asyncio.get_event_loop().run_until_complete(_run(data, when_ist=self._at(15, 10)))
         result.assert_not_called()
+
+
+class TestPreEntryExitSimulation:
+    """Block entries that would immediately fire an exit rule on tick 1.
+
+    The structural fix: before opening, run check_exit on a hypothetical
+    Position with a 0.5% favorable tick. If any exit would fire (or PA would
+    engage trail), refuse the entry.
+
+    These tests verify the INTEGRATION point — does the new pre-entry guard
+    correctly route on check_exit's return value? The underlying PA logic is
+    tested separately in test_exit_rules.py::TestPriceActionTrailEngagement.
+    Here we patch check_exit's return to simulate each possible outcome.
+    """
+
+    def test_buy_blocked_when_pa_trail_would_engage(self):
+        """check_exit returns new_milestone=1 (PA trail engagement) → block."""
+        data = _make_decision(decision="BUY", range_breakout="BREAKOUT_HIGH",
+                              consolidation_pct=0.60)
+        # PA engagement returns (False, "", 0.0, 1) — that's our bug signature.
+        with patch.object(sim_main, "check_exit", return_value=(False, "", 0.0, 1)):
+            result = asyncio.get_event_loop().run_until_complete(_run(data, ltp=24200.0))
+        result.assert_not_called()
+
+    def test_sell_blocked_when_pa_trail_would_engage(self):
+        data = _make_decision(decision="SELL", range_breakout="BREAKOUT_LOW",
+                              consolidation_pct=0.60)
+        with patch.object(sim_main, "check_exit", return_value=(False, "", 0.0, 1)):
+            result = asyncio.get_event_loop().run_until_complete(_run(data, ltp=24200.0))
+        result.assert_not_called()
+
+    def test_buy_blocked_when_immediate_exit_would_fire(self):
+        """check_exit returns should_exit=True → block."""
+        data = _make_decision(decision="BUY", range_breakout="BREAKOUT_HIGH",
+                              consolidation_pct=0.60)
+        with patch.object(sim_main, "check_exit",
+                          return_value=(True, "STOP_LOSS", 100.0, 0)):
+            result = asyncio.get_event_loop().run_until_complete(_run(data, ltp=24200.0))
+        result.assert_not_called()
+
+    def test_buy_passes_when_check_exit_clears(self):
+        """check_exit returns (False, "", 0, 0) — no exit, no engagement → pass."""
+        data = _make_decision(decision="BUY", range_breakout="BREAKOUT_HIGH",
+                              consolidation_pct=0.60)
+        with patch.object(sim_main, "check_exit", return_value=(False, "", 0.0, 0)):
+            result = asyncio.get_event_loop().run_until_complete(_run(data, ltp=24200.0))
+        result.assert_called_once()
+
+    def test_hold_skips_pre_entry_check(self):
+        """HOLD doesn't enter the BUY/SELL branch → pre-entry check never runs."""
+        data = _make_decision(decision="HOLD", range_breakout="NONE", consolidation_pct=0.30)
+        # Even with check_exit returning a "would exit" signal, HOLD bypasses
+        # because we don't open positions on HOLD.
+        with patch.object(sim_main, "check_exit", return_value=(False, "", 0.0, 1)):
+            result = asyncio.get_event_loop().run_until_complete(_run(data, ltp=24200.0))
+        result.assert_not_called()

@@ -104,6 +104,10 @@ LLM decision
    ├─ Consolidation gate — block when inside a tight consolidation AND
    │                       (no breakout OR breakout direction conflicts with signal)
    ├─ Entry proximity   — block if next level is within PA_PROXIMITY
+   ├─ Pre-entry exit sim — run check_exit on a hypothetical position with
+   │                       a 0.5% favorable tick; if any exit/trail would
+   │                       fire on tick 1, refuse the entry (catches
+   │                       entry-vs-exit gate definition inconsistencies)
    └─ open_position  (captures invalidation_levels from snapshot)
 ```
 

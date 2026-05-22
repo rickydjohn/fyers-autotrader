@@ -145,6 +145,9 @@ Block entries when price is inside a tight consolidation range (`consolidation_p
 ### Entry-proximity gate
 Block BUY if the nearest static resistance (PDH / CPR / pivots; **not** running day extremes) is within 0.25%. Symmetric for SELL.
 
+### Pre-entry exit simulation
+Before opening any position, build a hypothetical Position with the same fields the real one would have, simulate a 0.5% favorable tick on the option premium, and run `check_exit` against the current market state. If any exit rule would fire — or if PA would engage the trail (`new_milestone=1`) — refuse the entry. This is the structural fix for entry-vs-exit gate inconsistencies: by construction, we never open a position that the exit logic would immediately want to close. Catches the case where the entry-proximity gate excludes DayHigh but the PA exit rule uses it (2026-05-22 BANKNIFTY-near-DayHigh bug class).
+
 ### Price-action trail engagement (exit-side)
 When the underlying is within 0.25% of nearest support (for PE positions) or resistance (for CE positions) AND the option is in profit, ENGAGE the 5% trail rather than exiting outright. The existing TRAIL_FLOOR rule then handles the actual exit when premium retraces past `peak × (1 − 5%)`. Backtest of 136 historical PA fires (Apr–May 2026) shows trailing captures **+₹20,592** more than outright exit — continuation through the level beats the bounce-and-give-back pattern in net expectation. Only fires when `milestone == 0` to avoid re-engagement on every tick.
 

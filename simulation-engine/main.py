@@ -573,6 +573,36 @@ async def _handle_decision(data: dict) -> None:
 
     invalidation_levels = build_invalidation_levels(decision, current_price, ind_dict)
 
+    # Pre-entry exit simulation — refuse to open a position that would
+    # immediately fire an exit rule on tick 1. This is the structural fix
+    # for entry/exit gate inconsistencies: any time the exit-side and
+    # entry-side disagree on whether a setup is tradable, the exit side wins
+    # because it has more information (it knows what the next tick will do).
+    if decision in ("BUY", "SELL"):
+        would_exit, exit_reason = _would_exit_immediately(
+            symbol=symbol,
+            side=decision,
+            decision_id=decision_id,
+            current_price=current_price,
+            option_price=option_price or 0.0,
+            option_symbol=option_symbol,
+            option_strike=option_strike,
+            option_type=option_type,
+            option_expiry=option_expiry,
+            option_lot_size=option_lot_size or 0,
+            invalidation_levels=invalidation_levels,
+            day_type=day_type,
+            ind_dict=ind_dict,
+            mkt_ind=mkt_ind,
+            now_ist=now_ist,
+        )
+        if would_exit:
+            logger.info(
+                f"[ENTRY BLOCKED] {decision} {symbol}: hypothetical exit "
+                f"would fire with {exit_reason} on first favorable tick — skipping"
+            )
+            return
+
     if decision == "BUY":
         existing = await redis_client.hget("positions:open", symbol)
         if existing:
@@ -621,6 +651,100 @@ async def _handle_decision(data: dict) -> None:
 
     elif decision == "HOLD":
         pass
+
+
+def _would_exit_immediately(
+    *,
+    symbol: str,
+    side: str,
+    decision_id: str,
+    current_price: float,
+    option_price: float,
+    option_symbol: str | None,
+    option_strike: int | None,
+    option_type: str | None,
+    option_expiry: str | None,
+    option_lot_size: int,
+    invalidation_levels: dict | None,
+    day_type: str,
+    ind_dict: dict,
+    mkt_ind: dict,
+    now_ist: datetime,
+) -> tuple[bool, str]:
+    """Construct the hypothetical Position that would be opened and run the
+    full exit-rule check on it. Refuse the entry if any rule would fire on
+    tick 1.
+
+    To exercise the PA_RESISTANCE / PA_SUPPORT path — which requires the
+    option to be slightly in profit before firing — we simulate
+    option_ltp = option_price × 1.005 (a half-percent favorable tick). This
+    models "what happens on the first tick after entry if price moves in our
+    favor": if PA would engage the trail or fire an exit at that moment, the
+    entry is unsafe. Catches the 2026-05-22 BANKNIFTY-near-DayHigh bug class
+    where the entry-proximity gate excludes DayHigh but PA exit uses it,
+    creating a near-zero-time round trip.
+
+    Returns (would_exit, reason). reason is the exit rule name (e.g.
+    "STOP_LOSS", "PA_RESISTANCE_TRAIL"). Fail-open: if option_price is
+    missing or invalid, returns (False, "") so we don't introduce a new
+    outage mode on a flaky payload.
+    """
+    if not option_price or option_price <= 0 or not option_symbol:
+        return False, ""
+
+    hypothetical = Position(
+        symbol=symbol,
+        side=side,
+        quantity=option_lot_size,        # 1 lot — sufficient for PA gross-gain test
+        avg_price=option_price,
+        entry_time=now_ist,
+        stop_loss=0.0,                    # not used by option-path of check_exit
+        target=0.0,
+        decision_id=decision_id,
+        option_symbol=option_symbol,
+        option_strike=option_strike,
+        option_type=option_type,
+        option_expiry=option_expiry,
+        entry_option_price=option_price,
+        peak_option_price=option_price,
+        entry_iv=0.0,                     # unknown at decision time — IV_CRUSH won't fire
+        milestone_count=0,
+        day_type=day_type,
+        num_lots=1,
+        invalidation_levels=invalidation_levels,
+    )
+
+    simulated_option_ltp = option_price * 1.005   # 0.5% favorable tick
+
+    market_context = {
+        "prev_day_high":            mkt_ind.get("prev_day_high")            or ind_dict.get("prev_day_high"),
+        "prev_day_low":             mkt_ind.get("prev_day_low")             or ind_dict.get("prev_day_low"),
+        "nearest_resistance":       mkt_ind.get("nearest_resistance")       or ind_dict.get("nearest_resistance"),
+        "nearest_resistance_label": mkt_ind.get("nearest_resistance_label") or ind_dict.get("nearest_resistance_label"),
+        "nearest_support":          mkt_ind.get("nearest_support")          or ind_dict.get("nearest_support"),
+        "nearest_support_label":    mkt_ind.get("nearest_support_label")    or ind_dict.get("nearest_support_label"),
+    }
+
+    should_exit, reason, _, new_milestone = check_exit(
+        hypothetical,
+        underlying_ltp=current_price,
+        option_ltp=simulated_option_ltp,
+        greeks=None,                  # no greeks at decision time
+        indicators=ind_dict,
+        now=now_ist,
+        market_context=market_context,
+    )
+
+    # An exit firing is a hard block. A PA-triggered trail engagement
+    # (new_milestone advancing from 0 → 1 with should_exit=False) is also a
+    # block — that's exactly today's bug pattern: PA would engage trail
+    # immediately and the trail floor sits below entry, guaranteeing a loss
+    # on any small retrace.
+    if should_exit:
+        return True, reason
+    if new_milestone > 0:
+        return True, "PA_TRAIL_IMMEDIATE"
+    return False, ""
 
 
 async def _is_orb_broken_today(
