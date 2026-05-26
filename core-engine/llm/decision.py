@@ -327,33 +327,15 @@ async def make_decision(
 
     validated = _validate_decision(parsed, snapshot.ltp)
 
-    # Forming bar hard gate — apply confidence delta in Python regardless of
-    # whether the LLM correctly acted on the text instruction.
-    # Direction alignment: a positive delta (strong body) should boost confidence only
-    # when the bar's direction matches the decision. If the bar contradicts the decision,
-    # flip the sign so it reduces confidence instead of boosting it.
-    # Negative deltas (doji, late reversal, low volume) are kept as-is — they always
-    # reduce confidence regardless of direction.
+    # Forming bar delta is supplied to the LLM in the prompt and the LLM is
+    # instructed to apply it to its own confidence. We used to re-apply it in
+    # Python as a safety net — that turned out to be a double penalty, since
+    # the LLM honors the instruction. Keep an audit tag for traceability but
+    # do not mutate confidence here.
     if forming_bar_delta != 0.0 and validated["decision"] in ("BUY", "SELL"):
-        if forming_bar_is_bull is not None and forming_bar_delta > 0:
-            decision_is_bull = validated["decision"] == "BUY"
-            if forming_bar_is_bull != decision_is_bull:
-                forming_bar_delta = -forming_bar_delta
-        old_conf = validated["confidence"]
-        new_conf = max(0.0, min(1.0, old_conf + forming_bar_delta))
-        validated["confidence"] = new_conf
-        tag = f"[Forming bar: delta {forming_bar_delta:+.3f}, conf {old_conf:.2f}→{new_conf:.2f}]"
-        if new_conf < 0.5:
-            validated["decision"] = "HOLD"
-            tag = (
-                f"[Forming bar gate: delta {forming_bar_delta:+.3f} dropped conf "
-                f"{old_conf:.2f}→{new_conf:.2f} below 0.50, overriding to HOLD]"
-            )
-        validated["reasoning"] = tag + " " + validated["reasoning"]
-        logger.info(
-            f"Forming bar delta applied for {snapshot.symbol}: "
-            f"{forming_bar_delta:+.3f} ({old_conf:.2f}→{new_conf:.2f}) "
-            f"→ {validated['decision']}"
+        validated["reasoning"] = (
+            f"[Forming bar delta {forming_bar_delta:+.3f} (LLM-applied)] "
+            + validated["reasoning"]
         )
 
     # Layer 2 cross-symbol confidence gate
