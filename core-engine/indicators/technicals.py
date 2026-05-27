@@ -290,7 +290,7 @@ def format_candles_for_prompt(
 def calculate_consolidation(
     candles: List[OHLCBar],
     lookback: int = 8,
-    threshold_pct: float = 0.40,
+    threshold_pct: float = 0.20,
 ) -> Tuple[float, float, float]:
     """
     Measure how sideways the market has been over the last `lookback` completed
@@ -301,9 +301,13 @@ def calculate_consolidation(
         window_high        — top of the consolidation band
         window_low         — bottom of the consolidation band
 
-    A consolidation_pct below `threshold_pct` (default 0.40%) means the market
+    A consolidation_pct below `threshold_pct` (default 0.20%) means the market
     has been moving sideways; the caller uses window_high / window_low to decide
     whether the current LTP has broken out of that band.
+
+    Note: the function is informational only — callers (scheduler, sim engine)
+    apply the threshold themselves with their own constant. The `threshold_pct`
+    parameter here only sets the docstring expectation.
     """
     # Exclude the latest (possibly incomplete) candle
     window = candles[-(lookback + 1):-1]

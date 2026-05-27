@@ -491,11 +491,16 @@ async def _handle_decision(data: dict) -> None:
     #   - consolidating AND no breakout → no directional confirmation
     #   - consolidating AND BREAKOUT_LOW but BUY signal → fighting bearish breakout
     #   - consolidating AND BREAKOUT_HIGH but SELL signal → fighting bullish breakout
-    # Allow when wide market (consolidation_pct >= 0.40) or breakout aligns with signal.
+    # Allow when wide market (consolidation_pct >= 0.20%) or breakout aligns with signal.
+    # Threshold lowered 0.40 → 0.20 on 2026-05-27: at 0.40, 83% of NIFTY50 decisions on
+    # 2026-05-26 fell inside the "consolidating" band (typical 40-min ranges are 50-80 pts
+    # on NIFTY50 = 0.20-0.33%). The 13:25 SELL @ conf 0.84 that preceded a 100-pt drop
+    # had pct=0.224 and was blocked. 0.20 unlocks that case with margin while still
+    # firing on truly tight chop.
     if decision in ("BUY", "SELL"):
         range_breakout = ind_dict.get("range_breakout", "")
         consolidation_pct = float(ind_dict.get("consolidation_pct") or 1.0)
-        is_consolidating = consolidation_pct < 0.40
+        is_consolidating = consolidation_pct < 0.20
         if is_consolidating:
             block_reason = None
             if range_breakout == "NONE":
@@ -507,7 +512,7 @@ async def _handle_decision(data: dict) -> None:
             if block_reason:
                 logger.info(
                     f"[CONSOLIDATION GATE] {decision} {symbol}: price inside consolidation "
-                    f"range ({consolidation_pct:.1%} of ATR) — {block_reason}, skipped"
+                    f"range ({consolidation_pct:.3f}% — threshold 0.20%) — {block_reason}, skipped"
                 )
                 return
 

@@ -253,7 +253,7 @@ async def _process_symbol(
     ltp = quote["ltp"]
     # Require price to clear the band by at least 0.05% to avoid noise breakouts
     BREAKOUT_BUFFER = 0.0005
-    is_consolidating = consolidation_pct < 0.40
+    is_consolidating = consolidation_pct < 0.20
     if is_consolidating and ltp > consol_high * (1 + BREAKOUT_BUFFER):
         range_breakout = "BREAKOUT_HIGH"
     elif is_consolidating and ltp < consol_low * (1 - BREAKOUT_BUFFER):
