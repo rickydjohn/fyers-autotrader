@@ -34,6 +34,14 @@ IST = pytz.timezone("Asia/Kolkata")
 # days of NIFTY/BANKNIFTY history).
 ORB_BUFFER = 0.002
 
+# Consolidation gate threshold (% of price). Block directional entries when the
+# recent 8-candle range is tighter than this AND there's no aligned breakout.
+# 0.40 → 0.20 (2026-05-27) → 0.15 (2026-05-29): a forward-outcome study of ~3.1k
+# signals (ai_decisions, 30-min directional move) found the 0.15-0.20% band is the
+# BEST performer (64% win) — the 0.20 cut was vetoing it; only <0.15% genuinely
+# underperforms. See tests/backtests/backtest_consolidation_gate.py.
+CONSOLIDATION_THRESHOLD_PCT = 0.15
+
 # Per-session cache: True once today's ORB has been broken (either direction).
 # Keyed by (symbol, today's date IST). Backtest of 147 days shows ~74-75% of
 # break-days have material follow-through after the first cross — so we relax
@@ -491,16 +499,15 @@ async def _handle_decision(data: dict) -> None:
     #   - consolidating AND no breakout → no directional confirmation
     #   - consolidating AND BREAKOUT_LOW but BUY signal → fighting bearish breakout
     #   - consolidating AND BREAKOUT_HIGH but SELL signal → fighting bullish breakout
-    # Allow when wide market (consolidation_pct >= 0.20%) or breakout aligns with signal.
-    # Threshold lowered 0.40 → 0.20 on 2026-05-27: at 0.40, 83% of NIFTY50 decisions on
-    # 2026-05-26 fell inside the "consolidating" band (typical 40-min ranges are 50-80 pts
-    # on NIFTY50 = 0.20-0.33%). The 13:25 SELL @ conf 0.84 that preceded a 100-pt drop
-    # had pct=0.224 and was blocked. 0.20 unlocks that case with margin while still
-    # firing on truly tight chop.
+    # Allow when wide market (consolidation_pct >= threshold) or breakout aligns with signal.
+    # Threshold history: 0.40 → 0.20 (2026-05-27) → 0.15 (2026-05-29). The 0.15 cut comes
+    # from a forward-outcome study (tests/backtests/backtest_consolidation_gate.py, ~3.1k
+    # signals): the 0.15-0.20% band had the BEST 30-min directional win rate (64%) yet the
+    # 0.20 gate was vetoing it; only the <0.15% ultra-tight zone genuinely underperforms.
     if decision in ("BUY", "SELL"):
         range_breakout = ind_dict.get("range_breakout", "")
         consolidation_pct = float(ind_dict.get("consolidation_pct") or 1.0)
-        is_consolidating = consolidation_pct < 0.20
+        is_consolidating = consolidation_pct < CONSOLIDATION_THRESHOLD_PCT
         if is_consolidating:
             block_reason = None
             if range_breakout == "NONE":
@@ -512,15 +519,32 @@ async def _handle_decision(data: dict) -> None:
             if block_reason:
                 logger.info(
                     f"[CONSOLIDATION GATE] {decision} {symbol}: price inside consolidation "
-                    f"range ({consolidation_pct:.3f}% — threshold 0.20%) — {block_reason}, skipped"
+                    f"range ({consolidation_pct:.3f}% — threshold {CONSOLIDATION_THRESHOLD_PCT:.2f}%) — {block_reason}, skipped"
                 )
                 return
+
+    # Trend-aligned entry = price is already beyond the opening range in the trade's
+    # direction (confirmed breakdown for SELL / breakout for BUY). A forward-outcome
+    # study (2026-05-29) found the location vetoes below — the proximity gate and the
+    # PA-trail pre-entry block — fire hardest on exactly these trades and BLOCK the
+    # better ones: PA-blocked SELLs won the SL/target race 48% vs 30% for allowed, and
+    # on the 518-pt down-day 16/19 blocked shorts would have won. In a trend the nearest
+    # level isn't a bounce floor (a trailing DayLow is just the leading edge; static S/R
+    # gets sliced), so we relax those entry vetoes ONLY when trend-aligned. The protective
+    # counter-trend blocks (e.g. CE into resistance with no confirmed up-break) survive,
+    # and the live exit-side PA trail is untouched.
+    orb_h_ta = float(ind_dict.get("orb_high") or 0)
+    orb_l_ta = float(ind_dict.get("orb_low") or 0)
+    trend_aligned = (
+        (decision == "SELL" and orb_l_ta > 0 and current_price < orb_l_ta) or
+        (decision == "BUY"  and orb_h_ta > 0 and current_price > orb_h_ta)
+    )
 
     # Entry proximity gate — block when the next level in the trade direction is too close.
     # For CE (BUY): if the nearest level above is within 0.25%, there is no room to run.
     # For PE (SELL): if the nearest level below is within 0.25%, there is no room to fall.
     # Levels are direction-agnostic (PDH, PDL, CPR, R1-R3, S1-S3, Pivot) — whatever the
-    # pivot calc assigned as nearest_resistance / nearest_support.
+    # pivot calc assigned as nearest_resistance / nearest_support. Skipped when trend-aligned.
     # Falls back to decision-time indicators when the live market snapshot is missing the
     # field, so the gate is never silently skipped due to a stale Redis key.
     PA_PROXIMITY = 0.0025
@@ -531,7 +555,7 @@ async def _handle_decision(data: dict) -> None:
         # DayHigh is a running intraday extreme — on a trending bull day it equals current
         # price and would block every entry. Only static levels (PDH, CPR, pivots) are valid
         # entry gates. Same reasoning as exit_rules.py which also excludes DayHigh/DayLow.
-        if nr > 0 and nr_label != "DayHigh" and nr * (1 - PA_PROXIMITY) <= current_price <= nr:
+        if not trend_aligned and nr > 0 and nr_label != "DayHigh" and nr * (1 - PA_PROXIMITY) <= current_price <= nr:
             logger.info(
                 f"[ENTRY BLOCK] BUY {symbol}: underlying ₹{current_price:.2f} within "
                 f"{PA_PROXIMITY*100:.2f}% of {nr_label} ₹{nr:.2f} — no room to run, skipped"
@@ -543,7 +567,7 @@ async def _handle_decision(data: dict) -> None:
         ns_label = mkt_ind.get("nearest_support_label") or ind_dict.get("nearest_support_label") or "level"
         # DayLow is a running intraday extreme — on a trending bear day it equals current
         # price and would block every SELL entry. Exclude it; PDL and pivot levels are enough.
-        if ns > 0 and ns_label != "DayLow" and ns <= current_price <= ns * (1 + PA_PROXIMITY):
+        if not trend_aligned and ns > 0 and ns_label != "DayLow" and ns <= current_price <= ns * (1 + PA_PROXIMITY):
             logger.info(
                 f"[ENTRY BLOCK] SELL {symbol}: underlying ₹{current_price:.2f} within "
                 f"{PA_PROXIMITY*100:.2f}% of {ns_label} ₹{ns:.2f} — no room to fall, skipped"
@@ -574,6 +598,7 @@ async def _handle_decision(data: dict) -> None:
             ind_dict=ind_dict,
             mkt_ind=mkt_ind,
             now_ist=now_ist,
+            trend_aligned=trend_aligned,
         )
         if would_exit:
             logger.info(
@@ -674,6 +699,7 @@ def _would_exit_immediately(
     ind_dict: dict,
     mkt_ind: dict,
     now_ist: datetime,
+    trend_aligned: bool = False,
 ) -> tuple[bool, str]:
     """Construct the hypothetical Position that would be opened and run the
     full exit-rule check on it. Refuse the entry if any rule would fire on
@@ -739,14 +765,16 @@ def _would_exit_immediately(
         market_context=market_context,
     )
 
-    # An exit firing is a hard block. A PA-triggered trail engagement
-    # (new_milestone advancing from 0 → 1 with should_exit=False) is also a
-    # block — that's exactly today's bug pattern: PA would engage trail
-    # immediately and the trail floor sits below entry, guaranteeing a loss
-    # on any small retrace.
+    # A real immediate exit (STOP_LOSS / DELTA / IV) is always a hard block.
     if should_exit:
         return True, reason
-    if new_milestone > 0:
+    # A PA trail merely ENGAGING (new_milestone 0→1, should_exit=False) only means
+    # "a protective trail would arm." On a non-trending setup that's a churn signal —
+    # the floor sits below entry, so the first retrace stops us out. But on a
+    # trend-aligned entry the trail rides the move, so engagement is NOT a reason to
+    # skip — blocking on it was throwing away the trend-continuation trades (see the
+    # 2026-05-29 study). Only treat trail-engagement as a block when NOT trend-aligned.
+    if new_milestone > 0 and not trend_aligned:
         return True, "PA_TRAIL_IMMEDIATE"
     return False, ""
 
