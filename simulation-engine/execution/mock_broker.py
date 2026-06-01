@@ -138,7 +138,7 @@ async def open_position(
     # is the only valid reference. Levels must mirror the exit_rules constants so
     # Slack notifications show the actual thresholds that will trigger an exit.
     first_target_pct = RANGING_MILESTONE_PCT if day_type == "RANGING" else FIRST_MILESTONE_PCT
-    stop_loss = round(entry_price * (1.0 - PREMIUM_SL_PCT), 2)   # e.g. entry × 0.90
+    stop_loss = round(entry_price * (1.0 - PREMIUM_SL_PCT), 2)   # e.g. entry × 0.85
     target    = round(entry_price * (1.0 + first_target_pct), 2) # e.g. entry × 1.20 (trending)
 
     trade_id = str(uuid.uuid4())

@@ -7,7 +7,7 @@ trigger exits directly.
 
 Rule priority:
   1. SESSION_CLOSE  — 15:00 IST force close (always applies)
-  2. STOP_LOSS      — option LTP ≤ entry × 0.90  (−10% hard stop)
+  2. STOP_LOSS      — option LTP ≤ entry × 0.85  (−15% hard stop)
   3. PA_RESISTANCE  — CE: underlying within 0.25% of nearest resistance / PDH
      PA_SUPPORT     — PE: underlying within ±0.25% of nearest support (band check).
                       ENGAGES the 5% trail rather than exiting outright (backtest
@@ -49,7 +49,12 @@ IST = pytz.timezone("Asia/Kolkata")
 SESSION_CLOSE_HOUR: int    = settings.session_close_hour
 SESSION_CLOSE_MINUTE: int  = settings.session_close_minute
 
-PREMIUM_SL_PCT: float         = 0.10   # hard stop: exit if option loses ≥10% of entry premium
+# Hard stop as % of entry premium. Widened 0.10 → 0.15 (2026-06-01): a 33-day ATM
+# trend/range study found −10% stopped trend entries on the initial wiggle before the
+# move resumed — trend-day capture rose +1.4% → +5.4% (win 62% → 88%) at −15%, and
+# saturated by −18%. The tight trail is kept (loosening it bled range days); the SL is
+# the lever. See tests/backtests/backtest_exit_configs.py.
+PREMIUM_SL_PCT: float         = 0.15   # hard stop: exit if option loses ≥15% of entry premium
 FIRST_MILESTONE_PCT: float    = 0.15   # TRENDING: trail activates at +15% gain from entry
 RANGING_MILESTONE_PCT: float  = 0.10   # RANGING: exit immediately at +10% gain from entry
 MILESTONE_STEP_PCT: float     = 0.10   # subsequent milestones every +10% of entry
@@ -203,9 +208,9 @@ def check_exit(
     if holding_option:
         entry = pos.entry_option_price
 
-        # ── Rule 2: Premium stop loss (−10%) ─────────────────────────────────
+        # ── Rule 2: Premium stop loss (−15%) ─────────────────────────────────
         # Exit at sl_floor, not option_ltp — price may gap through the floor
-        # between polls; honouring the floor price caps max loss at −10%.
+        # between polls; honouring the floor price caps max loss at −PREMIUM_SL_PCT.
         sl_floor = entry * (1.0 - PREMIUM_SL_PCT)
         if option_ltp <= sl_floor:
             logger.info(

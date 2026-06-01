@@ -148,12 +148,12 @@ class TestSessionClose:
         assert reason == "SESSION_CLOSE"
 
 
-# ── Rule 2: Premium stop loss (−10%) ─────────────────────────────────────────
+# ── Rule 2: Premium stop loss (−15%) ─────────────────────────────────────────
 
 class TestPremiumStopLoss:
     def test_triggers_at_sl_floor(self):
         entry = 100.0
-        sl_floor = entry * (1 - PREMIUM_SL_PCT)  # ₹90
+        sl_floor = entry * (1 - PREMIUM_SL_PCT)  # ₹85
         should_exit, reason, exit_price, _ = check_exit(
             _pos(entry_option_price=entry),
             underlying_ltp=22150.0, option_ltp=sl_floor, greeks=_greeks(),
@@ -166,7 +166,7 @@ class TestPremiumStopLoss:
     def test_triggers_below_sl_floor(self):
         should_exit, reason, _, _ = check_exit(
             _pos(entry_option_price=100.0),
-            underlying_ltp=22150.0, option_ltp=85.0, greeks=_greeks(),
+            underlying_ltp=22150.0, option_ltp=80.0, greeks=_greeks(),
             now=_now(10, 0),
         )
         assert should_exit
@@ -175,14 +175,14 @@ class TestPremiumStopLoss:
     def test_exit_price_capped_at_sl_floor_when_price_gaps(self):
         """Price gapped through SL floor — exit must be at floor, not the gapped price."""
         entry = 100.0
-        sl_floor = entry * (1 - PREMIUM_SL_PCT)  # ₹90
+        sl_floor = entry * (1 - PREMIUM_SL_PCT)  # ₹85
         gapped_price = 70.0  # gapped well below floor
         _, _, exit_price, _ = check_exit(
             _pos(entry_option_price=entry),
             underlying_ltp=22150.0, option_ltp=gapped_price, greeks=_greeks(),
             now=_now(10, 0),
         )
-        assert exit_price == sl_floor  # capped at ₹90, not ₹70
+        assert exit_price == sl_floor  # capped at ₹85, not ₹70
 
     def test_does_not_trigger_above_floor(self):
         should_exit, _, _, _ = check_exit(
@@ -742,7 +742,7 @@ class TestRulePriority:
         """STOP_LOSS (rule 2) fires before DELTA_ERODED (rule 3)."""
         should_exit, reason, _, _ = check_exit(
             _pos(entry_option_price=100.0),
-            underlying_ltp=22150.0, option_ltp=89.0,  # below SL floor
+            underlying_ltp=22150.0, option_ltp=80.0,  # below SL floor (−15% = ₹85)
             greeks=_greeks(delta=0.05),               # delta also eroded
             now=_now(10, 0),
         )
