@@ -27,12 +27,15 @@ def format_options_oi_block(oi: Optional[Dict[str, Any]]) -> str:
     max_pain      = oi.get("max_pain", "N/A")
     expiry        = oi.get("expiry", "N/A")
 
-    if basis > spot * 0.001:
-        basis_signal = "bullish (contango)"
-    elif basis < -(spot * 0.001):
-        basis_signal = "bearish (backwardation)"
+    # Backtest 2026-06-02 (NIFTY fut vs spot, ~20d 1m): normal contango is just
+    # cost-of-carry, NOT directional — basis >+0.05% → only 44% forward-up. Rare
+    # backwardation is mildly bullish (56% up). So contango = neutral; only flag
+    # backwardation as a weak contrarian tell. (Previously contango was mislabeled
+    # "bullish" and added +0.02 to BUY on what is the ~65%-of-the-time normal state.)
+    if basis < -(spot * 0.001):
+        basis_signal = "mild bullish (backwardation — rare)"
     else:
-        basis_signal = "neutral"
+        basis_signal = "neutral (normal carry — not directional)"
 
     if vix > 20:
         vix_signal = "HIGH — widen stops to 0.5-0.7%"
@@ -727,13 +730,16 @@ Zones are classified BULLISH or BEARISH magnets based on which direction price n
 Use the Options Market Structure block above to adjust confidence — do not change the decision direction, only conviction.
 - Call Wall within 0.3% above price: BUY confidence -0.05 (strong ceiling ahead — calls are being written there)
 - Put Wall within 0.3% below price: SELL confidence -0.05 (strong floor below — puts are being written there)
-- PCR < 0.80: retail is aggressively buying calls → market makers are net short calls above; reduce BUY confidence -0.03
-- PCR > 1.20: panic put buying → market makers defending below; reduce SELL confidence -0.03
+- PCR > 1.20 — STRONGEST measured edge (backtest 2026-06-02: 65% forward-up over 30m vs 47% base).
+    Contrarian-bullish (panic put buying / over-hedging). BUY confidence +0.05 AND SELL confidence -0.05.
+    This is the one OI signal with a real directional edge — weight it accordingly.
+- PCR < 0.80: call-heavy; only a WEAK contrarian-bearish tell (≈47% forward-up). Reduce BUY confidence -0.03.
 - PCR 0.80–1.20: neutral — no adjustment
 - VIX > 20: elevated volatility; widen stop_loss to 0.5–0.7% of entry regardless of day type
 - VIX < 15: low volatility; tighten stop_loss to 0.2–0.3% of entry
-- Basis positive (futures > spot by > 0.1%): bullish institutional positioning → +0.02 for BUY signals
-- Basis negative (futures < spot by > 0.1%): bearish institutional positioning → +0.02 for SELL signals
+- Basis: NORMAL CONTANGO IS NOT DIRECTIONAL (cost-of-carry; backtest: positive basis → 44% forward-up).
+    Do NOT adjust confidence on positive basis. Only rare backwardation (futures < spot by >0.1%) is a
+    weak bullish tell → +0.02 for BUY. (Prior "+0.02 BUY on contango" was contrarian to the data — removed.)
 - If no options data listed above: skip this section entirely
 
 ### SECTOR BREADTH (from ## Sector Momentum block)
