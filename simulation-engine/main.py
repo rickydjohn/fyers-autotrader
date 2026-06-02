@@ -391,10 +391,16 @@ async def _handle_decision(data: dict) -> None:
 
     logger.info(f"[{mode.upper()}] {decision} {symbol} @ ₹{current_price:.2f} (conf={confidence:.2f})")
 
-    # 70% confidence floor: treat any BUY/SELL below this threshold as HOLD.
-    # Eliminates low-conviction churn that loses to commission even when the
-    # direction is right, without touching the stop-loss / exit-rules path.
-    CONFIDENCE_FLOOR = 0.70
+    # Confidence floor: treat any BUY/SELL below this threshold as HOLD.
+    # Raised 0.70 → 0.80 (2026-06-02): joining 162 real trades to their entry
+    # confidence shows win rate rises monotonically with the floor — 0.70→73%,
+    # 0.80→80%, 0.85→89% realized. 0.80 keeps ~55% of trades at ~80% win while
+    # cutting the low-conviction (0.70-0.80 → 66% win) churn. NOTE the magnitude
+    # is regime-dependent (April old-exit regime inflates it); the DIRECTION
+    # (filter low conviction → higher win rate) is robust. The deeper win-rate
+    # lever is the exit (quick profit-taking); the May PA→trail change is what
+    # dropped win rate ~83%→~54%. See project_winrate_expectancy memory.
+    CONFIDENCE_FLOOR = 0.80
     if decision in ("BUY", "SELL") and confidence < CONFIDENCE_FLOOR:
         logger.info(
             f"[CONF FLOOR] {decision} {symbol} conf={confidence:.2f} < {CONFIDENCE_FLOOR} — skipped"
