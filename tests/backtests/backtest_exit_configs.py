@@ -43,13 +43,15 @@ def sim(E,bars,sl,engage,offset_fn,hold=False):
             if g>=engage and px<=peak*(1-offset_fn(g)): return (px-E)/E*100
     return (bars[-1][1]-E)/E*100
 
+# Trail-tiering test (all at the new SL15): can we let runners run to grow avg-win
+# without bleeding range days? offset widens as peak-gain grows.
+TIER_A=lambda g: 0.03 if g<0.07 else (0.05 if g<0.15 else 0.10)   # loosen after +15%
+TIER_B=lambda g: 0.03 if g<0.07 else (0.05 if g<0.20 else 0.15)   # loosen after +20%
 CONFIGS={
- "SL10 (CURRENT)":  dict(sl=0.10,engage=0.05,offset_fn=VAR),
- "SL12":            dict(sl=0.12,engage=0.05,offset_fn=VAR),
- "SL15":            dict(sl=0.15,engage=0.05,offset_fn=VAR),
- "SL18":            dict(sl=0.18,engage=0.05,offset_fn=VAR),
- "SL20":            dict(sl=0.20,engage=0.05,offset_fn=VAR),
- "SL25":            dict(sl=0.25,engage=0.05,offset_fn=VAR),
+ "CURRENT trail (SL15)":     dict(sl=0.15,engage=0.05,offset_fn=VAR),
+ "tierA loosen@15 (SL15)":   dict(sl=0.15,engage=0.05,offset_fn=TIER_A),
+ "tierB loosen@20 (SL15)":   dict(sl=0.15,engage=0.05,offset_fn=TIER_B),
+ "HOLD to close (SL15)":     dict(sl=0.15,engage=0,offset_fn=VAR,hold=True),
 }
 
 recs=[]
@@ -71,10 +73,11 @@ print(f"Trades simulated: {len(d)}  ({d.daytype.value_counts().to_dict()})\n")
 
 def block(title, sub):
     print(f"── {title}  (n={len(sub)}) ──")
-    print(f"   {'config':30}{'avg%':>8}{'win%':>7}{'total%':>9}")
+    print(f"   {'config':28}{'avg%':>7}{'win%':>6}{'avgWin':>8}{'avgLoss':>9}{'total%':>9}")
     for name in CONFIGS:
-        v=sub[name].dropna()
-        print(f"   {name:30}{v.mean():>+8.1f}{(v>0).mean()*100:>6.0f}%{v.sum():>+9.0f}")
+        v=sub[name].dropna(); w=v[v>0]; l=v[v<0]
+        print(f"   {name:28}{v.mean():>+7.1f}{(v>0).mean()*100:>5.0f}%"
+              f"{(w.mean() if len(w) else 0):>+8.1f}{(l.mean() if len(l) else 0):>+9.1f}{v.sum():>+9.0f}")
     print()
 
 block("ALL", d)
