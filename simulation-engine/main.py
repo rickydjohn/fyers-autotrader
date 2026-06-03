@@ -392,15 +392,15 @@ async def _handle_decision(data: dict) -> None:
     logger.info(f"[{mode.upper()}] {decision} {symbol} @ ₹{current_price:.2f} (conf={confidence:.2f})")
 
     # Confidence floor: treat any BUY/SELL below this threshold as HOLD.
-    # Raised 0.70 → 0.80 (2026-06-02): joining 162 real trades to their entry
-    # confidence shows win rate rises monotonically with the floor — 0.70→73%,
-    # 0.80→80%, 0.85→89% realized. 0.80 keeps ~55% of trades at ~80% win while
-    # cutting the low-conviction (0.70-0.80 → 66% win) churn. NOTE the magnitude
-    # is regime-dependent (April old-exit regime inflates it); the DIRECTION
-    # (filter low conviction → higher win rate) is robust. The deeper win-rate
-    # lever is the exit (quick profit-taking); the May PA→trail change is what
-    # dropped win rate ~83%→~54%. See project_winrate_expectancy memory.
-    CONFIDENCE_FLOOR = 0.80
+    # KEPT AT 0.70. A 2026-06-02 backtest suggested raising to 0.80 (conf≥0.80 →
+    # 80% win rate on 162 trades) — but LIVE DATA REFUTED IT: on 06-02 and 06-03,
+    # ALL traded signals were <0.80, and the two biggest winners were the LOWEST
+    # confidence (06-03's +₹20,511 was at 0.71). A 0.80 floor would have skipped
+    # ~₹22k of profit over those 2 days. Lesson: the LLM's confidence does NOT
+    # predict profitability (win RATE ≠ profit; low-conf trades are often the
+    # lumpy runners that carry the P&L). Do NOT raise this on win-rate backtests.
+    # See project_winrate_expectancy memory.
+    CONFIDENCE_FLOOR = 0.70
     if decision in ("BUY", "SELL") and confidence < CONFIDENCE_FLOOR:
         logger.info(
             f"[CONF FLOOR] {decision} {symbol} conf={confidence:.2f} < {CONFIDENCE_FLOOR} — skipped"
