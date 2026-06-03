@@ -31,8 +31,18 @@ from execution.exit_rules import (
     SESSION_CLOSE_MINUTE,
 )
 from models.schemas import Position
+import execution.exit_rules as _exit_rules
 
 IST = pytz.timezone("Asia/Kolkata")
+
+
+# Production default is LET_WINNERS_RUN=True (convex exit — skips the trail/milestone
+# winner-caps so positions ride to SESSION_CLOSE / STOP_LOSS). The trail/milestone
+# tests below validate that PRESERVED, reversible logic, so force the flag OFF for
+# them. TestLetWinnersRun covers the True (convex) path explicitly.
+@pytest.fixture(autouse=True)
+def _disable_let_winners_run(monkeypatch):
+    monkeypatch.setattr(_exit_rules, "LET_WINNERS_RUN", False)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -100,6 +110,42 @@ def _ctx(nearest_resistance=0.0, nearest_resistance_label="R1",
         "prev_day_high": prev_day_high,
         "prev_day_low": prev_day_low,
     }
+
+
+# ── Convex exit mode: LET_WINNERS_RUN ─────────────────────────────────────────
+
+class TestLetWinnersRun:
+    """Convex exit (production default): winner-capping rules — PA-trail, premium
+    trail, TRAIL_FLOOR, milestone — are skipped. Only STOP_LOSS / SESSION_CLOSE /
+    DELTA / IV can exit, so winners ride to the session-close force-exit."""
+
+    def test_large_gain_does_not_trail_or_milestone_exit(self, monkeypatch):
+        monkeypatch.setattr(_exit_rules, "LET_WINNERS_RUN", True)
+        # +30% peak, pulled to +25%, at resistance, ranging day — would normally
+        # premium-trail / milestone exit. Convex mode rides it instead.
+        pos = _pos(entry_option_price=100.0, peak_option_price=130.0, day_type="RANGING")
+        should_exit, reason, _, _ = check_exit(
+            pos, underlying_ltp=22150.0, option_ltp=125.0, greeks=_greeks(),
+            now=_now(11, 0), market_context=_ctx(nearest_resistance=22150.0),
+        )
+        assert not should_exit, f"convex mode should ride a winner, got {reason}"
+
+    def test_stop_loss_still_fires(self, monkeypatch):
+        monkeypatch.setattr(_exit_rules, "LET_WINNERS_RUN", True)
+        should_exit, reason, _, _ = check_exit(
+            _pos(entry_option_price=100.0), underlying_ltp=22150.0, option_ltp=80.0,
+            greeks=_greeks(), now=_now(11, 0),
+        )
+        assert should_exit and reason == "STOP_LOSS"
+
+    def test_session_close_still_fires(self, monkeypatch):
+        monkeypatch.setattr(_exit_rules, "LET_WINNERS_RUN", True)
+        should_exit, reason, _, _ = check_exit(
+            _pos(entry_option_price=100.0, peak_option_price=130.0),
+            underlying_ltp=22150.0, option_ltp=125.0, greeks=_greeks(),
+            now=_now(SESSION_CLOSE_HOUR, SESSION_CLOSE_MINUTE),
+        )
+        assert should_exit and reason == "SESSION_CLOSE"
 
 
 # ── Rule 1: Session close ─────────────────────────────────────────────────────

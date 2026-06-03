@@ -43,15 +43,16 @@ def sim(E,bars,sl,engage,offset_fn,hold=False):
             if g>=engage and px<=peak*(1-offset_fn(g)): return (px-E)/E*100
     return (bars[-1][1]-E)/E*100
 
-# Trail-tiering test (all at the new SL15): can we let runners run to grow avg-win
-# without bleeding range days? offset widens as peak-gain grows.
-TIER_A=lambda g: 0.03 if g<0.07 else (0.05 if g<0.15 else 0.10)   # loosen after +15%
-TIER_B=lambda g: 0.03 if g<0.07 else (0.05 if g<0.20 else 0.15)   # loosen after +20%
+# CONVEXITY sweep: entries are coin-flips (no edge), so profit must come from
+# lose-small-win-big. Test cutting losers (SL) vs letting winners run (trail/hold).
+# Rank by TOTAL (expectancy), not win rate.
 CONFIGS={
- "CURRENT trail (SL15)":     dict(sl=0.15,engage=0.05,offset_fn=VAR),
- "tierA loosen@15 (SL15)":   dict(sl=0.15,engage=0.05,offset_fn=TIER_A),
- "tierB loosen@20 (SL15)":   dict(sl=0.15,engage=0.05,offset_fn=TIER_B),
- "HOLD to close (SL15)":     dict(sl=0.15,engage=0,offset_fn=VAR,hold=True),
+ "CURRENT (SL15,tight trail)":  dict(sl=0.15,engage=0.05,offset_fn=VAR),
+ "HOLD (SL15)":                 dict(sl=0.15,engage=0,offset_fn=VAR,hold=True),
+ # implementable: run free, engage a loose protective trail only once a big runner
+ "convex eng25/off12 (SL15)":   dict(sl=0.15,engage=0.25,offset_fn=lambda g:0.12),
+ "convex eng30/off15 (SL15)":   dict(sl=0.15,engage=0.30,offset_fn=lambda g:0.15),
+ "convex eng20/off10 (SL15)":   dict(sl=0.15,engage=0.20,offset_fn=lambda g:0.10),
 }
 
 recs=[]

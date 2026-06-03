@@ -66,6 +66,22 @@ TRAIL_OFFSET_PCT: float       = 0.05   # trail floor = peak_price × (1 − 5%)
 # the matching offset table below, trail floor lands at or above entry.
 PREMIUM_TRAIL_TRIGGER_PCT: float = 0.05    # engage trail at +5% peak gain
 
+# ── Convex exit mode: LET WINNERS RUN ─────────────────────────────────────────
+# Entries have NO measured analytical edge (2026-06-03 study: every signal family —
+# direction/futures/basis/sector/VIX/PCR/volume — is ~50/50 on forward direction).
+# So the system is a coin-flip; profit can only come from LOSE-SMALL, WIN-BIG. A
+# 33-day real-option-path backtest (tests/backtests/backtest_exit_configs.py) found
+# ANY intraday trail/milestone UNDERPERFORMS simply holding to the session-close
+# force-exit: HOLD + SL15 netted +42 vs +11 for the tight trail (avg-win +17% vs +6%,
+# win rate 45% vs 61% — the convex profile). Tightening the stop was the WORST (it
+# kills runners too, since there's no edge to tell them apart).
+# When True, the winner-capping rules below (PA-trail engage, premium-trail engage,
+# TRAIL_FLOOR, milestone lock) are SKIPPED — a position rides until SESSION_CLOSE or
+# the −15% STOP_LOSS (DELTA_ERODED / IV_CRUSH still protect against option decay).
+# Reversible: set False to restore the trail/milestone behavior.
+# NOT FORWARD-VALIDATED — backtest is 33 recent days; bleeds on range-heavy stretches.
+LET_WINNERS_RUN = True
+
 DELTA_EROSION_MIN: float   = 0.20   # exit if |delta| drops below this
 IV_CRUSH_THRESHOLD: float  = 0.80   # exit if iv < entry_iv × this
 
@@ -236,7 +252,7 @@ def check_exit(
         # activates Rule 5's TRAIL_FLOOR. peak_option_price is updated by the
         # position-watcher each tick. We only fire when milestone == 0 to
         # avoid re-logging on every subsequent tick.
-        if (market_context and option_ltp and milestone == 0
+        if (not LET_WINNERS_RUN and market_context and option_ltp and milestone == 0
                 and option_ltp > pos.entry_option_price):
             # Only fire when gross gain is large enough to survive exit costs.
             # Prevents commission-bleeding "trail engage" when the option barely
@@ -307,7 +323,7 @@ def check_exit(
         # gap where positions ride +5%-+14% with no protective mechanism
         # active and then give all gains back. Sized so that trail floor
         # always sits above entry (see _premium_trail_offset).
-        if (milestone == 0 and pos.peak_option_price > 0 and entry > 0):
+        if (not LET_WINNERS_RUN and milestone == 0 and pos.peak_option_price > 0 and entry > 0):
             peak_gain = (pos.peak_option_price / entry) - 1.0
             if peak_gain >= PREMIUM_TRAIL_TRIGGER_PCT:
                 offset = _premium_trail_offset(pos.peak_option_price, entry)
@@ -320,7 +336,7 @@ def check_exit(
 
         # ── Rule 5: Trail floor (active once milestone_count > 0) ────────────
         # Offset is variable: tighter at lower peak-gains so floor stays ≥ entry.
-        if milestone > 0 and pos.peak_option_price > 0:
+        if not LET_WINNERS_RUN and milestone > 0 and pos.peak_option_price > 0:
             offset = _premium_trail_offset(pos.peak_option_price, entry)
             trail_floor = pos.peak_option_price * (1.0 - offset)
             if option_ltp <= trail_floor:
@@ -340,7 +356,7 @@ def check_exit(
         is_ranging = pos.day_type == "RANGING"
         first_milestone_pct = RANGING_MILESTONE_PCT if is_ranging else FIRST_MILESTONE_PCT
         next_target = entry * (1.0 + first_milestone_pct + milestone * MILESTONE_STEP_PCT)
-        if option_ltp >= next_target:
+        if not LET_WINNERS_RUN and option_ltp >= next_target:
             new_milestone = milestone + 1
             gain_pct = (option_ltp / entry - 1) * 100
             if is_ranging:
