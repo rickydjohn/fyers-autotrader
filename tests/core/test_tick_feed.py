@@ -95,6 +95,54 @@ def _setex_calls(redis_mock):
     return out
 
 
+# ── Watchdog (freshness self-heal) ──────────────────────────────────────────
+
+class TestWatchdog:
+    """Independent freshness watchdog — the 2026-05-29 zombie fix. On a stale feed
+    during market hours it must tear down the SDK and request a reconnect, on its
+    own task (so it fires even when connect() never returns)."""
+
+    def test_stale_feed_forces_reconnect(self, monkeypatch):
+        import fyers.tick_feed as tf
+        monkeypatch.setattr(tf, "_is_market_hours", lambda: True)
+        monkeypatch.setattr(tf, "_HEALTH_CHECK_INTERVAL_S", 0.01)
+
+        async def _run():
+            feed = FyersTickFeed(_make_redis(), ["NSE:NIFTY50-INDEX"])
+            feed._reconnect_requested = asyncio.Event()
+            feed._fyers = MagicMock()                          # a live SDK to tear down
+            feed._last_msg_monotonic = time.monotonic() - 999  # very stale
+            task = asyncio.ensure_future(feed._watchdog())
+            try:
+                await asyncio.wait_for(feed._reconnect_requested.wait(), timeout=1.0)
+            finally:
+                feed._stopped = True
+                task.cancel()
+            assert feed._reconnect_requested.is_set()
+            assert feed._fyers is None                         # torn down
+
+        asyncio.get_event_loop().run_until_complete(_run())
+
+    def test_no_reconnect_outside_market_hours(self, monkeypatch):
+        import fyers.tick_feed as tf
+        monkeypatch.setattr(tf, "_is_market_hours", lambda: False)
+        monkeypatch.setattr(tf, "_HEALTH_CHECK_INTERVAL_S", 0.01)
+
+        async def _run():
+            feed = FyersTickFeed(_make_redis(), ["NSE:NIFTY50-INDEX"])
+            feed._reconnect_requested = asyncio.Event()
+            feed._fyers = MagicMock()
+            feed._last_msg_monotonic = time.monotonic() - 999
+            task = asyncio.ensure_future(feed._watchdog())
+            await asyncio.sleep(0.1)
+            feed._stopped = True
+            task.cancel()
+            assert not feed._reconnect_requested.is_set()      # silence OK off-hours
+            assert feed._fyers is not None
+
+        asyncio.get_event_loop().run_until_complete(_run())
+
+
 # ── Message filter ─────────────────────────────────────────────────────────────
 
 class TestMessageFilter:

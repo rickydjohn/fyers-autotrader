@@ -115,19 +115,25 @@ class FyersTickFeed:
         self._fyers = None
         self._consumer_task: Optional[asyncio.Task] = None
         self._supervisor_task: Optional[asyncio.Task] = None
+        # Independent freshness watchdog (see _watchdog) + the event it uses to
+        # ask the connector loop to rebuild. Created in start() on the running loop.
+        self._watchdog_task: Optional[asyncio.Task] = None
+        self._reconnect_requested: Optional[asyncio.Event] = None
         self._stopped = False
 
     async def start(self) -> None:
-        """Start the consumer and the SDK connection (with auto-reconnect)."""
+        """Start the consumer, the SDK connector, and the independent watchdog."""
         self._tick_event = asyncio.Event()
+        self._reconnect_requested = asyncio.Event()
         self._consumer_task = self._loop.create_task(self._consume())
         self._supervisor_task = self._loop.create_task(self._supervise())
+        self._watchdog_task = self._loop.create_task(self._watchdog())
         logger.info(f"FyersTickFeed starting for {self._symbols}")
 
     async def stop(self) -> None:
         """Cancel tasks and tear down the SDK connection."""
         self._stopped = True
-        for task in (self._consumer_task, self._supervisor_task):
+        for task in (self._consumer_task, self._supervisor_task, self._watchdog_task):
             if task and not task.done():
                 task.cancel()
         if self._fyers is not None:
@@ -156,39 +162,99 @@ class FyersTickFeed:
         """
         backoff_s = _BACKOFF_INITIAL_S
         while not self._stopped:
-            try:
-                await asyncio.to_thread(self._connect_blocking)
-                # Reset on successful connect. Also reset the heartbeat so a
-                # stale value from before the reconnect doesn't immediately
-                # re-trip the threshold.
-                backoff_s = _BACKOFF_INITIAL_S
-                self._last_msg_monotonic = time.monotonic()
+            self._reconnect_requested.clear()
+            # Fresh heartbeat so the watchdog grants this connection a grace
+            # period before judging it stale.
+            self._last_msg_monotonic = time.monotonic()
 
-                # Health-check loop: monitor tick freshness; force a full
-                # SDK re-init if no ticks arrive during market hours.
-                while not self._stopped:
-                    await asyncio.sleep(_HEALTH_CHECK_INTERVAL_S)
-                    if not _is_market_hours():
-                        # Outside market hours, no ticks expected — keep
-                        # the SDK alive but don't treat silence as failure.
-                        continue
-                    age_s = time.monotonic() - self._last_msg_monotonic
-                    if age_s > _STALE_TICK_THRESHOLD_S:
-                        logger.warning(
-                            f"FyersTickFeed: no ticks for {age_s:.0f}s during "
-                            f"market hours — tearing down SDK and reconnecting"
-                        )
-                        self._tear_down_sdk()
-                        break  # exit inner loop; outer loop re-enters _connect_blocking
+            # Race the connect against a watchdog reconnect request. Some SDK
+            # builds run the WS loop in-thread and connect() never returns; if we
+            # simply awaited it (as the old code did) a stuck connect would wedge
+            # the supervisor and the freshness check after it would never run —
+            # the 2026-05-29 zombie. Racing means a watchdog request can always
+            # advance us, even mid-blocked-connect.
+            connect_fut = asyncio.ensure_future(asyncio.to_thread(self._connect_blocking))
+            reconnect_fut = asyncio.ensure_future(self._reconnect_requested.wait())
+            try:
+                done, _pending = await asyncio.wait(
+                    {connect_fut, reconnect_fut}, return_when=asyncio.FIRST_COMPLETED
+                )
+            except asyncio.CancelledError:
+                connect_fut.cancel(); reconnect_fut.cancel()
+                break
+
+            if reconnect_fut in done:
+                # Watchdog forced a reconnect (possibly while connect() is still
+                # blocked in its worker thread). Tear down to unblock/kill it, then
+                # rebuild. Do NOT await connect_fut — it would re-wedge us; the
+                # tear-down lets it finish in the background.
+                self._tear_down_sdk()
+                backoff_s = _BACKOFF_INITIAL_S
+                continue
+
+            # connect() returned first.
+            reconnect_fut.cancel()
+            try:
+                connect_fut.result()                # re-raise any connect error
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.warning(
-                    f"FyersTickFeed supervisor caught error: {e!r} "
-                    f"— retrying in {backoff_s:.1f}s"
+                    f"FyersTickFeed connect error: {e!r} — retrying in {backoff_s:.1f}s"
                 )
-                await asyncio.sleep(backoff_s)
+                self._tear_down_sdk()
+                try:
+                    await asyncio.sleep(backoff_s)
+                except asyncio.CancelledError:
+                    break
                 backoff_s = min(backoff_s * 2, _BACKOFF_MAX_S)
+                continue
+
+            # Connected cleanly; the SDK daemon thread now owns the WS stream.
+            # Park until the independent watchdog requests a reconnect (stale feed
+            # / SDK gave up silently), then rebuild with a fresh token.
+            backoff_s = _BACKOFF_INITIAL_S
+            try:
+                await self._reconnect_requested.wait()
+            except asyncio.CancelledError:
+                break
+            self._tear_down_sdk()
+
+    async def _watchdog(self) -> None:
+        """Independent tick-freshness monitor — the fix for the 2026-05-29 zombie.
+
+        Previously the freshness check lived INSIDE _supervise, after the
+        `await asyncio.to_thread(self._connect_blocking)` line, so if connect()
+        never returned (SDK runs the WS loop in-thread) the check never ran and a
+        silently-dead feed was never recovered. This runs on its own task, so it
+        always fires.
+
+        During market hours, if no tick has arrived in _STALE_TICK_THRESHOLD_S,
+        tear down the SDK (unblocking a stuck connect) and signal _supervise to
+        rebuild with a fresh token — which also recovers from the daily ~6 AM
+        token rotation that orphans the previous session's WS.
+        """
+        while not self._stopped:
+            try:
+                await asyncio.sleep(_HEALTH_CHECK_INTERVAL_S)
+            except asyncio.CancelledError:
+                break
+            if self._stopped:
+                break
+            if not _is_market_hours():
+                continue
+            age_s = time.monotonic() - self._last_msg_monotonic
+            if age_s > _STALE_TICK_THRESHOLD_S and self._fyers is not None:
+                logger.warning(
+                    f"FyersTickFeed watchdog: no ticks for {age_s:.0f}s during "
+                    f"market hours — forcing reconnect"
+                )
+                self._tear_down_sdk()
+                if self._reconnect_requested is not None:
+                    self._reconnect_requested.set()
+                # Grace period so we don't re-fire every interval while the
+                # reconnect is establishing.
+                self._last_msg_monotonic = time.monotonic()
 
     def _tear_down_sdk(self) -> None:
         """Close the existing FyersDataSocket so the next _connect_blocking
