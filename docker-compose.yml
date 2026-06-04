@@ -128,6 +128,21 @@ services:
       - DATA_SERVICE_URL=http://data-service:8003
       - CORE_ENGINE_URL=http://core-engine:8001
       - TZ=Asia/Kolkata
+      # Risk-based position sizing (Stage 1). Overrides the .env value (was 85%,
+      # which let a single position reach ~85% of the account → a -15% premium stop
+      # could lose ~13% of the account in ONE trade — the dominant "lose big"
+      # mechanism, found in a 194-trade resim 2026-06-04: every -₹9k..-₹11k single
+      # loss came from notional size, not stop slippage). Capping notional at
+      # 40%/trade: max single loss ~6% of account, P&L std -38% (2772→1722),
+      # worst single loss -10822→-4069, worst-5 -45k→-20k, and net P&L actually
+      # RISES (+10361→+13255) — the oversized bets carried no edge, only variance.
+      # 40% is the floor that still affords 1 lot of the expensive options the
+      # system buys (BANKNIFTY monthly ≈ ₹40k/lot = 40% of acct); going lower
+      # silently blocks ~10-29% of trades, conflating sizing with selection.
+      # Stage 2 (separate, deliberate): make option SELECTION prefer cheaper,
+      # higher-gamma strikes so a tighter cap (≤25%) becomes possible without
+      # starving the book — that's the path to truly-small losses on BANKNIFTY.
+      - MAX_POSITION_SIZE_PCT=40
     depends_on:
       redis:
         condition: service_healthy
