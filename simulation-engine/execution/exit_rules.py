@@ -79,8 +79,13 @@ PREMIUM_TRAIL_TRIGGER_PCT: float = 0.05    # engage trail at +5% peak gain
 # TRAIL_FLOOR, milestone lock) are SKIPPED — a position rides until SESSION_CLOSE or
 # the −15% STOP_LOSS (DELTA_ERODED / IV_CRUSH still protect against option decay).
 # Reversible: set False to restore the trail/milestone behavior.
-# NOT FORWARD-VALIDATED — backtest is 33 recent days; bleeds on range-heavy stretches.
-LET_WINNERS_RUN = True
+# FORWARD-TEST VERDICT (2026-06-04..05): REVERTED. Two consecutive trendless days
+# produced 0 wins in 15 trades (−₹30.6k, −25% of account). With winner-capping OFF,
+# every would-be small PA win rode to invalidation/−15% stop; the "win big" leg never
+# fired (no trend day). The 33-day backtest's edge was conditional on trend days that
+# forward reality did not supply. Restoring PA/trail/milestone profit-taking (the
+# historical ~67% win-rate behavior) until level-aware entries are in place.
+LET_WINNERS_RUN = False
 
 DELTA_EROSION_MIN: float   = 0.20   # exit if |delta| drops below this
 IV_CRUSH_THRESHOLD: float  = 0.80   # exit if iv < entry_iv × this
