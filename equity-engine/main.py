@@ -25,7 +25,7 @@ async def healthz():
 
 
 @app.get("/screener/momentum")
-async def screener_momentum(top_n: int = 30, min_turnover_cr: float = 10.0):
+async def screener_momentum(top_n: int = 30, min_turnover_cr: float = 10.0, clean: bool = False):
     """Momentum-ranked discretionary watchlist over the liquid NSE universe.
     Blocking + slow (fetches daily bars), so it runs in a worker thread."""
     from data import get_provider
@@ -33,7 +33,8 @@ async def screener_momentum(top_n: int = 30, min_turnover_cr: float = 10.0):
     from universe import load_universe
 
     def _run():
-        return momentum_watchlist(load_universe(), get_provider(), top_n=top_n, min_turnover_cr=min_turnover_cr)
+        return momentum_watchlist(load_universe(), get_provider(), top_n=top_n,
+                                  min_turnover_cr=min_turnover_cr, clean_only=clean)
 
     rows = await asyncio.to_thread(_run)
     return {"status": "ok", "count": len(rows), "watchlist": rows}

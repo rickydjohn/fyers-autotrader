@@ -30,7 +30,14 @@ def momentum_watchlist(
     top_n: int = 30,
     min_turnover_cr: float = 10.0,
     history: int = 320,
+    clean_only: bool = False,
+    rsi_cap: float = 80.0,
+    near_high_pct: float = 15.0,
 ) -> list[dict]:
+    """clean_only keeps only tradeable momentum LEADERS: confirmed uptrend, not
+    over-extended (RSI < rsi_cap), and within near_high_pct of the 52-week high —
+    hiding parabolic blow-offs and faded names. Percentile is always vs the full
+    liquid universe, so it reflects true momentum standing regardless of the filter."""
     scored = []
     for sym in symbols:
         if is_etf(sym.short_symbol):
@@ -55,11 +62,17 @@ def momentum_watchlist(
     total = len(scored)
 
     rows = []
-    for rank, (mom, sym, f, turnover_cr) in enumerate(scored[:top_n], 1):
-        pctile = round((1 - (rank - 1) / max(1, total - 1)) * 100)
+    for full_rank, (mom, sym, f, turnover_cr) in enumerate(scored, 1):
+        if clean_only and not (
+            f.regime.value == "UPTREND"
+            and f.rsi < rsi_cap
+            and f.pct_from_52w_high >= -near_high_pct
+        ):
+            continue
+        pctile = round((1 - (full_rank - 1) / max(1, total - 1)) * 100)
         entry = f.ltp
         rows.append({
-            "rank": rank,
+            "rank": len(rows) + 1,
             "symbol": sym.symbol,
             "name": sym.short_symbol,
             "ltp": entry,
@@ -75,11 +88,13 @@ def momentum_watchlist(
             "ref_stop": round(entry - ATR_STOP_MULT * f.atr, 2),
             "ref_target": round(entry + ATR_TARGET_MULT * f.atr, 2),
             "rationale": (
-                f"#{rank} of {total} liquid names by 12-1 momentum "
-                f"({mom*100:+.0f}% trailing 12m, ~{pctile}th pctile); "
+                f"~{pctile}th percentile by 12-1 momentum among {total} liquid names "
+                f"({mom*100:+.0f}% trailing 12m); "
                 f"{f.regime.value.lower()}; {f.pct_from_52w_high:+.0f}% from 52w high; "
                 f"monthly CPR {f.monthly_cpr.position.replace('_', ' ').lower()}; RSI {f.rsi:.0f}"
             ),
         })
-    logger.info("Momentum screen: %d liquid names ranked, top %d returned", total, len(rows))
+        if len(rows) >= top_n:
+            break
+    logger.info("Momentum screen: %d liquid names, %d shown (clean_only=%s)", total, len(rows), clean_only)
     return rows

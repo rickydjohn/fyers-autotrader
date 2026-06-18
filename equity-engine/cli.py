@@ -72,8 +72,9 @@ def cmd_screen_momentum(args):
     from screener import momentum_watchlist
 
     symbols = _resolve_symbols(args)
-    rows = momentum_watchlist(symbols, get_provider(), top_n=args.top, min_turnover_cr=args.min_turnover)
-    print(f"\n=== MOMENTUM WATCHLIST (top {len(rows)}) ===\n")
+    rows = momentum_watchlist(symbols, get_provider(), top_n=args.top,
+                              min_turnover_cr=args.min_turnover, clean_only=args.clean)
+    print(f"\n=== MOMENTUM WATCHLIST ({'clean' if args.clean else 'raw'}, top {len(rows)}) ===\n")
     print(f"{'#':>3} {'SYMBOL':<18} {'LTP':>9} {'MOM12m':>7} {'PCTL':>4} {'REGIME':<9} "
           f"{'52WH%':>6} {'CPR':<11} {'RSI':>4} {'ENTRY/STOP/TARGET':>26}")
     for r in rows:
@@ -173,6 +174,7 @@ def main():
     ps2.add_argument("--symbols-file", type=str, default="")
     ps2.add_argument("--top", type=int, default=30)
     ps2.add_argument("--min-turnover", type=float, default=10.0)
+    ps2.add_argument("--clean", action="store_true", help="clean-momentum filter (uptrend, not overbought, near high)")
     ps2.set_defaults(func=cmd_screen_momentum)
 
     args = ap.parse_args()
