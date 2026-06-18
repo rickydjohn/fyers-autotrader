@@ -57,6 +57,25 @@ def cmd_momentum(args):
     ))
 
 
+def cmd_liquid_universe(args):
+    """Print the N most-liquid tickers (by recent turnover, from cached daily bars)
+    as a comma list — used to self-select a tradeable universe for backtests."""
+    from data import get_provider
+    from universe import load_universe
+
+    p = get_provider()
+    rows = []
+    for s in load_universe():
+        bars = p.daily_bars(s.symbol, limit=900)
+        if len(bars) < 250:
+            continue
+        recent = bars[-60:]
+        turnover_cr = sum(b.close * b.volume for b in recent) / len(recent) / 1e7
+        rows.append((turnover_cr, s.symbol))
+    rows.sort(reverse=True)
+    print(",".join(sym for _, sym in rows[: args.top]))
+
+
 def cmd_multifactor(args):
     from backtest import run_multifactor_backtest
     from data import get_provider
@@ -113,6 +132,10 @@ def main():
     pf.add_argument("--no-regime", action="store_true")
     pf.add_argument("--regime-symbol", default="NSE:NIFTY50-INDEX")
     pf.set_defaults(func=cmd_multifactor)
+
+    pu = sub.add_parser("liquid-universe", help="print the N most-liquid tickers (comma list)")
+    pu.add_argument("--top", type=int, default=200)
+    pu.set_defaults(func=cmd_liquid_universe)
 
     args = ap.parse_args()
     args.func(args)
