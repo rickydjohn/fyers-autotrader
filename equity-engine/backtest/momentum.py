@@ -102,6 +102,7 @@ def run_momentum_backtest(
     min_names: int = 20,
     cost_roundtrip: float = 0.0035,
     min_turnover_cr: float = 0.0,
+    top_liquid: int = 0,
     regime_symbol: str | None = None,
     regime_ema: int = 200,
 ) -> str:
@@ -115,34 +116,39 @@ def run_momentum_backtest(
     records = []
     for k in range(len(rebal) - 1):
         d, d_next = rebal[k], rebal[k + 1]
-        scored = []  # (momentum, forward_return, symbol) among LIQUID eligible names
+        cands = []  # (turnover_cr, momentum, forward_return, symbol)
         for sym, s in series.items():
             i = _pos_on_or_before(s, d)
             j = _pos_on_or_before(s, d_next)
             if i < lookback + skip or j <= i:
                 continue
-            if min_turnover_cr > 0:                       # liquidity floor as-of d
-                w0 = max(0, i - 20)
-                turn_cr = mean(s.closes[t] * s.volumes[t] for t in range(w0, i + 1)) / 1e7
-                if turn_cr < min_turnover_cr:
-                    continue
+            w0 = max(0, i - 20)
+            turn_cr = mean(s.closes[t] * s.volumes[t] for t in range(w0, i + 1)) / 1e7
+            if min_turnover_cr > 0 and turn_cr < min_turnover_cr:
+                continue
             base = s.closes[i - skip - lookback]
             if base <= 0 or s.closes[i] <= 0:
                 continue
-            scored.append((s.closes[i - skip] / base - 1.0, s.closes[j] / s.closes[i] - 1.0, sym))
+            cands.append((turn_cr, s.closes[i - skip] / base - 1.0,
+                          s.closes[j] / s.closes[i] - 1.0, sym))
 
-        if len(scored) < min_names:
+        # Keep the N most-liquid names as-of d (point-in-time "Nifty-200-like" set).
+        if top_liquid > 0 and len(cands) > top_liquid:
+            cands.sort(key=lambda c: c[0], reverse=True)
+            cands = cands[:top_liquid]
+        if len(cands) < min_names:
             continue
-        uni = mean(f for _, f, _ in scored)               # always-invested benchmark
+
+        uni = mean(c[2] for c in cands)                   # always-invested benchmark
         on = regime_on(d)
         if on:
-            scored.sort(key=lambda x: x[0], reverse=True)
-            n = max(1, int(len(scored) * quantile))
-            top, bot = scored[:n], scored[-n:]
+            cands.sort(key=lambda c: c[1], reverse=True)  # rank by momentum
+            n = max(1, int(len(cands) * quantile))
+            top, bot = cands[:n], cands[-n:]
             records.append({"year": d.year, "regime": "on", "uni": uni,
-                            "top_set": {s for _, _, s in top},
-                            "top": mean(f for _, f, _ in top),
-                            "bot": mean(f for _, f, _ in bot)})
+                            "top_set": {c[3] for c in top},
+                            "top": mean(c[2] for c in top),
+                            "bot": mean(c[2] for c in bot)})
         else:
             records.append({"year": d.year, "regime": "off", "uni": uni,
                             "top_set": set(), "top": 0.0, "bot": 0.0})
@@ -177,8 +183,8 @@ def run_momentum_backtest(
         "",
         "=" * 100,
         f"MOMENTUM (TRADEABLE TEST)  {len(series)} symbols, {periods} rebalances, top {quantile*100:.0f}%",
-        f"  filters: liquidity ≥ ₹{min_turnover_cr:.0f}cr/day · cost {cost_roundtrip*100:.2f}% round-trip "
-        f"· regime gate [{regime_label}] off in {off_n}/{periods} mo",
+        f"  filters: {'top-' + str(top_liquid) + ' most-liquid' if top_liquid else 'liquidity ≥ ₹' + str(int(min_turnover_cr)) + 'cr/day'}"
+        f" · cost {cost_roundtrip*100:.2f}% round-trip · regime gate [{regime_label}] off in {off_n}/{periods} mo",
         "-" * 100,
         f"  STRATEGY (regime-gated momentum, net)  {mo(n_top)}   cumulative {_cum([r['net'] for r in records]):.2f}x",
         f"  BENCHMARK (always-invested universe)   {mo(uni)}   cumulative {_cum([r['uni'] for r in records]):.2f}x",
