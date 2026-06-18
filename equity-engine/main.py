@@ -10,8 +10,10 @@ import asyncio
 import logging
 
 from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
 
 from config import settings
+from dashboard import PAGE
 
 logging.basicConfig(level=settings.log_level, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -22,6 +24,12 @@ app = FastAPI(title="equity-engine")
 @app.get("/healthz")
 async def healthz():
     return {"status": "ok", "trading_mode": settings.trading_mode}
+
+
+@app.get("/", response_class=HTMLResponse)
+async def dashboard():
+    """Self-contained equity dashboard (Potential stocks + My holdings, mode + trade)."""
+    return PAGE
 
 
 @app.get("/screener/momentum")
