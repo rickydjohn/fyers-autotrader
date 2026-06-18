@@ -52,7 +52,8 @@ def cmd_momentum(args):
     print(f"Momentum backtest over {len(symbols)} symbols, {args.history} bars each…")
     print(run_momentum_backtest(
         symbols, get_provider(), history=args.history, quantile=args.quantile,
-        cost_roundtrip=args.cost,
+        cost_roundtrip=args.cost, min_turnover_cr=args.min_turnover,
+        regime_symbol=None if args.no_regime else args.regime_symbol,
     ))
 
 
@@ -78,6 +79,9 @@ def main():
     pm.add_argument("--history", type=int, default=900, help="daily bars per symbol")
     pm.add_argument("--quantile", type=float, default=0.20, help="top/bottom fraction")
     pm.add_argument("--cost", type=float, default=0.0035, help="round-trip cost fraction (0.0035 = 0.35%)")
+    pm.add_argument("--min-turnover", type=float, default=0.0, help="liquidity floor, ₹ crore/day (0 = off)")
+    pm.add_argument("--no-regime", action="store_true", help="disable the market regime gate")
+    pm.add_argument("--regime-symbol", default="NSE:NIFTY50-INDEX", help="market index for the regime gate")
     pm.set_defaults(func=cmd_momentum)
 
     args = ap.parse_args()
