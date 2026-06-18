@@ -14,16 +14,33 @@ from config import settings
 from models import EquitySymbol
 
 
+def _mk(sym: str) -> EquitySymbol:
+    sym = sym.strip()
+    return EquitySymbol(symbol=sym, short_symbol=sym.split(":")[-1].replace("-EQ", ""), name=sym)
+
+
 def _resolve_symbols(args) -> list[EquitySymbol]:
+    path = getattr(args, "symbols_file", "")
+    if path:
+        with open(path) as f:
+            toks = f.read().replace("\n", ",").split(",")
+        return [_mk(t) for t in toks if t.strip()]
     if args.symbols:
-        return [
-            EquitySymbol(symbol=s.strip(), short_symbol=s.strip().split(":")[-1].replace("-EQ", ""), name=s.strip())
-            for s in args.symbols.split(",")
-        ]
+        return [_mk(s) for s in args.symbols.split(",")]
     from universe import load_universe
 
     universe = load_universe()
     return universe[: args.limit] if args.limit else universe
+
+
+# ETFs/ETNs trade in NSE's -EQ series too; exclude them from stock factor analysis
+# (e.g. LIQUIDBEES has ~0 volatility and would hijack the low-vol factor).
+ETF_MARKERS = ("BEES", "ETF", "LIQUIDCASE", "LIQUIDADD", "MAFANG", "MON100", "MOM")
+
+
+def _is_etf(short_symbol: str) -> bool:
+    s = short_symbol.upper()
+    return any(m in s for m in ETF_MARKERS)
 
 
 def cmd_scan(args):
@@ -66,8 +83,10 @@ def cmd_liquid_universe(args):
     p = get_provider()
     rows = []
     for s in load_universe():
-        bars = p.daily_bars(s.symbol, limit=900)
-        if len(bars) < 250:
+        if _is_etf(s.short_symbol):
+            continue
+        bars = p.daily_bars(s.symbol, limit=150)   # shallow fetch — enough for turnover
+        if len(bars) < 120:
             continue
         recent = bars[-60:]
         turnover_cr = sum(b.close * b.volume for b in recent) / len(recent) / 1e7
@@ -109,6 +128,7 @@ def main():
     pm = sub.add_parser("momentum", help="cross-sectional momentum backtest")
     pm.add_argument("--limit", type=int, default=0, help="cap universe size (0 = full)")
     pm.add_argument("--symbols", type=str, default="", help="comma-separated tickers")
+    pm.add_argument("--symbols-file", type=str, default="", help="path to a file of tickers")
     pm.add_argument("--history", type=int, default=900, help="daily bars per symbol")
     pm.add_argument("--quantile", type=float, default=0.20, help="top/bottom fraction")
     pm.add_argument("--cost", type=float, default=0.0035, help="round-trip cost fraction (0.0035 = 0.35%)")
@@ -121,6 +141,7 @@ def main():
     pf = sub.add_parser("multifactor", help="multi-factor composite backtest (momentum + low-vol + reversal)")
     pf.add_argument("--limit", type=int, default=0)
     pf.add_argument("--symbols", type=str, default="")
+    pf.add_argument("--symbols-file", type=str, default="", help="path to a file of tickers")
     pf.add_argument("--history", type=int, default=3500, help="daily bars per symbol (~14yr at 3500)")
     pf.add_argument("--quantile", type=float, default=0.20)
     pf.add_argument("--cost", type=float, default=0.0035)
