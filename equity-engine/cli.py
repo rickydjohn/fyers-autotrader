@@ -44,6 +44,15 @@ def cmd_backtest(args):
     print(summarize(trades))
 
 
+def cmd_momentum(args):
+    from backtest import run_momentum_backtest
+    from data import get_provider
+
+    symbols = _resolve_symbols(args)
+    print(f"Momentum backtest over {len(symbols)} symbols, {args.history} bars each…")
+    print(run_momentum_backtest(symbols, get_provider(), history=args.history, quantile=args.quantile))
+
+
 def main():
     logging.basicConfig(level=settings.log_level, format="%(levelname)s %(name)s: %(message)s")
     ap = argparse.ArgumentParser(prog="equity-engine")
@@ -59,6 +68,13 @@ def main():
     pb.add_argument("--history", type=int, default=750, help="daily bars per symbol")
     pb.add_argument("--no-liquidity", action="store_true")
     pb.set_defaults(func=cmd_backtest)
+
+    pm = sub.add_parser("momentum", help="cross-sectional momentum backtest")
+    pm.add_argument("--limit", type=int, default=0, help="cap universe size (0 = full)")
+    pm.add_argument("--symbols", type=str, default="", help="comma-separated tickers")
+    pm.add_argument("--history", type=int, default=750, help="daily bars per symbol")
+    pm.add_argument("--quantile", type=float, default=0.20, help="top/bottom fraction")
+    pm.set_defaults(func=cmd_momentum)
 
     args = ap.parse_args()
     args.func(args)

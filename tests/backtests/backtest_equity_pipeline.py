@@ -29,7 +29,7 @@ sys.path.insert(0, os.path.abspath(EQUITY_ENGINE))
 os.environ.setdefault("FYERS_CLIENT_ID", "x")
 os.environ.setdefault("FYERS_SECRET_KEY", "x")
 
-from backtest import run_backtest, summarize  # noqa: E402
+from backtest import run_backtest, run_momentum_backtest, summarize  # noqa: E402
 from models import Bar, EquitySymbol  # noqa: E402
 
 IST = pytz.timezone("Asia/Kolkata")
@@ -76,15 +76,35 @@ def _synthetic_universe(k: int = 30):
     return syms, SyntheticProvider(data)
 
 
+def _synthetic_momentum_universe(k: int = 150, n: int = 1800):
+    """Driftless random walks — the no-edge control: a sound momentum harness must
+    show a long-short spread of ≈ 0 here (no persistent cross-sectional winners).
+    Needs many symbols AND many rebalances, else single-sample noise masquerades as
+    edge (the whole trap we're guarding against)."""
+    data, syms = {}, []
+    for s in range(k):
+        sym = f"NSE:MOM{s:03d}-EQ"
+        data[sym] = _gen_walk(seed=5000 + s, n=n, drift=0.0)   # drift=0 → no real momentum
+        syms.append(EquitySymbol(symbol=sym, short_symbol=f"MOM{s:03d}", name=sym))
+    return syms, SyntheticProvider(data)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--synthetic", action="store_true", help="run on edge-free random data (bias check)")
+    ap.add_argument("--momentum", action="store_true", help="synthetic momentum control (expect ~0 spread)")
     ap.add_argument("--limit", type=int, default=200, help="cap universe size (real mode)")
     ap.add_argument("--symbols", type=str, default="", help="comma-separated tickers (real mode)")
     ap.add_argument("--history", type=int, default=750, help="daily bars per symbol")
     ap.add_argument("--no-liquidity", action="store_true", help="skip liquidity filter")
     args = ap.parse_args()
     logging.basicConfig(level="INFO", format="%(levelname)s %(name)s: %(message)s")
+
+    if args.momentum:
+        symbols, provider = _synthetic_momentum_universe()
+        print(run_momentum_backtest(symbols, provider, history=1800))
+        print("\n(driftless control — long-short spread should be ≈ 0%/mo)")
+        return
 
     if args.synthetic:
         symbols, provider = _synthetic_universe()
