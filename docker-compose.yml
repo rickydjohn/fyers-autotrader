@@ -8,6 +8,7 @@ volumes:
   redis-data:
   fyers-tokens:
   timescale-data:
+  equity-cache:
 
 services:
 
@@ -194,3 +195,32 @@ services:
         condition: service_healthy
     ports: ["3000:80"]
     restart: unless-stopped
+
+  # ────────────────────────────────────────────────────────────
+  # Equity engine — NSE swing/positional screener+trader (the pivot).
+  # Pure consumer: reaches Fyers only via core-engine over HTTP.
+  # ────────────────────────────────────────────────────────────
+  equity-engine:
+    build: ./equity-engine
+    container_name: trading-equity
+    networks: [trading-net]
+    env_file: .env
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - CORE_ENGINE_URL=http://core-engine:8001
+      - DATA_SERVICE_URL=http://data-service:8003
+      - TZ=Asia/Kolkata
+    volumes:
+      - equity-cache:/app/cache
+    depends_on:
+      core-engine:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports: ["8004:8004"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8004/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5

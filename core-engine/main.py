@@ -28,7 +28,7 @@ from config import settings
 from fyers.proxy import configure_fyers_proxy
 from fyers.auth import exchange_auth_code, get_auth_url, get_valid_token
 from fyers.orders import get_funds, get_fyers_positions, get_order_fill, place_market_order
-from fyers.market_data import get_quote
+from fyers.market_data import get_quote, get_historical_candles
 from fyers.tick_feed import FyersTickFeed
 from llm.client import check_llm_health, get_provider
 from scheduler.jobs import (
@@ -260,6 +260,31 @@ async def fyers_quote(symbol: str):
         if quote is None:
             raise HTTPException(status_code=503, detail=f"Could not fetch quote for {symbol}")
         return {"status": "ok", "symbol": symbol, "ltp": quote.get("ltp"), "quote": quote}
+    except RuntimeError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+
+
+@app.get("/fyers/history/{symbol:path}")
+async def fyers_history(
+    symbol: str,
+    interval: str = Query("1d"),
+    limit: int = Query(250, ge=1, le=5000),
+):
+    """Return historical OHLCV candles for any symbol straight from Fyers.
+
+    Added for equity-engine: it consumes daily candles for the full NSE universe
+    over HTTP so Fyers auth/SDK stays solely in core-engine. Reuses the same
+    get_historical_candles() the scanner uses. interval ∈ {1m,5m,15m,1h,1d}.
+    """
+    try:
+        bars = get_historical_candles(symbol, interval=interval, limit=limit)
+        return {
+            "status": "ok",
+            "symbol": symbol,
+            "interval": interval,
+            "count": len(bars),
+            "candles": [b.model_dump(mode="json") for b in bars],
+        }
     except RuntimeError as e:
         raise HTTPException(status_code=401, detail=str(e))
 
