@@ -33,14 +33,7 @@ def _resolve_symbols(args) -> list[EquitySymbol]:
     return universe[: args.limit] if args.limit else universe
 
 
-# ETFs/ETNs trade in NSE's -EQ series too; exclude them from stock factor analysis
-# (e.g. LIQUIDBEES has ~0 volatility and would hijack the low-vol factor).
-ETF_MARKERS = ("BEES", "ETF", "LIQUIDCASE", "LIQUIDADD", "MAFANG", "MON100", "MOM")
-
-
-def _is_etf(short_symbol: str) -> bool:
-    s = short_symbol.upper()
-    return any(m in s for m in ETF_MARKERS)
+from universe import is_etf as _is_etf
 
 
 def cmd_scan(args):
@@ -72,6 +65,22 @@ def cmd_momentum(args):
         cost_roundtrip=args.cost, min_turnover_cr=args.min_turnover, top_liquid=args.top_liquid,
         regime_symbol=None if args.no_regime else args.regime_symbol,
     ))
+
+
+def cmd_screen_momentum(args):
+    from data import get_provider
+    from screener import momentum_watchlist
+
+    symbols = _resolve_symbols(args)
+    rows = momentum_watchlist(symbols, get_provider(), top_n=args.top, min_turnover_cr=args.min_turnover)
+    print(f"\n=== MOMENTUM WATCHLIST (top {len(rows)}) ===\n")
+    print(f"{'#':>3} {'SYMBOL':<18} {'LTP':>9} {'MOM12m':>7} {'PCTL':>4} {'REGIME':<9} "
+          f"{'52WH%':>6} {'CPR':<11} {'RSI':>4} {'ENTRY/STOP/TARGET':>26}")
+    for r in rows:
+        print(f"{r['rank']:>3} {r['name']:<18} {r['ltp']:>9.1f} {r['momentum_12_1_pct']:>6.0f}% "
+              f"{r['momentum_pctile']:>4} {r['regime']:<9} {r['pct_from_52w_high']:>6.0f} "
+              f"{r['monthly_cpr']:<11} {r['rsi']:>4.0f} "
+              f"{r['ref_entry']:>8.1f}/{r['ref_stop']:.1f}/{r['ref_target']:.1f}")
 
 
 def cmd_liquid_universe(args):
@@ -157,6 +166,14 @@ def main():
     pu = sub.add_parser("liquid-universe", help="print the N most-liquid tickers (comma list)")
     pu.add_argument("--top", type=int, default=200)
     pu.set_defaults(func=cmd_liquid_universe)
+
+    ps2 = sub.add_parser("screen-momentum", help="momentum-ranked discretionary watchlist")
+    ps2.add_argument("--limit", type=int, default=0)
+    ps2.add_argument("--symbols", type=str, default="")
+    ps2.add_argument("--symbols-file", type=str, default="")
+    ps2.add_argument("--top", type=int, default=30)
+    ps2.add_argument("--min-turnover", type=float, default=10.0)
+    ps2.set_defaults(func=cmd_screen_momentum)
 
     args = ap.parse_args()
     args.func(args)
