@@ -57,6 +57,20 @@ def cmd_momentum(args):
     ))
 
 
+def cmd_multifactor(args):
+    from backtest import run_multifactor_backtest
+    from data import get_provider
+
+    symbols = _resolve_symbols(args)
+    print(f"Multi-factor backtest over {len(symbols)} symbols, {args.history} bars each…")
+    print(run_multifactor_backtest(
+        symbols, get_provider(), history=args.history, quantile=args.quantile,
+        cost_roundtrip=args.cost, min_turnover_cr=args.min_turnover, top_liquid=args.top_liquid,
+        w_mom=args.w_mom, w_lowvol=args.w_lowvol, w_rev=args.w_rev,
+        regime_symbol=None if args.no_regime else args.regime_symbol,
+    ))
+
+
 def main():
     logging.basicConfig(level=settings.log_level, format="%(levelname)s %(name)s: %(message)s")
     ap = argparse.ArgumentParser(prog="equity-engine")
@@ -84,6 +98,21 @@ def main():
     pm.add_argument("--no-regime", action="store_true", help="disable the market regime gate")
     pm.add_argument("--regime-symbol", default="NSE:NIFTY50-INDEX", help="market index for the regime gate")
     pm.set_defaults(func=cmd_momentum)
+
+    pf = sub.add_parser("multifactor", help="multi-factor composite backtest (momentum + low-vol + reversal)")
+    pf.add_argument("--limit", type=int, default=0)
+    pf.add_argument("--symbols", type=str, default="")
+    pf.add_argument("--history", type=int, default=3500, help="daily bars per symbol (~14yr at 3500)")
+    pf.add_argument("--quantile", type=float, default=0.20)
+    pf.add_argument("--cost", type=float, default=0.0035)
+    pf.add_argument("--min-turnover", type=float, default=0.0)
+    pf.add_argument("--top-liquid", type=int, default=0)
+    pf.add_argument("--w-mom", type=float, default=1.0)
+    pf.add_argument("--w-lowvol", type=float, default=1.0)
+    pf.add_argument("--w-rev", type=float, default=0.0)
+    pf.add_argument("--no-regime", action="store_true")
+    pf.add_argument("--regime-symbol", default="NSE:NIFTY50-INDEX")
+    pf.set_defaults(func=cmd_multifactor)
 
     args = ap.parse_args()
     args.func(args)

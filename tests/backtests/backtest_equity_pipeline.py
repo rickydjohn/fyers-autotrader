@@ -29,7 +29,7 @@ sys.path.insert(0, os.path.abspath(EQUITY_ENGINE))
 os.environ.setdefault("FYERS_CLIENT_ID", "x")
 os.environ.setdefault("FYERS_SECRET_KEY", "x")
 
-from backtest import run_backtest, run_momentum_backtest, summarize  # noqa: E402
+from backtest import run_backtest, run_momentum_backtest, run_multifactor_backtest, summarize  # noqa: E402
 from models import Bar, EquitySymbol  # noqa: E402
 
 IST = pytz.timezone("Asia/Kolkata")
@@ -93,6 +93,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--synthetic", action="store_true", help="run on edge-free random data (bias check)")
     ap.add_argument("--momentum", action="store_true", help="synthetic momentum control (expect ~0 spread)")
+    ap.add_argument("--multifactor", action="store_true", help="synthetic multi-factor control (expect ~0 alpha)")
     ap.add_argument("--limit", type=int, default=200, help="cap universe size (real mode)")
     ap.add_argument("--symbols", type=str, default="", help="comma-separated tickers (real mode)")
     ap.add_argument("--history", type=int, default=750, help="daily bars per symbol")
@@ -104,6 +105,12 @@ def main():
         symbols, provider = _synthetic_momentum_universe()
         print(run_momentum_backtest(symbols, provider, history=1800))
         print("\n(driftless control — long-short spread should be ≈ 0%/mo)")
+        return
+
+    if args.multifactor:
+        symbols, provider = _synthetic_momentum_universe()
+        print(run_multifactor_backtest(symbols, provider, history=1800, w_mom=1.0, w_lowvol=1.0))
+        print("\n(driftless control — alpha should be ≈ 0%/mo)")
         return
 
     if args.synthetic:
