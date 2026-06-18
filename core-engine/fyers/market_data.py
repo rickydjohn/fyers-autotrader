@@ -25,55 +25,64 @@ RESOLUTION_MAP = {
     "1d": "D",
 }
 
+# Approx candles per TRADING day, by resolution — used to size the calendar-day
+# lookback so `limit` bars actually come back. The old `limit//75` heuristic was
+# calibrated only for 5m, so daily/hourly fetches came back nearly empty.
+_CANDLES_PER_DAY = {"1": 375, "5": 75, "15": 25, "60": 7, "D": 1}
+# Fyers caps the date range per single history request, by resolution (see
+# get_historical_candles_daterange). Larger windows must be chunked + concatenated.
+_MAX_DAYS_PER_REQ = {"1": 30, "5": 90, "15": 90, "60": 100, "D": 365}
+
+_DATE_FMT = "%Y-%m-%d"
+
 
 def get_historical_candles(
     symbol: str,
     interval: str = "1m",
     limit: int = 200,
 ) -> List[OHLCBar]:
-    """Fetch historical OHLCV candles for a symbol."""
-    fyers = get_fyers_client()
+    """Fetch the most recent `limit` OHLCV candles for a symbol.
+
+    Sizes the lookback window per resolution and, when that window exceeds Fyers'
+    per-request cap (e.g. daily history > 365d), splits it into chunks and
+    concatenates. Intraday windows stay small → single request, unchanged behaviour.
+    """
     resolution = RESOLUTION_MAP.get(interval, "5")
+    cpd = _CANDLES_PER_DAY.get(resolution, 75)
+    max_days = _MAX_DAYS_PER_REQ.get(resolution, 90)
+
+    # trading days needed → calendar days (×1.5 for weekends/holidays + buffer)
+    lookback_days = max(5, int(limit / cpd * 1.5) + 5)
     now_ist = datetime.now(IST)
-    date_format = "%Y-%m-%d"
 
-    # Look back enough days to fill limit candles (accounting for weekends/holidays)
-    lookback_days = max(5, limit // 75 + 2)
-    date_from = (now_ist - timedelta(days=lookback_days)).strftime(date_format)
-    date_to = now_ist.strftime(date_format)
-
-    payload = {
-        "symbol": symbol,
-        "resolution": resolution,
-        "date_format": "1",  # epoch timestamp
-        "range_from": date_from,
-        "range_to": date_to,
-        "cont_flag": "1",
-    }
-
-    try:
-        response = fyers.history(data=payload)
-        if response.get("s") != "ok":
-            logger.error(f"Fyers history error for {symbol}: {response}")
-            return []
-
-        candles = []
-        for row in response.get("candles", [])[-limit:]:
-            ts, o, h, l, c, v = row
-            candles.append(
-                OHLCBar(
-                    timestamp=datetime.fromtimestamp(ts, tz=IST),
-                    open=o,
-                    high=h,
-                    low=l,
-                    close=c,
-                    volume=int(v),
-                )
+    if lookback_days <= max_days:
+        date_from = (now_ist - timedelta(days=lookback_days)).strftime(_DATE_FMT)
+        bars = get_historical_candles_daterange(
+            symbol, interval, date_from, now_ist.strftime(_DATE_FMT)
+        )
+    else:
+        # Walk backwards in <= max_days windows, oldest-first concatenation.
+        bars = []
+        end = now_ist
+        remaining = lookback_days
+        while remaining > 0:
+            span = min(max_days, remaining)
+            start = end - timedelta(days=span)
+            chunk = get_historical_candles_daterange(
+                symbol, interval, start.strftime(_DATE_FMT), end.strftime(_DATE_FMT)
             )
-        return candles
-    except Exception as e:
-        logger.exception(f"Error fetching candles for {symbol}: {e}")
-        return []
+            bars = chunk + bars
+            end = start - timedelta(days=1)
+            remaining -= span
+        # Dedup boundary overlaps, keep chronological order.
+        seen, deduped = set(), []
+        for b in sorted(bars, key=lambda x: x.timestamp):
+            if b.timestamp not in seen:
+                seen.add(b.timestamp)
+                deduped.append(b)
+        bars = deduped
+
+    return bars[-limit:]
 
 
 def get_quote(symbol: str) -> Optional[dict]:
