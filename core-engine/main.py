@@ -20,17 +20,17 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 import redis.asyncio as aioredis
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
 from config import settings
 from fyers.proxy import configure_fyers_proxy
 from fyers.auth import exchange_auth_code, get_auth_url, get_valid_token
-from fyers.orders import get_funds, get_fyers_positions, get_order_fill, place_market_order
+from fyers.orders import get_funds, get_fyers_holdings, get_fyers_positions, get_order_fill, place_market_order
 from fyers.market_data import get_quote, get_historical_candles
 from fyers.tick_feed import FyersTickFeed
-from llm.client import check_llm_health, get_provider
+from llm.client import check_llm_health, get_provider, query_llm
 from scheduler.jobs import (
     create_scheduler, _refresh_news, run_market_scan,
     refresh_context_cache, bootstrap_historical_data,
@@ -299,6 +299,34 @@ async def fyers_positions_endpoint():
         return {"status": "ok", "positions": positions}
     except RuntimeError as e:
         raise HTTPException(status_code=401, detail=str(e))
+
+
+@app.get("/fyers/holdings")
+async def fyers_holdings_endpoint():
+    """Return the account's delivery holdings (existing stock positions).
+    Added for equity-engine: makes the analysis aware of stocks the user owns."""
+    try:
+        holdings = get_fyers_holdings()
+        if holdings is None:
+            raise HTTPException(status_code=503, detail="Could not fetch holdings — is Fyers authenticated?")
+        return {"status": "ok", "holdings": holdings}
+    except RuntimeError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+
+
+@app.post("/llm/complete")
+async def llm_complete(payload: dict = Body(...)):
+    """Generic LLM completion — equity-engine consults this for entry/exit reasoning.
+    Keeps LLM transport/config in core-engine; the prompt is built by the caller."""
+    prompt = (payload or {}).get("prompt", "")
+    if not prompt:
+        raise HTTPException(status_code=400, detail="missing 'prompt'")
+    try:
+        text = await query_llm(prompt)
+        return {"status": "ok", "provider": get_provider().name, "text": text}
+    except Exception as e:
+        logger.exception("LLM complete failed")
+        raise HTTPException(status_code=503, detail=f"LLM error: {e}")
 
 
 # ── WS subscription control ──────────────────────────────────────────────────
