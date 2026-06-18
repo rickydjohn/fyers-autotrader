@@ -102,3 +102,14 @@ def nearest_sr(
     support = max(supports) if supports else 0.0
     resistance = min(resistances) if resistances else 0.0
     return round(support, 2), round(resistance, 2)
+
+
+def support_resistance_levels(
+    bars: list[Bar], price: float, n: int = 3, window: int = 5, tol_pct: float = 0.75
+) -> tuple[list[float], list[float]]:
+    """Return (supports, resistances): the n nearest swing levels below and above price.
+    Supports are returned nearest-first (descending), resistances nearest-first (ascending)."""
+    clustered = _cluster(_swing_levels(bars, window), tol_pct)
+    supports = sorted((lv for lv in clustered if lv < price), reverse=True)[:n]
+    resistances = sorted(lv for lv in clustered if lv > price)[:n]
+    return [round(x, 2) for x in supports], [round(x, 2) for x in resistances]

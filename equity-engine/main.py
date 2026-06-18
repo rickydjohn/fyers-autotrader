@@ -40,6 +40,26 @@ async def screener_momentum(top_n: int = 30, min_turnover_cr: float = 10.0, clea
     return {"status": "ok", "count": len(rows), "watchlist": rows}
 
 
+@app.post("/analysis/run")
+async def analysis_run(candidates: int = 8, clean: bool = True):
+    """On-demand LLM entry/exit report: every holding (exit advice + P&L context) +
+    the top momentum candidates (entry advice). Slow (per-stock LLM calls) → threaded."""
+    from analysis import run_analysis
+    from data import get_provider
+    from models import EquitySymbol
+    from screener import momentum_watchlist
+    from universe import load_universe
+
+    def _run():
+        provider = get_provider()
+        rows = momentum_watchlist(load_universe(), provider, top_n=candidates, clean_only=clean) if candidates else []
+        cand_syms = [EquitySymbol(symbol=r["symbol"], short_symbol=r["name"], name=r["name"]) for r in rows]
+        return run_analysis(provider, cand_syms)
+
+    result = await asyncio.to_thread(_run)
+    return {"status": "ok", **result}
+
+
 @app.post("/scan/run")
 async def scan_run(top_n: int = 25):
     """Run the EOD universe scan and return the ranked watchlist. Blocking + slow

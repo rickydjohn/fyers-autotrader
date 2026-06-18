@@ -84,6 +84,32 @@ def cmd_screen_momentum(args):
               f"{r['ref_entry']:>8.1f}/{r['ref_stop']:.1f}/{r['ref_target']:.1f}")
 
 
+def cmd_analyze(args):
+    import json as _json
+    from analysis import run_analysis
+    from data import get_provider
+    from screener import momentum_watchlist
+
+    provider = get_provider()
+    universe = _resolve_symbols(args)
+    rows = momentum_watchlist(universe, provider, top_n=args.candidates, clean_only=True) if args.candidates else []
+    candidates = [_mk(r["symbol"]) for r in rows]
+    result = run_analysis(provider, candidates, holdings_limit=args.holdings_limit)
+
+    for section in ("holdings", "candidates"):
+        cards = result[section]
+        print(f"\n========== {section.upper()} ({len(cards)}) ==========")
+        for c in cards:
+            rec = c["recommendation"]
+            print(f"\n  {c['name']:<14} ₹{c['ltp']:<9} {c['regime']:<9} "
+                  f"mom {c['momentum_12m_pct']:+.0f}%  {c['pct_from_52w_high']:+.0f}% from 52wH")
+            print(f"    resistance {c['resistances']}  support {c['supports']}")
+            if "position" in c:
+                p = c["position"]
+                print(f"    holding: {p['qty']} @ ₹{p['cost']}  P&L ₹{p['pl']:+.0f} ({p['pl_pct']:+.1f}%) — {p['loss_note']}")
+            print(f"    >> {rec.get('action')} ({rec.get('conviction','?')}): {rec.get('reasons','')}")
+
+
 def cmd_liquid_universe(args):
     """Print the N most-liquid tickers (by recent turnover, from cached daily bars)
     as a comma list — used to self-select a tradeable universe for backtests."""
@@ -176,6 +202,14 @@ def main():
     ps2.add_argument("--min-turnover", type=float, default=10.0)
     ps2.add_argument("--clean", action="store_true", help="clean-momentum filter (uptrend, not overbought, near high)")
     ps2.set_defaults(func=cmd_screen_momentum)
+
+    pa = sub.add_parser("analyze", help="LLM entry/exit analysis of holdings + candidates")
+    pa.add_argument("--limit", type=int, default=0)
+    pa.add_argument("--symbols", type=str, default="")
+    pa.add_argument("--symbols-file", type=str, default="", help="universe to screen for candidates")
+    pa.add_argument("--candidates", type=int, default=5, help="top-N momentum candidates to analyse (0 = none)")
+    pa.add_argument("--holdings-limit", type=int, default=0, help="cap holdings analysed (0 = all)")
+    pa.set_defaults(func=cmd_analyze)
 
     args = ap.parse_args()
     args.func(args)
