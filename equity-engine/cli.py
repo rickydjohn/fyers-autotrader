@@ -50,7 +50,10 @@ def cmd_momentum(args):
 
     symbols = _resolve_symbols(args)
     print(f"Momentum backtest over {len(symbols)} symbols, {args.history} bars each…")
-    print(run_momentum_backtest(symbols, get_provider(), history=args.history, quantile=args.quantile))
+    print(run_momentum_backtest(
+        symbols, get_provider(), history=args.history, quantile=args.quantile,
+        cost_roundtrip=args.cost,
+    ))
 
 
 def main():
@@ -72,8 +75,9 @@ def main():
     pm = sub.add_parser("momentum", help="cross-sectional momentum backtest")
     pm.add_argument("--limit", type=int, default=0, help="cap universe size (0 = full)")
     pm.add_argument("--symbols", type=str, default="", help="comma-separated tickers")
-    pm.add_argument("--history", type=int, default=750, help="daily bars per symbol")
+    pm.add_argument("--history", type=int, default=900, help="daily bars per symbol")
     pm.add_argument("--quantile", type=float, default=0.20, help="top/bottom fraction")
+    pm.add_argument("--cost", type=float, default=0.0035, help="round-trip cost fraction (0.0035 = 0.35%)")
     pm.set_defaults(func=cmd_momentum)
 
     args = ap.parse_args()
