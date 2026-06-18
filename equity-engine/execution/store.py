@@ -16,6 +16,7 @@ from config import settings
 MODE_KEY = "equity:mode"               # "simulation" | "live"
 POS_KEY = "equity:paper:positions"     # hash: symbol -> position json
 TRADES_KEY = "equity:paper:trades"     # list of executed paper trades
+REPORT_KEY = "equity:analysis:report"  # cached LLM analysis report (JSON)
 
 _client: Optional[redis.Redis] = None
 
@@ -56,3 +57,12 @@ def remove_paper_position(symbol: str) -> None:
 
 def log_paper_trade(trade: dict) -> None:
     _r().rpush(TRADES_KEY, json.dumps(trade))
+
+
+def get_report() -> Optional[dict]:
+    raw = _r().get(REPORT_KEY)
+    return json.loads(raw) if raw else None
+
+
+def set_report(report: dict) -> None:
+    _r().set(REPORT_KEY, json.dumps(report))

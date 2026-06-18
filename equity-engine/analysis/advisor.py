@@ -13,9 +13,13 @@ decides — nothing here places an order.
 """
 
 import logging
+import os
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from typing import Optional
 
 import httpx
+import pytz
 
 from config import settings
 from data import CandleProvider
@@ -25,8 +29,10 @@ from models import Bar, EquitySymbol
 from analysis.llm import complete, parse_json
 
 logger = logging.getLogger(__name__)
+IST = pytz.timezone("Asia/Kolkata")
 
 LOOKBACK, SKIP = 252, 21
+LIQUID_FILE = "/app/cache/liquid180.txt"   # persisted tradeable universe for candidates
 
 
 def fetch_holdings() -> list[dict]:
@@ -132,32 +138,59 @@ def run_analysis(
     candidate_symbols: list[EquitySymbol],
     history: int = 320,
     holdings_limit: int = 0,
+    workers: int = 5,
 ) -> dict:
-    """On-demand report: analyse every holding + the provided candidate shortlist.
-    holdings_limit > 0 caps the number of holdings analysed (for quick test runs)."""
+    """Analyse every holding + the candidate shortlist. The per-stock LLM calls run
+    in parallel (workers) so the batch is ~minutes, not tens of minutes."""
     holdings = fetch_holdings()
     if holdings_limit > 0:
         holdings = holdings[:holdings_limit]
-    holdings_cards = []
+
+    # Prepare tasks (fetch bars — mostly cache hits); then analyse (LLM) in parallel.
+    tasks = []  # (symbol, bars, kind, holding)
     for h in holdings:
         sym = h.get("symbol", "")
-        if not sym:
-            continue
-        bars = provider.daily_bars(sym, limit=history)
-        if len(bars) < LOOKBACK + SKIP + 5:
-            continue
-        card = analyze_symbol(sym, bars, kind="holding", holding=h)
-        if card:
-            holdings_cards.append(card)
-
-    candidate_cards = []
+        if sym:
+            bars = provider.daily_bars(sym, limit=history)
+            if len(bars) >= LOOKBACK + SKIP + 5:
+                tasks.append((sym, bars, "holding", h))
     for s in candidate_symbols:
         bars = provider.daily_bars(s.symbol, limit=history)
-        if len(bars) < LOOKBACK + SKIP + 5:
-            continue
-        card = analyze_symbol(s.symbol, bars, kind="candidate")
-        if card:
-            candidate_cards.append(card)
+        if len(bars) >= LOOKBACK + SKIP + 5:
+            tasks.append((s.symbol, bars, "candidate", None))
 
+    cards = [None] * len(tasks)
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futures = {ex.submit(analyze_symbol, t[0], t[1], t[2], t[3]): i for i, t in enumerate(tasks)}
+        for fut in futures:
+            cards[futures[fut]] = fut.result()
+
+    holdings_cards = [c for c, t in zip(cards, tasks) if c and t[2] == "holding"]
+    candidate_cards = [c for c, t in zip(cards, tasks) if c and t[2] == "candidate"]
     logger.info("Analysis: %d holdings, %d candidates", len(holdings_cards), len(candidate_cards))
     return {"holdings": holdings_cards, "candidates": candidate_cards}
+
+
+def _candidate_universe() -> list[EquitySymbol]:
+    """The tradeable universe to screen for candidates — the persisted liquid set if
+    present (fast, cached bars), else a slice of the full universe (slower)."""
+    if os.path.exists(LIQUID_FILE):
+        with open(LIQUID_FILE) as f:
+            toks = f.read().replace("\n", ",").split(",")
+        return [EquitySymbol(symbol=t.strip(), short_symbol=t.strip().split(":")[-1].replace("-EQ", ""),
+                             name=t.strip()) for t in toks if t.strip()]
+    from universe import load_universe
+    return load_universe()[:200]
+
+
+def build_report(provider: CandleProvider, candidate_count: int = 8) -> dict:
+    """Full report: screen the liquid universe for top momentum candidates, then run
+    the LLM analysis on holdings + those candidates. Cached by the API for instant load."""
+    from screener import momentum_watchlist
+
+    universe = _candidate_universe()
+    rows = momentum_watchlist(universe, provider, top_n=candidate_count, clean_only=True) if candidate_count else []
+    cands = [EquitySymbol(symbol=r["symbol"], short_symbol=r["name"], name=r["name"]) for r in rows]
+    report = run_analysis(provider, cands)
+    report["generated_at"] = datetime.now(IST).isoformat()
+    return report

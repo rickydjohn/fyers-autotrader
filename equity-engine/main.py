@@ -79,6 +79,45 @@ async def trade(symbol: str, side: str, qty: int, confirm: bool = False):
     return await asyncio.to_thread(execute, symbol, side, qty, confirm)
 
 
+@app.get("/analysis/cached")
+async def analysis_cached():
+    """Return the last cached analysis report (instant). null if never built."""
+    from execution import store
+    report = await asyncio.to_thread(store.get_report)
+    return {"status": "ok", "report": report}
+
+
+_refresh_running = False
+
+
+@app.post("/analysis/refresh")
+async def analysis_refresh(candidates: int = 8):
+    """Rebuild the analysis report in the background and cache it. Returns immediately;
+    poll /analysis/cached for the updated generated_at."""
+    global _refresh_running
+    if _refresh_running:
+        return {"status": "already_running"}
+
+    async def _job():
+        global _refresh_running
+        _refresh_running = True
+        try:
+            from analysis import build_report
+            from data import get_provider
+            from execution import store
+            report = await asyncio.to_thread(build_report, get_provider(), candidates)
+            await asyncio.to_thread(store.set_report, report)
+            logger.info("analysis report refreshed: %d holdings, %d candidates",
+                        len(report.get("holdings", [])), len(report.get("candidates", [])))
+        except Exception:
+            logger.exception("analysis refresh failed")
+        finally:
+            _refresh_running = False
+
+    asyncio.create_task(_job())
+    return {"status": "started"}
+
+
 @app.post("/analysis/run")
 async def analysis_run(candidates: int = 8, clean: bool = True):
     """On-demand LLM entry/exit report: every holding (exit advice + P&L context) +
