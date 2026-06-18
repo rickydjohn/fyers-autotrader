@@ -110,6 +110,27 @@ def cmd_analyze(args):
             print(f"    >> {rec.get('action')} ({rec.get('conviction','?')}): {rec.get('reasons','')}")
 
 
+def cmd_mode(args):
+    from execution import store
+    print({"mode": store.set_mode(args.set) if args.set else store.get_mode()})
+
+
+def cmd_trade(args):
+    import json as _json
+    from execution import execute
+    print(_json.dumps(execute(args.symbol, args.side, args.qty, args.confirm), indent=2, default=str))
+
+
+def cmd_positions(args):
+    from execution import list_positions, store
+    print(f"mode: {store.get_mode()}\n")
+    rows = list_positions()
+    print(f"{'SYMBOL':<14} {'SRC':<7} {'QTY':>5} {'AVG':>10} {'LTP':>10} {'P&L':>10} {'P&L%':>7}")
+    for r in rows:
+        print(f"{r['name']:<14} {r['source']:<7} {r['qty']:>5} {r['avg_price']:>10.2f} "
+              f"{r['ltp']:>10.2f} {r['pnl']:>10.0f} {r['pnl_pct']:>7.1f}")
+
+
 def cmd_liquid_universe(args):
     """Print the N most-liquid tickers (by recent turnover, from cached daily bars)
     as a comma list — used to self-select a tradeable universe for backtests."""
@@ -210,6 +231,20 @@ def main():
     pa.add_argument("--candidates", type=int, default=5, help="top-N momentum candidates to analyse (0 = none)")
     pa.add_argument("--holdings-limit", type=int, default=0, help="cap holdings analysed (0 = all)")
     pa.set_defaults(func=cmd_analyze)
+
+    pmode = sub.add_parser("mode", help="get/set operating mode (simulation|live)")
+    pmode.add_argument("--set", type=str, default="", help="set mode: simulation|live")
+    pmode.set_defaults(func=cmd_mode)
+
+    pt = sub.add_parser("trade", help="buy/sell routed by mode")
+    pt.add_argument("--symbol", required=True)
+    pt.add_argument("--side", required=True, choices=["BUY", "SELL"])
+    pt.add_argument("--qty", type=int, required=True)
+    pt.add_argument("--confirm", action="store_true", help="required for live orders")
+    pt.set_defaults(func=cmd_trade)
+
+    pp = sub.add_parser("positions", help="held stocks: actual holdings + paper positions")
+    pp.set_defaults(func=cmd_positions)
 
     args = ap.parse_args()
     args.func(args)

@@ -40,6 +40,37 @@ async def screener_momentum(top_n: int = 30, min_turnover_cr: float = 10.0, clea
     return {"status": "ok", "count": len(rows), "watchlist": rows}
 
 
+@app.get("/mode")
+async def get_mode():
+    from execution import store
+    return {"mode": await asyncio.to_thread(store.get_mode)}
+
+
+@app.post("/mode")
+async def set_mode(mode: str):
+    """Switch operating mode: 'simulation' (paper) or 'live' (real orders)."""
+    from execution import store
+    return {"mode": await asyncio.to_thread(store.set_mode, mode)}
+
+
+@app.get("/positions")
+async def positions():
+    """Held stocks for the UI: real Fyers holdings (ACTUAL) + paper positions (PAPER),
+    each with buy price, qty and P&L."""
+    from execution import list_positions, store
+    rows = await asyncio.to_thread(list_positions)
+    mode = await asyncio.to_thread(store.get_mode)
+    return {"status": "ok", "mode": mode, "count": len(rows), "positions": rows}
+
+
+@app.post("/trade")
+async def trade(symbol: str, side: str, qty: int, confirm: bool = False):
+    """Buy/sell, routed by mode. Simulation → paper fill at LTP. Live → real Fyers CNC
+    order, but only when confirm=true (else returns confirm_required)."""
+    from execution import execute
+    return await asyncio.to_thread(execute, symbol, side, qty, confirm)
+
+
 @app.post("/analysis/run")
 async def analysis_run(candidates: int = 8, clean: bool = True):
     """On-demand LLM entry/exit report: every holding (exit advice + P&L context) +

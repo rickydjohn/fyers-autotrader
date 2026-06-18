@@ -418,13 +418,14 @@ async def fyers_place_order(
     symbol: str = Query(...),
     side: str = Query(...),
     quantity: int = Query(...),
+    product: str = Query("INTRADAY"),
 ):
     if side not in ("BUY", "SELL"):
         raise HTTPException(status_code=400, detail="side must be BUY or SELL")
     if quantity <= 0:
         raise HTTPException(status_code=400, detail="quantity must be > 0")
     try:
-        result = place_market_order(symbol, side, quantity)
+        result = place_market_order(symbol, side, quantity, product=product)
         if result is None:
             raise HTTPException(status_code=500, detail="Order placement failed")
         return {"status": "ok", "order_id": result.get("id"), "data": result}

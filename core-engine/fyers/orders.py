@@ -17,15 +17,16 @@ _STATUS_CANCELLED = 1
 _TERMINAL_STATES  = {_STATUS_TRADED, _STATUS_REJECTED, _STATUS_CANCELLED}
 
 
-def place_market_order(symbol: str, side: str, quantity: int) -> Optional[dict]:
-    """Place a DAY market order via Fyers. side='BUY'|'SELL'. Returns response or None."""
+def place_market_order(symbol: str, side: str, quantity: int, product: str = "INTRADAY") -> Optional[dict]:
+    """Place a DAY market order via Fyers. side='BUY'|'SELL'. product='INTRADAY'|'CNC'
+    (CNC = delivery, used for equity holdings). Returns response or None."""
     fyers = get_fyers_client()
     payload = {
         "symbol": symbol,
         "qty": quantity,
         "type": 2,                             # 2 = market order
         "side": 1 if side == "BUY" else -1,   # 1=buy, -1=sell
-        "productType": "INTRADAY",
+        "productType": product,
         "limitPrice": 0,
         "stopPrice": 0,
         "validity": "DAY",
