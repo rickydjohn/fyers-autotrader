@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { ReportPage } from './components/ReportPage'
 import { HealthPage } from './components/HealthPage'
+import { EquityPage } from './components/EquityPage'
 import { CandlestickChart } from './components/CandlestickChart'
 import { PnLGraph } from './components/PnLGraph'
 import { DecisionFeed } from './components/DecisionFeed'
@@ -47,7 +48,7 @@ function isWithinMarketWindow(now: Date): boolean {
 }
 
 export default function App() {
-  const [page, setPage] = useState<'dashboard' | 'report' | 'health'>('dashboard')
+  const [page, setPage] = useState<'dashboard' | 'report' | 'health' | 'equity'>('dashboard')
 
   const {
     selectedSymbol, setSelectedSymbol,
@@ -292,16 +293,17 @@ export default function App() {
     }))
   }, [historicalCandles])
 
-  if (page === 'report' || page === 'health') {
+  if (page === 'report' || page === 'health' || page === 'equity') {
     return (
       <div className="min-h-screen bg-gray-950 text-gray-100">
         <nav className="flex items-center gap-1 px-6 py-3 border-b border-gray-800 bg-gray-900">
           <span className="text-sm font-bold text-white mr-4">Trading Intelligence</span>
           <NavTab label="Dashboard" active={false}              onClick={() => setPage('dashboard')} />
+          <NavTab label="Equity"    active={page === 'equity'}  onClick={() => setPage('equity')} />
           <NavTab label="Reports"   active={page === 'report'}  onClick={() => setPage('report')} />
           <NavTab label="Health"    active={page === 'health'}  onClick={() => setPage('health')} />
         </nav>
-        {page === 'report' ? <ReportPage /> : <HealthPage />}
+        {page === 'report' ? <ReportPage /> : page === 'health' ? <HealthPage /> : <EquityPage />}
       </div>
     )
   }
@@ -315,6 +317,7 @@ export default function App() {
           {/* Page nav */}
           <div className="flex items-center bg-gray-800 rounded-md p-0.5 gap-0.5">
             <NavTab label="Dashboard" active={true}  onClick={() => setPage('dashboard')} />
+            <NavTab label="Equity"    active={false} onClick={() => setPage('equity')} />
             <NavTab label="Reports"   active={false} onClick={() => setPage('report')} />
             <NavTab label="Health"    active={false} onClick={() => setPage('health')} />
           </div>

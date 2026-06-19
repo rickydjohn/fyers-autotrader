@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     core_engine_url: str = Field("http://localhost:8001", env="CORE_ENGINE_URL")
     sim_engine_url: str = Field("http://localhost:8002", env="SIM_ENGINE_URL")
     data_service_url: str = Field("http://data-service:8003", env="DATA_SERVICE_URL")
+    equity_engine_url: str = Field("http://equity-engine:8004", env="EQUITY_ENGINE_URL")
     log_level: str = Field("INFO", env="LOG_LEVEL")
 
     class Config:

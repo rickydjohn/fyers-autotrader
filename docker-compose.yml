@@ -167,6 +167,7 @@ services:
       - CORE_ENGINE_URL=http://core-engine:8001
       - SIM_ENGINE_URL=http://simulation-engine:8002
       - DATA_SERVICE_URL=http://data-service:8003
+      - EQUITY_ENGINE_URL=http://equity-engine:8004
       - TZ=Asia/Kolkata
     depends_on:
       core-engine:
@@ -217,7 +218,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    ports: ["8004:8004"]
+    # internal-only — reached via api-service proxy (unified on the main UI port)
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8004/healthz"]
