@@ -48,7 +48,12 @@ function isWithinMarketWindow(now: Date): boolean {
 }
 
 export default function App() {
-  const [page, setPage] = useState<'dashboard' | 'report' | 'health' | 'equity'>('dashboard')
+  const [page, setPage] = useState<'dashboard' | 'report' | 'health' | 'equity'>(() => {
+    const saved = localStorage.getItem('activePage')
+    return saved === 'equity' || saved === 'report' || saved === 'health' ? saved : 'dashboard'
+  })
+  // Persist the active tab so a browser refresh stays on the same page.
+  useEffect(() => { localStorage.setItem('activePage', page) }, [page])
 
   const {
     selectedSymbol, setSelectedSymbol,
