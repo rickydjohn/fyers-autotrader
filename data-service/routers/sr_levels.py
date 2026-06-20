@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.connection import get_db
 from repositories.sr_levels import (
+    get_daily_ohlcv,
     get_sr_levels,
     replace_sr_levels,
     upsert_daily_ohlcv_batch,
@@ -70,6 +71,20 @@ async def ingest_daily_ohlcv(
     ]
     count = await upsert_daily_ohlcv_batch(db, rows)
     return {"status": "ok", "upserted": count}
+
+
+@router.get("/daily-ohlcv")
+async def fetch_daily_ohlcv(
+    symbol: str = Query(..., example="NSE:SBIN-EQ"),
+    limit: int = Query(0, ge=0, le=6000, description="most recent N bars (0 = all)"),
+    since: Optional[str] = Query(None, description="ISO date YYYY-MM-DD"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Read persisted daily bars from the permanent daily_ohlcv table (oldest-first)."""
+    from datetime import date as _date
+    since_d = _date.fromisoformat(since) if since else None
+    bars = await get_daily_ohlcv(db, symbol, since=since_d, limit=(limit or None))
+    return {"status": "ok", "symbol": symbol, "count": len(bars), "bars": bars}
 
 
 @router.post("/ingest/sr-levels")

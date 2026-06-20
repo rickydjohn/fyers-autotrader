@@ -44,22 +44,34 @@ async def get_daily_ohlcv(
     db: AsyncSession,
     symbol: str,
     since: Optional[date] = None,
+    limit: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
-    """Return all daily bars for symbol, optionally filtered by date, oldest-first."""
+    """Return daily bars for symbol, oldest-first. When limit is given, returns the
+    most recent `limit` bars (still oldest-first)."""
     since_clause = "AND date >= :since" if since else ""
     params: Dict[str, Any] = {"symbol": symbol}
     if since:
         params["since"] = since
 
-    result = await db.execute(
-        text(f"""
+    if limit:
+        params["limit"] = limit
+        query = f"""
+            SELECT date, open, high, low, close, volume FROM (
+                SELECT date, open, high, low, close, volume
+                FROM daily_ohlcv
+                WHERE symbol = :symbol {since_clause}
+                ORDER BY date DESC
+                LIMIT :limit
+            ) t ORDER BY date ASC
+        """
+    else:
+        query = f"""
             SELECT date, open, high, low, close, volume
             FROM daily_ohlcv
             WHERE symbol = :symbol {since_clause}
             ORDER BY date ASC
-        """),
-        params,
-    )
+        """
+    result = await db.execute(text(query), params)
     return [dict(r) for r in result.mappings().all()]
 
 
